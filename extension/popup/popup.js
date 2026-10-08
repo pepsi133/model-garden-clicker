@@ -84,20 +84,22 @@
     render();
   }
 
-  function renderStepToggle(on, running) {
+  function renderStepToggle(on, running, offName) {
     const btn = $("step-toggle");
     if (!btn) return;
     btn.setAttribute("aria-pressed", on ? "true" : "false");
-    setIf("step-toggle-label", (el) => { el.textContent = on ? "slow mode" : "kubardy mode"; });
+    setIf("step-toggle-label", (el) => { el.textContent = on ? "slow mode" : offName; });
     // One icon at a time: the snail for slow mode, the warning sign for
-    // kubardy mode. The hidden attribute does not apply to inline SVG (it
-    // is an HTML attribute), so the display style is set directly.
+    // step-by-step off ("fast mode", or "kubardy mode" with the options
+    // page's inside joke box ticked; the icon is the same either way). The
+    // hidden attribute does not apply to inline SVG (it is an HTML
+    // attribute), so the display style is set directly.
     setIf("icon-snail", (el) => { el.style.display = on ? "" : "none"; });
     setIf("icon-warning", (el) => { el.style.display = on ? "none" : ""; });
     const lock = running ? " A run is in progress: stop it before changing this." : "";
     btn.title = on
-      ? `slow mode: step-by-step confirmation is on. The extension fills each page and waits for your Continue before Next and before Agree. Click for kubardy mode (no pauses).${lock}`
-      : `kubardy mode: step-by-step confirmation is off. The extension runs each job through without pausing: no Continue before Next, and in a full run no Continue before Agree. Click for slow mode (a Continue before Next and before Agree).${lock}`;
+      ? `slow mode: step-by-step confirmation is on. The extension fills each page and waits for your Continue before Next and before Agree. Click for ${offName} (no pauses).${lock}`
+      : `${offName}: step-by-step confirmation is off. The extension runs each job through without pausing: no Continue before Next, and in a full run no Continue before Agree. Click for slow mode (a Continue before Next and before Agree).${lock}`;
   }
 
   /* ---------------------------------------------------------- models.json */
@@ -233,7 +235,7 @@
   let lastRunning = null; // the log opens itself when a run becomes active
 
   async function render() {
-    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUNNING, KEYS.RUN, KEYS.LOG, KEYS.STOP_REQUESTED, KEYS.SUMMARY_ACK]);
+    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUNNING, KEYS.RUN, KEYS.LOG, KEYS.STOP_REQUESTED, KEYS.SUMMARY_ACK, KEYS.PAUSED]);
     const settings = Object.assign({}, K.DEFAULT_SETTINGS, o[KEYS.SETTINGS] || {});
     const running = o[KEYS.RUNNING] === true;
     // While a run is active the banner shows the mode the run was started
@@ -249,7 +251,7 @@
         ? `Full run: the extension clicks Agree and makes purchases that bill the project. Click to switch to DRY RUN.${lock}`
         : `Dry run: fills the forms, stops on the Agreements page, never clicks Agree. Click to switch to FULL RUN (asks for confirmation).${lock}`;
     });
-    renderStepToggle(settings.step_by_step === true, running);
+    renderStepToggle(settings.step_by_step === true, running, K.stepOffName(settings));
 
     const queue = o[KEYS.QUEUE] || [];
     const current = o[KEYS.CURRENT];
@@ -267,10 +269,26 @@
       start.title = running ? "a run is in progress" : (missing.length ? `fill these options first: ${labels(missing)}` : "");
     });
     setIf("stop", (stop) => { stop.disabled = !running; });
+    // Pause sits next to Stop while a run is active and reads Resume while
+    // the run is paused (KEYS.PAUSED). It never touches the mode.
+    const paused = running && o[KEYS.PAUSED] === true;
+    setIf("pause", (btn) => {
+      btn.hidden = !running;
+      btn.disabled = !running || o[KEYS.STOP_REQUESTED] === true;
+      btn.textContent = paused ? "Resume" : "Pause";
+      btn.setAttribute("aria-pressed", paused ? "true" : "false");
+      btn.title = paused
+        ? "Resume the run: the next job starts"
+        : "Pause the run at the next job boundary: the job in progress finishes, the next one does not start until Resume";
+    });
 
     let status;
     let step = "";
-    if (running && current && queue[current.jobIndex]) {
+    const jobBusy = running && current && queue[current.jobIndex] && current.phase !== PHASE.FINISHED;
+    if (paused && !jobBusy) {
+      const next = queue.findIndex((j) => j.status === STATUS.PENDING);
+      status = `PAUSED${next >= 0 ? ` before job ${next + 1}/${queue.length}: ${queue[next].projectId} / ${queue[next].modelSlug}` : ""}; Resume continues, Stop ends the run`;
+    } else if (running && current && queue[current.jobIndex]) {
       const j = queue[current.jobIndex];
       if (current.phase === PHASE.AWAITING_CONFIRMATION) {
         const which = K.CONFIRM_STEP_LABEL[current.awaiting || j.awaiting] || current.awaiting || j.awaiting || "?";
@@ -279,6 +297,7 @@
         status = `running job ${current.jobIndex + 1}/${queue.length}: ${j.projectId} / ${j.modelSlug} [${current.phase}]`;
       }
       if (o[KEYS.STOP_REQUESTED]) status += " (stopping)";
+      else if (paused) status += " (PAUSED after this job)";
       // The worker tab's badge step line, mirrored through the job record.
       step = j.step ? `step: ${j.step}` : "";
     } else if (running) {
@@ -331,7 +350,7 @@
     const freshVersion = ps.version !== manifestVersion;
     setIf("projects", (el) => { el.value = ps.projects || ""; });
     setIf("extra-models", (el) => { el.value = ps.extra || ""; });
-    // The "Include pairs already done in earlier runs" box is a per-run
+    // The "Include pairs already done or skipped in earlier runs" box is a per-run
     // choice, not a saved setting: it starts unchecked on every popup open
     // (a stored legacy includeDone is ignored) and every Start click spends
     // it, so one tick cannot silently disable the cross-run guard for a
@@ -380,8 +399,19 @@
       const live = settings.live_mode === true;
       // Only a full run asks for a confirmation; a dry run starts at once.
       if (live) {
-        let msg = `FULL RUN: this will click Agree and make purchases that bill the project for ${projects.length * models.length} project/model pair(s).`;
-        if (includeDone) msg += ` The cross-run guard is off: pairs already done in earlier runs will be processed again.`;
+        // The counts of pairs done and skipped in earlier runs come from the
+        // worker's guard (read-only here; the guard runs again at Start).
+        const pv = await send({ type: MSG.GUARD_PREVIEW, projects, models });
+        const total = projects.length * models.length;
+        let msg;
+        if (!pv || !pv.ok || typeof pv.total !== "number" || typeof pv.done !== "number" || typeof pv.skipped !== "number") {
+          msg = `FULL RUN: this will click Agree and make purchases that bill the project for up to ${total} project/model pair(s). The pairs done or skipped in earlier runs could not be counted (${(pv && pv.error) || "no reply"}).`;
+          if (includeDone) msg += ` The cross-run guard is off: pairs already done or skipped in earlier runs will be processed again.`;
+        } else if (includeDone) {
+          msg = `FULL RUN: this will click Agree and make purchases that bill the project for ${pv.total} project/model pair(s). The cross-run guard is off: pairs already done or skipped in earlier runs will be processed again (${pv.done} done, ${pv.skipped} skipped).`;
+        } else {
+          msg = `FULL RUN: this will click Agree and make purchases that bill the project for up to ${Math.max(0, pv.total - pv.done - pv.skipped)} of ${pv.total} project/model pair(s). The cross-run guard leaves out ${pv.done} pair(s) done and ${pv.skipped} pair(s) skipped (already enabled) in earlier runs.`;
+        }
         msg += ` Continue?`;
         const ok = confirm(msg);
         if (!ok) return;
@@ -397,6 +427,16 @@
     on("stop", "click", async () => {
       setIf("stop", (el) => { el.disabled = true; });
       await send({ type: MSG.STOP });
+      render();
+    });
+
+    // Pause / Resume: the worker reads KEYS.PAUSED at the next job boundary.
+    on("pause", "click", async () => {
+      showError("");
+      const st = await chrome.storage.local.get(KEYS.PAUSED);
+      setIf("pause", (el) => { el.disabled = true; });
+      const r = await send({ type: st[KEYS.PAUSED] === true ? MSG.RESUME : MSG.PAUSE });
+      if (!r || !r.ok) showError((r && r.error) || "pause or resume failed");
       render();
     });
 

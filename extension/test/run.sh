@@ -27,6 +27,13 @@ if [ "$defs" = 1 ] && [ "$ncalls" = 1 ] && [ "$inguard" = 1 ] && [ "$agreeuses" 
 else
   echo "FAIL unguardedClick defs=$defs calls=$ncalls inGuard=$inguard agreeButton uses=$agreeuses inGuard=$agreeinguard"; fail=1
 fi
+# The md5 of clickAgreeGuarded's body, printed on every run so anyone reading
+# sees any edit to the guard; the baseline is recorded in docs/MAINTENANCE.md
+# ("The Agree guard"), and a guard edit is named in its commit message.
+guardmd5=$(awk '/A.clickAgreeGuarded = async function/,/^  };/' "$EXT/content/actions.js" | { md5sum 2>/dev/null || md5 -q; } | cut -d' ' -f1)
+baseline=$(sed -n 's/.*guard md5 baseline: `\([0-9a-f]\{32\}\)`.*/\1/p' "$EXT/../docs/MAINTENANCE.md" | head -n 1)
+if [ "$guardmd5" = "$baseline" ]; then echo "guard md5 (clickAgreeGuarded): $guardmd5 (matches the baseline in docs/MAINTENANCE.md)"
+else echo "guard md5 (clickAgreeGuarded): $guardmd5 (DIFFERS from the baseline ${baseline:-none} in docs/MAINTENANCE.md: name the guard edit in the commit message and re-baseline)"; fi
 
 # A test file whose checks skipped (the recon dumps under python/recon are
 # gitignored, so on a fresh clone or in CI the dump-based proofs do not run)

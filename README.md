@@ -16,7 +16,7 @@ Open the options page (the **Options** button in the popup, or right-click the e
 
 ### 2. Pick projects and models, press Start
 
-Click the extension icon. The header shows the mode, **MODE: DRY RUN** by default, and the step-by-step setting next to it (**slow mode** with a snail icon when it is on, **kubardy mode** with a warning-sign icon when it is off; both are buttons). Paste project IDs, one per line. Tick the models. Press **Start**.
+Click the extension icon. The header shows the mode, **MODE: DRY RUN** by default, and the step-by-step setting next to it (**slow mode** with a snail icon when it is on, **fast mode** with a warning-sign icon when it is off; both are buttons). Paste project IDs, one per line. Tick the models. Press **Start**. While a run is active, **Pause** next to Stop holds the run once the current job ends; it then reads **Resume**.
 
 ![Popup: project IDs, the model checklist, Start, the results table](store/screenshots/01-popup-dry-run.png)
 
@@ -52,8 +52,8 @@ The popup lists one row per job. **Open in a tab** shows the same page in a norm
 |---|---|
 | `dry-run` | Stopped on the Agreements page with the checkbox ticked; Agree not clicked. |
 | `done` | Full run: Agree clicked and the console's "Successfully purchased" dialog seen. |
-| `unverified` | Full run: Agree clicked, no confirmation seen in time. Check that project by hand. |
-| `skipped` | The model was already enabled in that project, or an earlier run recorded the pair as done. |
+| `unverified` | Full run: Agree clicked (or the console reported a purchase), no confirmation seen. Check that project by hand. Later runs leave the pair out. |
+| `skipped` | The model was already enabled in that project, or an earlier run recorded the pair as done or skipped. |
 | `failed` | The reason is in the message: a rejected field, a page that was not the job's, a timeout, a console error dialog. |
 | `stopped` | You pressed Stop, or the extension was reloaded during the run. |
 
@@ -83,7 +83,7 @@ sequenceDiagram
     Worker-->>Popup: results table and log
 ```
 
-If the console opens its "Enable APIs" dialog (the Agent Platform API is not enabled in the project yet), the extension clicks that dialog's Enable button, waits for it to close and continues. Some model pages need a manual consent step before Enable works; such a job ends `failed` with a message that names the step.
+If the console opens its "Enable APIs" dialog (the Agent Platform API is not enabled in the project yet), the extension clicks that dialog's Enable button, waits for it to close and continues. Some model pages need a manual consent step before Enable works: any extra checkbox on the model, questionnaire or Agreements page (the terms box, the questionnaire's own form and its dropdown panel excepted), an accept button in a console banner, or a dialog checkbox labelled with consent wording. Such a job ends `failed` at once with a message that quotes it, and nothing in it is clicked. A permission error shown by the console ends the job `failed` with `missing permission:` and the console's words. While either shows, nothing is clicked, not even the "Enable APIs" dialog's Enable. Once Agree was clicked (or the console reported a purchase), a job never ends `failed` unless the console itself refused the purchase: it ends `unverified`, and later runs leave that pair out.
 
 ## Modes
 
@@ -104,6 +104,8 @@ click Agree only when
 ```
 
 **Step-by-step confirmation** works in either mode (see step 3 above). The two settings can be switched in the options page or from the popup's header, never while a run is active.
+
+The options page's **Advanced** section can export every setting to one JSON file and import it again. The DRY RUN mode is never in that file.
 
 Every detail of the popup, the options page, the step-by-step panel and the advanced timing settings is in [`extension/README.md`](extension/README.md).
 

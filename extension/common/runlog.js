@@ -49,7 +49,7 @@
   L.DB_VERSION = 2;
 
   /* Result fields copied from a queue entry into the record (nothing else of the job). */
-  L.RESULT_FIELDS = ["projectId", "modelSlug", "modelName", "status", "message", "startedAt", "finishedAt", "productId", "agreeClicked", "agreeClickedByUser"];
+  L.RESULT_FIELDS = ["projectId", "modelSlug", "modelName", "status", "message", "startedAt", "finishedAt", "productId", "agreeClicked", "agreeClickedByUser", "purchaseObserved", "leftOut", "leftOutStatus"];
 
   function idb() {
     const db = globalThis.indexedDB;
@@ -272,10 +272,27 @@
     return L.withStore("readonly", (store) => request(store.get(runId)));
   };
 
-  /** Every record, newest first; metadata and counters only, no lines. */
+  /**
+   * Newest first. The tie rule for equal start times: the later finishedAt
+   * first (an unfinished run, finishedAt null, counts as the newest), then
+   * the runId in descending string order, so the order (and with it which
+   * outcome the cross-run guard calls the newest) never depends on how the
+   * database returned the records.
+   */
+  L.newestFirst = function (a, b) {
+    const s = (b.startedAt || 0) - (a.startedAt || 0);
+    if (s) return s;
+    const fa = typeof a.finishedAt === "number" ? a.finishedAt : Infinity;
+    const fb = typeof b.finishedAt === "number" ? b.finishedAt : Infinity;
+    if (fa !== fb) return fb > fa ? 1 : -1;
+    const ra = String(a.runId || ""), rb = String(b.runId || "");
+    return ra === rb ? 0 : (rb > ra ? 1 : -1);
+  };
+
+  /** Every record, newest first (L.newestFirst); metadata and counters only, no lines. */
   L.list = async function () {
     const all = await L.withStore("readonly", (store) => request(store.getAll()));
-    return (Array.isArray(all) ? all : []).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    return (Array.isArray(all) ? all : []).sort((a, b) => L.newestFirst(a || {}, b || {}));
   };
 
   /** A run's log lines in order, read by the index cursor. */
@@ -339,7 +356,7 @@
       const store = tx.objectStore(L.STORE);
       const linesStore = tx.objectStore(L.LINES);
       const all = await request(store.getAll());
-      const sorted = (Array.isArray(all) ? all : []).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+      const sorted = (Array.isArray(all) ? all : []).sort((a, b) => L.newestFirst(a || {}, b || {}));
       let deleted = 0;
       for (const rec of sorted.slice(n)) {
         if (exceptRunId && rec.runId === exceptRunId) continue;

@@ -637,6 +637,138 @@ function boot(opts) {
     }
   }
 
+  console.log("--- (0.8.0) blockers in the loop: a permission error or an extra consent control ends the job at once, nothing clicked");
+  {
+    // (a) the tick-level check: a permission snackbar on the model page, the handler never runs.
+    let calls = 0;
+    const html = MODEL_HTML.replace("</body>", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>You do not have permission to enable this model (requires the Vertex AI User role).</simple-snack-bar></mat-snack-bar-container></div></body>');
+    const t = boot({ html, handler: async () => { calls += 1; return null; } });
+    await until(() => t.results.length > 0, 2000);
+    const r = t.results[0];
+    ok(calls === 0 && r && r.status === "failed" && r.message === "missing permission: You do not have permission to enable this model (requires the Vertex AI User role).", "(a) a permission snackbar: failed with \"missing permission: <excerpt>\" before any handler ran", JSON.stringify(r));
+    t.stop();
+  }
+  {
+    // (b) the real model handler waits on a disabled Enable (model_ready 5 s); a consent dialog opens at +300 ms:
+    // the wait ends at once (no timeout), the job fails naming it, Enable is never clicked.
+    const html = MODEL_HTML.replace("<button> Enable </button>", '<button aria-disabled="true" class="mat-mdc-button-disabled"> Enable </button>');
+    const t = boot({ html, modelReady: 5000 });
+    let clicks = 0; t.env.S.model.enableButton().addEventListener("click", () => { clicks += 1; });
+    const t0 = Date.now();
+    setTimeout(() => t.env.document.body.insertAdjacentHTML("beforeend", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Safety Addendum</h1><mat-checkbox><label><input type="checkbox"> By checking this box, you agree to the addendum</label></mat-checkbox></mat-dialog-container></div>'), 300);
+    await until(() => t.results.length > 0, 4000);
+    const r = t.results[0];
+    const ms = Date.now() - t0;
+    ok(r && r.status === "failed" && /^extra consent required, not supported \(mat-dialog-container\): "Safety Addendum": By checking this box, you agree to the addendum; nothing in it was clicked/.test(r.message) && clicks === 0 && ms < 1500,
+      `(b) a consent dialog during the model page's Enable wait: failed at once (${ms} ms, model_ready 5 s), naming the title and text, Enable never clicked`, `${JSON.stringify(r)} ${ms} ms`);
+    ok(!t.logEntries.some((l) => l.level === "error"), "(b) no error-level log line (a blocker is a result, not a bug)", JSON.stringify(t.logEntries.filter((l) => l.level === "error")));
+    t.stop();
+  }
+  {
+    // (c) control: the known "Enable APIs" dialog is still cleared (its Enable clicked), not treated as a blocker.
+    let calls = 0;
+    const t = boot({ html: MODEL_HTML.replace("</body>", API_DIALOG + "</body>"), handler: async () => { calls += 1; return { status: "dry-run", message: "x" }; } });
+    let enable = 0;
+    for (const b of t.env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { if (t.env.D.text(b) === "Enable") { enable += 1; t.env.D.q(".cdk-overlay-container").remove(); } });
+    await until(() => t.results.length > 0, 3000);
+    ok(enable === 1 && calls === 1 && t.results[0].status === "dry-run", "(c) control: the Enable APIs dialog is cleared as before and the handler runs", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+
+  {
+    // (d) a job with an Agree click on record is left to its handler (unverified), never failed by a blocker.
+    let calls = 0;
+    const url = "https://console.cloud.google.com/marketplace/agreements/anthropic/anthropic-867.cloudpartnerservices.goog?project=proj-one";
+    const html = '<!doctype html><html><head></head><body><div role="alert">Permission denied</div></body></html>';
+    const t = boot({ html, url, job: { agreeClicked: true, phase: "agreements" }, current: { jobIndex: 0, phase: "agreements" },
+      agreementsHandler: async () => { calls += 1; return { status: "unverified", message: "Agree was already clicked for this job; no confirmation observed; check manually" }; } });
+    await until(() => t.results.length > 0, 2000);
+    ok(calls === 1 && t.results[0].status === "unverified", "(d) a permission error with Agree on record: the handler reports unverified, the blocker does not turn it into failed", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+
+  {
+    // (e) the recorded "Enable APIs" dialog dump plus a permission banner: the page loop reports the blocker before the
+    // dialog step, so neither the dialog's Enable nor the model page's Enable is clicked.
+    const snapB = E.readSnapshot(E.findRun("B") || "", "01-model-page-api-dialog");
+    if (!snapB) skip("(e) the page loop on the Enable APIs dump with a permission banner", "recon dump not present");
+    else {
+      const project = new URL(snapB.url).searchParams.get("project");
+      const slug = (new URL(snapB.url).pathname.split("/").pop());
+      const html = snapB.html.replace("</body>", '<div role="alert">You do not have permission to enable services in this project.</div></body>');
+      let handlerCalls = 0;
+      const t = boot({ html, url: snapB.url, forms: snapB.forms, job: { projectId: project, modelSlug: slug }, handler: async () => { handlerCalls += 1; return null; } });
+      let clicks = 0;
+      for (const b of t.env.D.qa("button")) b.addEventListener("click", () => { clicks += 1; });
+      await until(() => t.results.length > 0, 4000);
+      ok(clicks === 0 && handlerCalls === 0 && t.results[0] && t.results[0].status === "failed" && t.results[0].message === "missing permission: You do not have permission to enable services in this project.",
+        "(e) the recorded Enable APIs dialog with a permission banner: failed as missing permission, no button clicked (the dialog's Enable included), no handler run", `${JSON.stringify(t.results[0])} clicks=${clicks}`);
+      t.stop();
+    }
+  }
+
+  console.log("--- (0.8.0) Agree on record: the job ends unverified, never failed, and no handler runs off the Agreements page");
+  {
+    // (f) Agree on record, then the model page with a permission alert.
+    let calls = 0;
+    const html = MODEL_HTML.replace("</body>", '<div role="alert">Permission denied: you cannot enable this model.</div></body>');
+    const t = boot({ html, job: { agreeClicked: true, phase: "agreements" }, current: { jobIndex: 0, phase: "agreements" }, handler: async () => { calls += 1; return null; } });
+    let clicks = 0; for (const b of t.env.D.qa("button")) b.addEventListener("click", () => { clicks += 1; });
+    await until(() => t.results.length > 0, 2000);
+    ok(calls === 0 && clicks === 0 && t.results[0] && t.results[0].status === "unverified" && /^Agree was clicked but the tab now shows the model page; no confirmation observed; check manually$/.test(t.results[0].message),
+      "(f) Agree on record, then the model page with a permission alert: unverified, no handler, nothing clicked", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+  {
+    // (g) Agree on record, then the recorded Fable 5.1 model page.
+    const fableSnap = E.readSnapshot(E.findRun("E") || "", "01-model-page");
+    if (!fableSnap) skip("(g) Agree on record on the recorded Fable page", "recon dump not present");
+    else {
+      const project = new URL(fableSnap.url).searchParams.get("project");
+      let calls = 0;
+      const t = boot({ html: fableSnap.html, url: fableSnap.url, forms: fableSnap.forms, job: { projectId: project, modelSlug: "claude-fable-5-1", agreeClicked: true, phase: "agreements" }, current: { jobIndex: 0, phase: "agreements" }, handler: async () => { calls += 1; return null; } });
+      const addendum = t.env.D.q('.addendum-banner-container input[type="checkbox"]');
+      await until(() => t.results.length > 0, 4000);
+      ok(calls === 0 && !addendum.checked && t.results[0] && t.results[0].status === "unverified" && /^Agree was clicked but the tab now shows the model page/.test(t.results[0].message),
+        "(g) Agree on record, then the recorded Fable page: unverified, no handler, the addendum box untouched", JSON.stringify(t.results[0]));
+      t.stop();
+    }
+  }
+  {
+    // (h) a handler that records the Agree click and then throws a fatal error: unverified, not failed.
+    const t = boot({ html: MODEL_HTML, url: "https://console.cloud.google.com/marketplace/agreements/anthropic/anthropic-867.cloudpartnerservices.goog?project=proj-one",
+      agreementsHandler: async (ctx) => { await ctx.updateJob({ agreeClicked: true }); throw new t.env.D.FatalError("refused to click: missing permission: x"); } });
+    await until(() => t.results.length > 0, 2000);
+    ok(t.results[0] && t.results[0].status === "unverified" && t.results[0].message === "Agree was clicked but refused to click: missing permission: x; no confirmation observed; check manually",
+      "(h) a fatal error after the Agree record: reported unverified, never failed", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+
+  {
+    // (i) only purchaseObserved on record (no Agree click): the message does not say "Agree was clicked".
+    let calls = 0;
+    const t = boot({ job: { purchaseObserved: true, phase: "agreements" }, current: { jobIndex: 0, phase: "agreements" }, handler: async () => { calls += 1; return null; } });
+    await until(() => t.results.length > 0, 2000);
+    ok(calls === 0 && t.results[0] && t.results[0].status === "unverified" && t.results[0].message === "the console reported a purchase but the tab now shows the model page; no confirmation observed; check manually",
+      "(i) purchaseObserved only, then the model page: unverified, worded as an observed purchase (not \"Agree was clicked\")", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+
+  console.log("--- (0.8.0) the badge shows PAUSED while the run is paused between jobs");
+  {
+    const t = boot({ handler: async () => ({ status: "dry-run", message: "ok" }), moreJobs: [{ projectId: "proj-one", modelSlug: "claude-sonnet-4-6", status: "pending" }] });
+    await until(() => t.results.length > 0, 2000);
+    t.state.paused = true;
+    t.fire({ paused: { newValue: true } });
+    await until(() => /PAUSED/.test(t.badge() || ""), 1500);
+    ok(/MG Clicker \[DRY RUN\] PAUSED job 1\/2/.test(t.badge() || "") && /PAUSED: Resume in the popup starts the next job/.test(t.badge() || ""), "paused after job 1: the badge's first line and step line say PAUSED", t.badge());
+    t.state.paused = false;
+    t.fire({ paused: { newValue: false } });
+    await until(() => !/PAUSED/.test(t.badge() || ""), 1500);
+    ok(!/PAUSED/.test(t.badge() || "") && /finished, waiting for next job/.test(t.badge() || ""), "resumed: PAUSED is gone from the badge", t.badge());
+    t.stop();
+  }
+
   E.finish("main loop");
   process.exit(0);
 })();

@@ -104,6 +104,23 @@ const { ok, skip } = E;
   try { await A.clearBlockingDialog(mk(5)); } catch (e) { err = e; }
   ok(err && err.name === "TimeoutError" && /dialog to close/.test(err.message), "control: no stop, the close wait times out as before", err && err.message);
 
+
+  // (0.8.0) the recorded "Enable APIs" dialog plus a permission banner on the page: its Enable is never clicked.
+  {
+    const dump = E.envFromSnapshot("B", "01-model-page-api-dialog");
+    if (!dump) skip("Enable APIs dialog with a permission banner", "recon dump not present");
+    else {
+      console.log("--- (0.8.0) the recorded Enable APIs dialog with a permission banner on the page: no click, failed as missing permission");
+      let dialogClicks = 0;
+      for (const b of dump.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { dialogClicks += 1; });
+      dump.document.body.insertAdjacentHTML("beforeend", '<div role="alert">You do not have permission to enable services in this project.</div>');
+      let err = null, r = null;
+      try { r = await dump.A.clearBlockingDialog({ runId: "run-m1", jobIndex: 0, job: {}, log: () => {}, assertMayAct: async () => {}, refresh: async () => ({ running: true, stopRequested: false, run: { runId: "run-m1" } }) }); } catch (e) { err = e; }
+      ok(dialogClicks === 0 && !r && err && err.name === "BlockedError" && err.message === "missing permission: You do not have permission to enable services in this project.",
+        "clearBlockingDialog: BlockedError \"missing permission: ...\", the dialog's Enable never clicked (clicks 0)", err ? `${err.name}: ${err.message} clicks=${dialogClicks}` : `${r} clicks=${dialogClicks}`);
+      dump.win.close();
+    }
+  }
   env.win.close();
   E.finish("dialog step");
 })();

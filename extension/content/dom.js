@@ -36,6 +36,15 @@
       this.name = "ForbiddenClickError";
     }
   }
+  /* The page shows something the extension cannot get past (an extra
+   * consent control, a permission error): the job fails at once with the
+   * message as its whole reason, never retried, nothing clicked. */
+  class BlockedError extends FatalError {
+    constructor(message) {
+      super(message);
+      this.name = "BlockedError";
+    }
+  }
   class StoppedError extends Error {
     constructor(reason) {
       super(reason || "stop requested");
@@ -56,6 +65,7 @@
   D.TimeoutError = TimeoutError;
   D.FatalError = FatalError;
   D.ForbiddenClickError = ForbiddenClickError;
+  D.BlockedError = BlockedError;
   D.StoppedError = StoppedError;
   D.NoOptionError = NoOptionError;
 
@@ -75,6 +85,9 @@
    */
   D.currentWait = null;
   D.onWait = null;
+  /* Called on every waitFor poll before the condition; an error it throws
+   * ends the wait at once (content/actions.js sets it to the blocker check). */
+  D.interrupt = null;
   function setWait(w) {
     D.currentWait = w;
     if (typeof D.onWait === "function") { try { D.onWait(w); } catch (e) { /* ignore */ } }
@@ -82,7 +95,9 @@
 
   /**
    * Poll `fn` until it returns a truthy value. Resolves with that value.
-   * Rejects with TimeoutError. Errors thrown by `fn` propagate at once.
+   * Rejects with TimeoutError. Errors thrown by `fn`, or by the D.interrupt
+   * hook (run before `fn` on every poll unless opts.interrupt is false),
+   * propagate at once.
    * The poll interval defaults to MGC.URL_POLL_MS (an advanced setting).
    */
   D.waitFor = async function (fn, opts) {
@@ -93,6 +108,7 @@
     setWait({ what, timeout, since: Date.now() });
     try {
       for (;;) {
+        if (typeof D.interrupt === "function" && !(opts && opts.interrupt === false)) D.interrupt();
         const v = await fn();
         if (v) return v;
         if (Date.now() >= deadline) throw new TimeoutError(what, timeout);
@@ -275,11 +291,51 @@
     if (!checked) throw new Error(`radio "${labelText}" did not become checked`);
   };
 
-  /** True when a mat-checkbox host or its <input> is checked. */
+  /* Every checkbox-like element: a native checkbox, a role="checkbox"
+   * element, or an Angular Material host. */
+  /* The controls that make a checkbox host ambiguous when it holds more
+   * than one: native checkboxes and radios, any element whose role names a
+   * checkbox, a switch or a checkable menu item (in any case, as one of
+   * several role tokens), anything carrying aria-checked, and Angular
+   * Material's checkbox, slide-toggle and radio hosts. Shadow roots are not
+   * searched. */
+  const CHECKBOX_LIKE = [
+    'input[type="checkbox"]', 'input[type="radio"]', '[role~="checkbox" i]', '[role~="switch" i]',
+    '[role~="menuitemcheckbox" i]', "[aria-checked]", "mat-checkbox", "mat-slide-toggle", "mat-radio-button"
+  ].join(", ");
+
+  /** The checkable controls inside a host (the host itself not counted). */
+  D.checkboxControls = function (el) {
+    return el ? D.qa(CHECKBOX_LIKE, el) : [];
+  };
+
+  /**
+   * A checkbox host's own native input: the input itself, or, when the host
+   * holds exactly ONE checkable control in total (D.checkboxControls) and
+   * it is a native checkbox, that input. Any other host (none, or more than
+   * one, or a single non-input control) has no own input: null.
+   */
+  D.ownCheckboxInput = function (el) {
+    if (!el) return null;
+    if (el.matches && el.matches('input[type="checkbox"]')) return el;
+    const controls = D.checkboxControls(el);
+    return controls.length === 1 && controls[0].matches('input[type="checkbox"]') ? controls[0] : null;
+  };
+
+  /**
+   * True when a checkbox is checked: a native input by its checked state;
+   * a host by its one native input; a host with no control inside (a
+   * role="checkbox" element, a bare host) by aria-checked or Material's
+   * checked class. A host holding more than one checkable control is
+   * ambiguous and never reads as checked.
+   */
   D.isCheckboxChecked = function (el) {
     if (!el) return false;
-    const input = el.matches && el.matches('input[type="checkbox"]') ? el : D.q('input[type="checkbox"]', el);
+    const input = D.ownCheckboxInput(el);
     if (input) return input.checked === true;
+    const controls = D.checkboxControls(el);
+    if (controls.length > 1) return false;
+    if (controls.length === 1) return controls[0].getAttribute("aria-checked") === "true";
     return el.getAttribute("aria-checked") === "true" ||
       el.classList.contains("mat-mdc-checkbox-checked") ||
       el.classList.contains("mat-checkbox-checked");
@@ -288,8 +344,9 @@
   /** Tick (or untick) a mat-checkbox by clicking its native input, then verify. */
   D.setCheckbox = async function (el, checked) {
     if (!el) throw new Error("setCheckbox: element is null");
+    if (D.checkboxControls(el).length > 1) throw new Error("setCheckbox: the checkbox host holds more than one checkbox-like element; nothing is clicked");
     if (D.isCheckboxChecked(el) === checked) return;
-    const input = el.matches && el.matches('input[type="checkbox"]') ? el : D.q('input[type="checkbox"]', el);
+    const input = D.ownCheckboxInput(el);
     D.click(input || el);
     await D.waitFor(() => D.isCheckboxChecked(el) === checked, { timeout: 5000, what: "checkbox state change" });
   };

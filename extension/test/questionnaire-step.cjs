@@ -238,6 +238,63 @@ const { ok, skip } = E;
     ok(no.yesChecked === false && no.detailsValue === "" && no.clicks === 1, "No: the details field is left untouched, Next still clicked once", `${no.detailsValue} clicks=${no.clicks}`);
   }
 
+  console.log("--- (0.8.0) AUP Yes with a permission alert on the page: the AUP-details wait does not swallow the blocker, Next is not clicked");
+  {
+    // The exact case: the details field never renders (its wait polls past the
+    // 250 ms throttle and meets the blocker), the alert opens while the selects
+    // are picked; before the fix the wait's catch swallowed the blocker and the
+    // next two waits fell inside the throttle, so Next was clicked.
+    const blockedRun = async (keepDetails) => {
+      const e = E.envFromSnapshot("A", "02-after-enable");
+      if (!e) return null;
+      e.K.TIMEOUTS.NAV = 100; e.K.TIMEOUTS.FORM_VALID = 200; e.K.URL_POLL_MS = 20;
+      if (!keepDetails) { const host = e.D.q('raf-runtime-form-element[raf-name="additionalRequirements"]'); if (host) host.remove(); }
+      const clicks = armNext(e);
+      e.D.selectOption = async (host, text) => {
+        if (text === "USERS") e.document.body.insertAdjacentHTML("beforeend", '<div role="alert">You don\'t have permission to request access to this model.</div>');
+      };
+      for (const el of e.D.qa("raf-runtime-form-element .ng-invalid")) el.classList.remove("ng-invalid");
+      const ctx = ctxFor(e);
+      ctx.settings = Object.assign({}, ctx.settings, { business_name: "n", business_website: "https://n.example", contact_email: "a@n.example",
+        headquarters: "HQ", industry: "IND", intended_users: "USERS", use_cases: "u", aup_additional_requirements: "yes", aup_details: "details" });
+      let error = null, result = null;
+      try { result = await e.A.handleQuestionnaire(ctx); } catch (x) { error = x; }
+      const out = { error, result, clicks: clicks() };
+      e.win.close();
+      return out;
+    };
+    for (const [label, keep] of [["the details field never renders (the wait meets the blocker)", false], ["the details field renders (the pre-Next check meets the blocker)", true]]) {
+      const r = await blockedRun(keep);
+      if (!r) { skip(`AUP Yes with a permission alert: ${label}`, "recon dump not present"); continue; }
+      ok(r.clicks === 0 && r.error && r.error.name === "BlockedError" && r.error.message === "missing permission: You don't have permission to request access to this model.",
+        `${label}: BlockedError "missing permission: ...", Next never clicked`, r.error ? `${r.error.name}: ${r.error.message} clicks=${r.clicks}` : `${JSON.stringify(r.result)} clicks=${r.clicks}`);
+    }
+  }
+
+
+  console.log("--- (0.8.0) a blocker that opens between two dropdowns stops the next pick at once (unthrottled check before each pick and the radio)");
+  {
+    const e = E.envFromSnapshot("A", "02-after-enable");
+    if (!e) skip("blocker between dropdown picks", "recon dump not present");
+    else {
+      e.K.TIMEOUTS.NAV = 100; e.K.TIMEOUTS.FORM_VALID = 200; e.K.URL_POLL_MS = 20;
+      const picks = [];
+      e.D.selectOption = async (host, text) => {
+        picks.push(text);
+        if (text === "HQ") e.document.body.insertAdjacentHTML("beforeend", '<div role="alert">Permission denied: questionnaire submissions are disabled for this project.</div>');
+      };
+      let radioCalls = 0;
+      const realRadio = e.D.chooseMatRadio; e.D.chooseMatRadio = (...a) => { radioCalls += 1; return realRadio(...a); };
+      const clicks = armNext(e);
+      const ctx = ctxFor(e);
+      ctx.settings = Object.assign({}, ctx.settings, { business_name: "n", business_website: "https://n.example", contact_email: "a@n.example", headquarters: "HQ", industry: "IND", intended_users: "USERS", use_cases: "u", aup_additional_requirements: "no", aup_details: "" });
+      let err = null;
+      try { await e.A.handleQuestionnaire(ctx); } catch (x) { err = x; }
+      ok(picks.join() === "HQ" && radioCalls === 0 && clicks() === 0 && err && err.name === "BlockedError" && /^missing permission: Permission denied: questionnaire submissions are disabled/.test(err.message),
+        "the alert opened during the first pick: the second pick, the radio and Next never happen; BlockedError naming it", `${picks.join()} radio=${radioCalls} next=${clicks()} ${err && err.message}`);
+      e.win.close();
+    }
+  }
   console.log("--- (T6) the questionnaire's readiness wait names the page and the locator instead of retrying blind");
   {
     const eS = serve();

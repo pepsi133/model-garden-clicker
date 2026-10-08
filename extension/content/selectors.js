@@ -38,6 +38,9 @@
   // itself a modal dialog. A non-modal role="dialog" (a side drawer, a
   // survey panel) is not a dialog here: it blocks no click.
   const DIALOG_SELECTOR = 'mat-dialog-container, [role="dialog"][aria-modal="true"]';
+  // A message banner: the console's cfc-message, the addendum's container,
+  // or an element announcing a status or an alert.
+  const BANNER = 'cfc-message, .addendum-banner-container, [role="alert"], [role="status"]';
 
   const S = {};
 
@@ -381,22 +384,22 @@
       return !!D.q("billing-integrated-ai-agreements-body, mp-agreements-tos");
     },
     /**
-     * The terms mat-checkbox host on the "Purchase summary" page. Google's
-     * own test hook class is the primary locator; mp-agreements-tos (the
-     * label component) is the second; the third is the fact the map
-     * records, that it is the only mat-checkbox inside the page's body
-     * component: with both hooks gone, the one mat-checkbox inside
-     * billing-integrated-ai-agreements-body, and null when there are two.
+     * The terms mat-checkbox host on the "Purchase summary" page. Its two
+     * hooks (Google's own test hook class, and mp-agreements-tos, the label
+     * component, with its closest mat-checkbox) must resolve to exactly ONE
+     * mat-checkbox on the whole page, that box must not sit inside a
+     * message banner or a dialog, and it must hold exactly one
+     * checkbox-like element (its own native input; dom.js
+     * ownCheckboxInput); otherwise null, and the job ends without
+     * ticking anything. There is no positional fallback: another consent
+     * box (the Fable 5.1 addendum's reads "... to these terms ...", and
+     * could reuse the label component) is never taken for it.
      */
     termsCheckbox: function () {
-      const hooked = D.q("mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox");
-      if (hooked) return hooked;
-      const tos = D.q("mp-agreements-tos");
-      const labelled = tos && tos.closest ? tos.closest("mat-checkbox") : null;
-      if (labelled) return labelled;
-      const body = D.q("billing-integrated-ai-agreements-body");
-      const boxes = body ? D.qa("mat-checkbox", body) : [];
-      return boxes.length === 1 ? boxes[0] : null;
+      const box = hookedTermsHost();
+      // The host must hold exactly one checkable control (its own native
+      // input); anything else injected into it makes it ambiguous.
+      return box && D.ownCheckboxInput(box) ? box : null;
     },
     /**
      * The "Agree" button, located by data-prober (fallback: its aria-label).
@@ -476,6 +479,244 @@
       return out;
     }
   };
+
+  /* ------------------------------------------------------------ blockers */
+
+  /*
+   * What the extension cannot get past by itself, on any page of the flow,
+   * found by shape and never clicked:
+   *   - consent(): an extra consent control, found by structure (see
+   *     S.blockers.consent below): a consent checkbox in a dialog, a
+   *     checkbox or an accepting button in a banner, or any other visible
+   *     checkbox on a flow page. The shape of the
+   *     Fable 5.1 model page (div.addendum-banner-container > cfc-message
+   *     type="warning", the "Advanced AI Safety Addendum" text, a
+   *     mat-checkbox and an "Accept Terms" button; docs/dom-map.md). The
+   *     Agreements page's own terms box is never one.
+   *   - permission(): denial wording inside an error, alert, snackbar,
+   *     form error or dialog element (never in ordinary page text: the side
+   *     navigation's "IAM & Admin", say); the bare word "permission", "requires
+   *     the ... role" and "not allowed to" count only in an error banner or
+   *     error page, and "IAM" or "403" alone never count.
+   * Each returns { where, title, excerpt } or null; the excerpt is the
+   * element's text, cut to BLOCKER_EXCERPT_CHARS around the match.
+   */
+  const BLOCKER_EXCERPT_CHARS = 160;
+  // A checkbox: Angular Material's host, a native input, or any element
+  // that declares the checkbox role (not role="switch": a slide toggle).
+  const CHECKBOX = 'mat-checkbox, input[type="checkbox"], [role~="checkbox" i]';
+  const ERROR_SCOPE = [
+    DIALOG_SELECTOR, '[role="alert"]', '[role="alertdialog"]',
+    "mat-snack-bar-container", ".mat-mdc-snack-bar-container", "simple-snack-bar", "mat-error",
+    'cfc-message[type="error"]', 'cfc-message[type="warning"]', ".cfc-message-error", ".cfc-message-warning",
+    '[class*="error-page" i]', '[class*="error-state" i]', '[class*="permission-denied" i]', '[class*="access-denied" i]'
+  ].join(", ");
+  // Error banners and error pages: the only places where the weak wording
+  // below (the bare word "permission", "requires the ... role", "not
+  // allowed to") counts. Dialogs, snackbars, alerts, form errors and
+  // warning banners count denial wording only ("Manage permissions", a
+  // "requires the Vertex AI User role" tip or "not allowed to" validation
+  // text never fail a job there).
+  const ERROR_BANNER = 'cfc-message[type="error"], .cfc-message-error, [class*="error-page" i], [class*="error-state" i], [class*="permission-denied" i], [class*="access-denied" i]';
+  const CONSENT_RE = /\b(addendum|consent|terms of service|accept (the )?terms|i agree|agree to)\b/i;
+  // An accepting control ("Accept Terms", "I agree", "Accept").
+  const ACCEPT_BUTTON_RE = /^(i (accept|agree)|accept|agree)\b/i;
+  // Denial wording: a match on its own in every scope. "IAM" and "403" are
+  // never a match on their own.
+  const DENIAL_RES = [
+    /\bdenied\b/i,
+    /permission_denied/i, // the API status; "_" defeats \b
+    /\b403:?\s+forbidden\b|\bforbidden:/i, // "403 Forbidden", "Error 403: Forbidden", "Forbidden: ..." (not "forbidden content")
+    /\b(do not|don't|does not|doesn't) have (the )?(sufficient |required |necessary )?(access|permissions?)\b/i,
+    /\b(lack|lacks|insufficient) (the )?(required |necessary )?permissions?\b/i,
+    /\bmissing (at least one of the following )?(required )?permissions?\b/i,
+    /\brequired '[^']+' permission\b/i,
+    /\bpermission error\b/i,
+    /\bpermissions? (is |are )?(required|needed|missing)\b/i,
+    // "You need access", never a condition such as "If you need access to ...".
+    /(?<!\b(?:if|when|where|whether|unless|once)\s)\byou need (additional )?(access|permissions?)\b/i,
+    /\bcontact your ([a-z]+ )?administrator\b/i,
+    /\bnot authori[sz]ed to\b/i
+  ];
+  const WEAK_RES = [
+    /\bpermissions?\b/i,
+    /\brequires? (the )?[^.]{1,80}? role\b/i,
+    /\bnot allowed to\b/i
+  ];
+
+  function excerpt(text, at) {
+    const t = D.norm(text);
+    if (t.length <= BLOCKER_EXCERPT_CHARS) return t;
+    const from = Math.max(0, Math.min((at || 0) - 40, t.length - BLOCKER_EXCERPT_CHARS));
+    return (from > 0 ? "…" : "") + t.slice(from, from + BLOCKER_EXCERPT_CHARS).trim() + (from + BLOCKER_EXCERPT_CHARS < t.length ? "…" : "");
+  }
+
+  /**
+   * An element's text with its text nodes joined by spaces, so adjacent
+   * elements never run together into one word ("addendumContinue") and the
+   * word-bounded wording checks below see every word. With `skipIcons`,
+   * the text inside icon elements (mat-icon, cm-icon, .material-icons: a
+   * ligature such as "check") is left out.
+   */
+  function spacedText(el, skipIcons) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const parts = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (skipIcons && n.parentElement && n.parentElement.closest("mat-icon, cm-icon, .material-icons, .material-icons-extended")) continue;
+      parts.push(n.nodeValue);
+    }
+    return D.norm(parts.join(" "));
+  }
+
+  /** True for the dialogs the flow itself handles: "Enable APIs", the purchase confirmation and the refusal. */
+  function flowDialog(dialog) {
+    if (D.q("apis-enabler, mp-consent-complete-dialog, behavior-failure-dialog", dialog)) return true;
+    if (dialog.getAttribute("aria-label") === "Error dialog") return true;
+    const title = dialogTitle(dialog);
+    return title === "Enable APIs" || title.startsWith("Successfully purchased");
+  }
+
+  // The banners in which an accepting button alone is a consent control
+  // (not a role="status" cookie notice with "Accept all").
+  const ACCEPT_BANNER = "cfc-message, .addendum-banner-container";
+  // The questionnaire's own form: its controls are the flow's, never extra.
+  const QUESTIONNAIRE_FORM = "raf-form, form[raf-name]";
+
+  /** The visible checkbox hosts inside `root` (a mat-checkbox, or a bare input), each once. */
+  function visibleCheckboxes(root) {
+    const out = [];
+    for (const el of D.qa(CHECKBOX, root)) {
+      // An input or role="checkbox" element folds onto its mat-checkbox only
+      // when it is that host's own single native control; any other one is
+      // a checkbox of its own (and is judged as one).
+      const mc = el.tagName === "MAT-CHECKBOX" ? null : el.closest("mat-checkbox");
+      const host = el.tagName === "MAT-CHECKBOX" ? el : (mc && D.ownCheckboxInput(mc) === el ? mc : el);
+      if (!out.includes(host) && D.isVisible(host)) out.push(host);
+    }
+    return out;
+  }
+
+  /** A checkbox's label: its text, its aria-label and the text its aria-labelledby names. */
+  function checkboxLabel(host) {
+    const parts = [spacedText(host)];
+    for (const el of [host].concat(D.qa("input", host))) {
+      const aria = el.getAttribute("aria-label");
+      if (aria) parts.push(aria);
+      for (const id of String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)) {
+        const ref = document.getElementById(id);
+        if (ref) parts.push(spacedText(ref));
+      }
+    }
+    return D.norm(parts.join(" "));
+  }
+
+  /** True when `host` is the terms box itself (a box nested in its label is not). */
+  function isTerms(host, terms) {
+    return !!terms && host === terms;
+  }
+
+  /**
+   * True for an element inside an overlay pane that holds the flow's own
+   * select panel (the questionnaire's dropdown options), on the
+   * questionnaire page only. Every other overlay is judged like the page.
+   */
+  function inSelectPanel(el, page) {
+    if (page !== PAGE.QUESTIONNAIRE) return false;
+    const pane = el.closest(".cdk-overlay-pane");
+    return !!pane && !!D.q('[role="listbox"], mat-option, .cfc-select-option-primary', pane);
+  }
+
+  S.blockers = {
+    /*
+     * Structural rules, in order:
+     *   - a dialog (not one the flow handles) with a visible checkbox whose
+     *     label (text, aria-label or aria-labelledby) carries consent wording;
+     *   - a banner outside any dialog with any visible checkbox other than
+     *     the terms box, or a visible accepting button in a cfc-message /
+     *     addendum container at or under it;
+     *   - on the model, questionnaire and Agreements pages: any other
+     *     visible checkbox outside dialogs, whatever its label; overlay
+     *     panes are judged like the page, except the questionnaire's own
+     *     form and its select panel. Every recorded flow page has none
+     *     besides the terms box.
+     */
+    consent: function () {
+      const terms = S.agreements.termsCheckbox();
+      for (const dialog of D.qa(DIALOG_SELECTOR)) {
+        if (!D.isVisible(dialog) || flowDialog(dialog)) continue;
+        const control = visibleCheckboxes(dialog).find((h) => !isTerms(h, terms) && CONSENT_RE.test(checkboxLabel(h)));
+        if (!control) continue;
+        // The excerpt is the text after the title (named on its own).
+        const full = spacedText(dialog);
+        const title = dialogTitle(dialog);
+        const body = title && full.startsWith(title) ? full.slice(title.length).trim() : full;
+        const m = CONSENT_RE.exec(body);
+        return { where: elementName(dialog), title, excerpt: excerpt(m ? body : `${body} ${checkboxLabel(control)}`.trim(), m ? m.index : 0) };
+      }
+      const agree = agreeButtonNode();
+      const page = S.detectPage();
+      // The terms box itself holding more than its own native input: named
+      // on its own (it is never ticked; termsCheckbox() is null).
+      const hooked = hookedTermsHost();
+      if (hooked && !D.ownCheckboxInput(hooked)) {
+        return { where: "terms checkbox", title: "", excerpt: `the terms checkbox holds ${D.checkboxControls(hooked).length} checkbox controls` };
+      }
+      for (const banner of D.qa(BANNER)) {
+        // An overlay pane that is not a modal dialog (a banner moved into
+        // .cdk-overlay-container) is judged like the page; only the
+        // questionnaire's own select panel is skipped.
+        if (inDialog(banner) || inSelectPanel(banner, page) || !D.isVisible(banner)) continue;
+        // The outermost banner names it once (cfc-message inside the container).
+        const outer = banner.parentElement && banner.parentElement.closest(BANNER);
+        if (outer && !inDialog(outer) && D.isVisible(outer)) continue;
+        const box = visibleCheckboxes(banner).some((h) => !isTerms(h, terms));
+        // An accepting button counts in every cfc-message or addendum
+        // container at or under this banner (one wrapped in a status or
+        // alert live region included).
+        const acceptRoots = [banner].filter((b) => b.matches(ACCEPT_BANNER)).concat(D.qa(ACCEPT_BANNER, banner));
+        const accept = acceptRoots.some((root) => D.qa('button, [role="button"]', root).some((b) => b !== agree && D.isVisible(b) && ACCEPT_BUTTON_RE.test(spacedText(b, true))));
+        if (!box && !accept) continue;
+        const text = spacedText(banner);
+        const m = CONSENT_RE.exec(text);
+        const cls = (banner.getAttribute("class") || "").trim().split(/\s+/)[0];
+        return { where: banner.tagName.toLowerCase() + (cls ? `.${cls}` : ""), title: "", excerpt: excerpt(text, m ? m.index : 0) };
+      }
+      if (page === PAGE.MODEL || page === PAGE.QUESTIONNAIRE || page === PAGE.AGREEMENTS) {
+        for (const host of visibleCheckboxes(document)) {
+          if (isTerms(host, terms) || inDialog(host) || inSelectPanel(host, page)) continue;
+          if (page === PAGE.QUESTIONNAIRE && host.closest(QUESTIONNAIRE_FORM)) continue;
+          return { where: `checkbox on the ${page} page`, title: "", excerpt: excerpt(checkboxLabel(host) || "checkbox without a label", 0) };
+        }
+      }
+      return null;
+    },
+    permission: function () {
+      for (const el of D.qa(ERROR_SCOPE)) {
+        if (!D.isVisible(el)) continue;
+        if (el.matches(DIALOG_SELECTOR) && flowDialog(el)) continue;
+        if (el.closest(DIALOG_SELECTOR) && flowDialog(el.closest(DIALOG_SELECTOR))) continue;
+        const text = spacedText(el);
+        const res = el.matches(ERROR_BANNER) ? DENIAL_RES.concat(WEAK_RES) : DENIAL_RES;
+        for (const re of res) {
+          const m = re.exec(text);
+          if (m) return { where: elementName(el), title: el.matches(DIALOG_SELECTOR) ? dialogTitle(el) : "", excerpt: excerpt(text, m.index) };
+        }
+      }
+      return null;
+    }
+  };
+
+  /** The one mat-checkbox the terms hooks lead to, outside any banner or dialog, whatever it holds; or null. */
+  function hookedTermsHost() {
+    const boxes = new Set(D.qa("mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox"));
+    for (const tos of D.qa("mp-agreements-tos")) {
+      const box = tos.closest ? tos.closest("mat-checkbox") : null;
+      if (box) boxes.add(box);
+    }
+    if (boxes.size !== 1) return null;
+    const box = boxes.values().next().value;
+    return box.closest(`${BANNER}, ${DIALOG_SELECTOR}, .cdk-overlay-container`) ? null : box;
+  }
 
   function agreeButtonNode() {
     return D.q('button[data-prober="cloud-marketplace-request-product"]') ||

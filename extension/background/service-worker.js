@@ -162,24 +162,37 @@ async function modelNames() {
  * records (common/runlog.js, newest first) and the previous run's queue
  * still in chrome.storage (KEYS.QUEUE with KEYS.RUN for its start time,
  * which a deleted, purged or pruned record, or a record that could not be
- * written, cannot lose). If either recorded the pair as done (or unverified
- * with Agree on record), the new job is created skipped so the extension
- * does not queue a purchase for a pair it may have already bought. A dry-run
- * or an already-enabled skip is not "done", so a pair that was only dry-run
- * is never skipped here. The user overrides the whole guard with the popup's
- * "Include pairs already done in earlier runs" box (includeDone). This is
- * independent of, and additional to, the model page's own enabled-state
- * check, which still runs for every job that is not skipped here.
+ * written, cannot lose). A pair is left out of the new run (its job is
+ * created skipped and never navigated) when an earlier run, dry or full,
+ * recorded it as
+ *   - done, in ANY earlier run: done, or any result with a possible
+ *     purchase on record (agreeClicked, purchaseObserved, or the 0.7.0
+ *     wording of an observed purchase) whatever its status, except the
+ *     console's refusal ("Agree refused by the console"), so the extension
+ *     never queues a purchase for a pair it may have already bought; or
+ *   - skipped, as the pair's NEWEST outcome: the model page showed the
+ *     model already enabled (or the guard itself left the pair out), so it
+ *     is not attempted again. A newer failed, stopped or dry-run outcome
+ *     wins over an older skip; an entry the run never reached (pending) is
+ *     not an outcome.
+ * A pair recorded both ways counts as done. A pair whose newest outcome is
+ * dry-run, failed or stopped (with no purchase on record), or one never
+ * run, is attempted again. The user overrides the whole
+ * guard with the popup's "Include pairs already done or skipped in earlier
+ * runs" box (includeDone). This is independent of, and additional to, the
+ * model page's own enabled-state check, which still runs for every job that
+ * is not left out here.
  *
  * `live` is the mode of the run being started. The run records are read
  * even with includeDone (so an unopenable database is found before any
  * purchase is queued): in a full run that failure refuses the Start
  * ({ refused }); in a dry run the previous queue is the only earlier-run
- * memory and a warning says so. Returns { skipped, notes }: the notes
- * ([level, message]) are logged by the caller once the run record exists,
- * so they reach the Runs page as well as the popup log.
+ * memory and a warning says so. priorPairsUnsafe returns { refused } or
+ * { notes, kindOf(projectId, modelSlug) -> null | { kind, startedAt, status } };
+ * the notes ([level, message]) are logged by the caller once the run record
+ * exists, so they reach the Runs page as well as the popup log.
  */
-async function applyCrossRunGuardUnsafe(queue, { includeDone, live, prevQueue, prevRun }) {
+async function priorPairsUnsafe({ live, prevQueue, prevRun }) {
   const notes = [];
   let prior = [];
   try {
@@ -191,25 +204,39 @@ async function applyCrossRunGuardUnsafe(queue, { includeDone, live, prevQueue, p
     }
     notes.push(["warn", `cross-run guard: could not read the run records (${why}); the previous run's results in storage are the only earlier-run memory this run, and the model page's enabled-state check still runs`]);
   }
-  if (includeDone === true) {
-    notes.push(["info", 'cross-run guard off for this run ("Include pairs already done in earlier runs" ticked): pairs done in earlier runs are processed again']);
-    return { skipped: 0, notes };
-  }
   // Project IDs and model slugs are compared case-insensitively, the same way
   // isValidModelSlug accepts a slug, so a pair done under one spelling is
   // skipped under another (e.g. Claude-Haiku-4-5 vs claude-haiku-4-5).
   const guardKey = (projectId, modelSlug) => `${String(projectId).toLowerCase()}\u0000${String(modelSlug).toLowerCase()}`;
-  const doneBy = new Map(); // "project\0model" (lower-cased) -> { startedAt, status }
+  const doneBy = new Map(); // "project\0model" (lower-cased) -> { startedAt, status }: done in ANY earlier run
+  const newestBy = new Map(); // the same -> { startedAt, status }: the pair's NEWEST outcome (decides the skipped kind)
   let malformed = 0;
+  // A run's entry for a pair it never reached (pending, or running when the
+  // run ended) is not an outcome: an older outcome of the pair still counts.
+  const NO_OUTCOME = [STATUS.PENDING, STATUS.RUNNING];
   const takeResults = (results, startedAt) => {
     for (const res of (Array.isArray(results) ? results : [])) {
       // A corrupted entry (a null, a non-object, a missing field) must not
       // throw at Start: skip it and count it for one warning line.
       if (!res || typeof res !== "object") { malformed += 1; continue; }
-      const done = res.status === STATUS.DONE || (res.status === STATUS.UNVERIFIED && res.agreeClicked === true);
-      if (!done) continue;
       const key = guardKey(res.projectId, res.modelSlug);
-      if (!doneBy.has(key)) doneBy.set(key, { startedAt, status: res.status });
+      // A job this guard left out carries the kind that left it out
+      // (leftOut); a 0.7.0 guard skip has no leftOut, only its message
+      // "done in <run> (<status>)".
+      const message = typeof res.message === "string" ? res.message : "";
+      const legacyDone = res.status === STATUS.SKIPPED && !res.leftOut && /^done in /.test(message);
+      const leftOutDone = res.status === STATUS.SKIPPED && (res.leftOut === "done" || legacyDone);
+      // Never re-buy: done, or a possible purchase on record whatever the
+      // status (agreeClicked, purchaseObserved, or the 0.7.0 wording of an
+      // observed purchase), except the console's refusal.
+      const refused = message.startsWith(REFUSED_PREFIX);
+      const legacyPurchase = message.startsWith(LEGACY_PURCHASE_MESSAGE);
+      const done = res.status === STATUS.DONE || (!refused && (purchaseOnRecord(res) || legacyPurchase)) || leftOutDone;
+      if (done && !doneBy.has(key)) {
+        const legacyStatus = (/\((done|unverified)\)$/.exec(message) || [])[1];
+        doneBy.set(key, { startedAt, status: leftOutDone ? (res.leftOutStatus || legacyStatus || STATUS.DONE) : res.status });
+      }
+      if (!newestBy.has(key) && !NO_OUTCOME.includes(res.status)) newestBy.set(key, { startedAt, status: res.status });
     }
   };
   // The previous run's queue first (the most recent results; the same run
@@ -222,21 +249,116 @@ async function applyCrossRunGuardUnsafe(queue, { includeDone, live, prevQueue, p
   if (malformed > 0) {
     notes.push(["warn", `cross-run guard: skipped ${malformed} malformed run record entr${malformed === 1 ? "y" : "ies"} while checking for already-done pairs`]);
   }
-  let skipped = 0;
+  const kindOf = (projectId, modelSlug) => {
+    const key = guardKey(projectId, modelSlug);
+    // Done in any earlier run: left out (the repeat-purchase guard).
+    if (doneBy.has(key)) return Object.assign({ kind: "done" }, doneBy.get(key));
+    // Skipped: only when the pair's newest outcome is a skip; a newer
+    // failed, stopped or dry-run outcome means it is attempted again.
+    const newest = newestBy.get(key);
+    if (newest && newest.status === STATUS.SKIPPED) return Object.assign({ kind: "skipped" }, newest);
+    return null;
+  };
+  return { notes, kindOf };
+}
+
+/** { done, skipped }: how many of `pairs` ([{ projectId, modelSlug }]) an earlier run recorded each way. */
+function countKinds(pairs, kindOf) {
+  const c = { done: 0, skipped: 0 };
+  for (const p of pairs) {
+    const hit = kindOf(p.projectId, p.modelSlug);
+    if (hit) c[hit.kind] += 1;
+  }
+  return c;
+}
+
+/**
+ * Leave the pairs done or skipped in an earlier run out of `queue` (see
+ * priorPairsUnsafe). Returns { refused } or { leftOut, done, skipped, notes }
+ * (done and skipped: how many of each kind were left out, or with
+ * includeDone how many are processed again).
+ */
+async function applyCrossRunGuardUnsafe(queue, { includeDone, live, prevQueue, prevRun }) {
+  const prior = await priorPairsUnsafe({ live, prevQueue, prevRun });
+  if (prior.refused) return prior;
+  const notes = prior.notes;
+  if (includeDone === true) {
+    const c = countKinds(queue, prior.kindOf);
+    notes.push(["info", `cross-run guard off for this run ("Include pairs already done or skipped in earlier runs" ticked): ${c.done} pair(s) done and ${c.skipped} pair(s) skipped in earlier runs are processed again`]);
+    return { leftOut: 0, done: c.done, skipped: c.skipped, notes };
+  }
+  const counts = { done: 0, skipped: 0 };
   for (const job of queue) {
-    const hit = doneBy.get(guardKey(job.projectId, job.modelSlug));
+    const hit = prior.kindOf(job.projectId, job.modelSlug);
     if (!hit) continue;
     const now = Date.now();
+    const where = typeof hit.startedAt === "number" ? `run ${RL.stamp(hit.startedAt)}` : "the previous run";
     Object.assign(job, {
       status: STATUS.SKIPPED,
-      message: `done in ${typeof hit.startedAt === "number" ? `run ${RL.stamp(hit.startedAt)}` : "the previous run"} (${hit.status})`,
+      message: hit.kind === "done" ? `done in ${where} (${hit.status})` : `skipped in ${where} (already enabled)`,
+      leftOut: hit.kind,
+      leftOutStatus: hit.status,
       phase: PHASE.FINISHED,
       startedAt: now,
       finishedAt: now
     });
-    skipped += 1;
+    counts[hit.kind] += 1;
   }
-  return { skipped, notes };
+  return { leftOut: counts.done + counts.skipped, done: counts.done, skipped: counts.skipped, notes };
+}
+
+/*
+ * A possible purchase on record: the extension's Agree click (agreeClicked)
+ * or a purchase the console reported while nobody's Agree was seen
+ * (purchaseObserved). Such a job never ends failed or stopped (it ends
+ * unverified, check by hand), and the cross-run guard counts the pair as
+ * done whatever the status, except the console's own refusal ("Agree
+ * refused by the console": nothing was bought).
+ */
+const REFUSED_PREFIX = "Agree refused by the console";
+const LEGACY_PURCHASE_MESSAGE = "unverified: the console reported a purchase while waiting for confirmation";
+function purchaseOnRecord(job) {
+  return !!job && (job.agreeClicked === true || job.purchaseObserved === true);
+}
+/** "Agree was clicked" or "the console reported a purchase", for the messages of such a job. */
+function onRecordWords(job) {
+  return job && job.agreeClicked === true ? "Agree was clicked" : "the console reported a purchase";
+}
+
+/**
+ * The distinct non-empty trimmed strings of a list (the project IDs or model
+ * slugs a Start or a preview names), compared case-insensitively like the
+ * cross-run guard compares them; the first spelling is kept.
+ */
+function uniqueTrimmed(list) {
+  const seen = new Set();
+  const out = [];
+  for (const x of (list || []).map((v) => String(v).trim()).filter(Boolean)) {
+    const key = x.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(x);
+  }
+  return out;
+}
+
+/**
+ * For the popup's full-run confirm, before START: how many of the pairs it
+ * would send an earlier run recorded as done and as skipped. Read-only; the
+ * guard itself runs again at Start. { ok, total, done, skipped } or
+ * { ok: false, error } (the run records cannot be read).
+ */
+async function guardPreviewUnsafe({ projects, models }, fromTab) {
+  if (fromTab !== null) return { ok: false, error: "only the extension's own pages can ask for the guard preview" };
+  const projectIds = uniqueTrimmed(projects);
+  const modelSlugs = uniqueTrimmed(models).map((m) => m.toLowerCase()); // the model page compares the URL slug case-sensitively
+  const o = await get([KEYS.QUEUE, KEYS.RUN]);
+  const prior = await priorPairsUnsafe({ live: true, prevQueue: o[KEYS.QUEUE], prevRun: o[KEYS.RUN] });
+  if (prior.refused) return { ok: false, error: prior.refused };
+  const pairs = [];
+  for (const projectId of projectIds) for (const modelSlug of modelSlugs) pairs.push({ projectId, modelSlug });
+  const c = countKinds(pairs, prior.kindOf);
+  return { ok: true, total: pairs.length, done: c.done, skipped: c.skipped };
 }
 
 /**
@@ -257,8 +379,8 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
     return { ok: false, error: "live mode changed while starting; look at the popup's mode banner and start again" };
   }
 
-  const projectIds = [...new Set((projects || []).map((p) => String(p).trim()).filter(Boolean))];
-  const modelSlugs = [...new Set((models || []).map((m) => String(m).trim()).filter(Boolean))];
+  const projectIds = uniqueTrimmed(projects);
+  const modelSlugs = uniqueTrimmed(models).map((m) => m.toLowerCase()); // the model page compares the URL slug case-sensitively
   if (!projectIds.length) return { ok: false, error: "no project IDs given" };
   if (!modelSlugs.length) return { ok: false, error: "no models selected" };
   const badProject = projectIds.find((p) => !K.isValidProjectId(p));
@@ -277,7 +399,7 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
       });
     }
   }
-  // Cross-run double-purchase guard: mark pairs already bought in an earlier
+  // Cross-run guard: mark pairs done or skipped (already enabled) in an earlier
   // run as skipped before the queue is stored (so the record reflects it and
   // the job is never navigated). Runs before anything is written, so a
   // refusal (full run, unopenable database) leaves storage as it was.
@@ -289,6 +411,7 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
     [KEYS.QUEUE]: queue,
     [KEYS.RUNNING]: true,
     [KEYS.STOP_REQUESTED]: false,
+    [KEYS.PAUSED]: false,
     [KEYS.CURRENT]: null,
     [KEYS.TAB_ID]: null,
     [KEYS.RUN]: run,
@@ -307,8 +430,8 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
   // The guard's notes (guard off, records unreadable, malformed entries) are
   // logged now, with the record in place, so the Runs page carries them too.
   for (const [level, note] of guard.notes) await appendLogUnsafe(level, note);
-  if (guard.skipped > 0) {
-    await appendLogUnsafe("info", `cross-run guard: ${guard.skipped} job(s) skipped as already done in an earlier run; tick "Include pairs already done in earlier runs" in the popup to re-run them`);
+  if (guard.leftOut > 0) {
+    await appendLogUnsafe("info", `cross-run guard: ${guard.leftOut} job(s) left out: ${guard.done} done and ${guard.skipped} skipped (already enabled) in an earlier run; tick "Include pairs already done or skipped in earlier runs" in the popup to re-run them`);
   }
   await advanceUnsafe();
   return { ok: true, jobs: queue.length, runId: run.runId };
@@ -325,7 +448,7 @@ async function finishRunUnsafe(reason) {
   const o = await get([KEYS.RUN, KEYS.TAB_ID, KEYS.QUEUE]);
   const run = Object.assign({}, o[KEYS.RUN] || {}, { finishedAt: Date.now(), reason });
   await chrome.alarms.clear(K.WATCHDOG_ALARM);
-  const updates = { [KEYS.RUNNING]: false, [KEYS.CURRENT]: null, [KEYS.STOP_REQUESTED]: false, [KEYS.TAB_ID]: null, [KEYS.RUN]: run };
+  const updates = { [KEYS.RUNNING]: false, [KEYS.CURRENT]: null, [KEYS.STOP_REQUESTED]: false, [KEYS.PAUSED]: false, [KEYS.TAB_ID]: null, [KEYS.RUN]: run };
   if (typeof run.runId === "string") {
     updates[KEYS.SUMMARY_ACK] = { runId: run.runId, tabId: typeof o[KEYS.TAB_ID] === "number" ? o[KEYS.TAB_ID] : null, reason, ack: false };
   }
@@ -359,15 +482,25 @@ async function armWatchdog() {
   await chrome.alarms.create(K.WATCHDOG_ALARM, { delayInMinutes: await watchdogMinutesUnsafe() });
 }
 
-/** Start the next pending job or finish the run. No-op while a job is running. */
+/**
+ * Start the next pending job or finish the run. No-op while a job is
+ * running. While the run is paused (KEYS.PAUSED, the popup's Pause) no new
+ * job starts: this job boundary is where a pause takes effect, and Resume
+ * calls this again. A pause with no pending job left does not hold the
+ * run open: it finishes as usual.
+ */
 async function advanceUnsafe() {
-  const o = await get([KEYS.QUEUE, KEYS.RUNNING, KEYS.STOP_REQUESTED, KEYS.CURRENT]);
+  const o = await get([KEYS.QUEUE, KEYS.RUNNING, KEYS.STOP_REQUESTED, KEYS.CURRENT, KEYS.PAUSED]);
   if (o[KEYS.RUNNING] !== true) return;
   if (o[KEYS.STOP_REQUESTED] === true) return finishRunUnsafe("stopped by user");
   if (o[KEYS.CURRENT] && o[KEYS.CURRENT].phase !== PHASE.FINISHED) return; // a job is in progress
   const queue = o[KEYS.QUEUE] || [];
   const idx = queue.findIndex((j) => j.status === STATUS.PENDING);
   if (idx < 0) return finishRunUnsafe("all jobs processed");
+  if (o[KEYS.PAUSED] === true) {
+    await appendLogUnsafe("info", `run paused before job ${idx} (${queue[idx].projectId} / ${queue[idx].modelSlug}); Resume in the popup starts it, Stop ends the run`);
+    return;
+  }
 
   queue[idx] = Object.assign({}, queue[idx], { status: STATUS.RUNNING, phase: PHASE.NAVIGATE, startedAt: Date.now() });
   await set({ [KEYS.QUEUE]: queue, [KEYS.CURRENT]: { jobIndex: idx, phase: PHASE.NAVIGATE, updatedAt: Date.now() } });
@@ -399,6 +532,14 @@ async function finishJobUnsafe(jobIndex, status, message, stopAfter) {
   }
   if (current.phase === PHASE.FINISHED) return;
   const queue = o[KEYS.QUEUE] || [];
+  // A failed or stopped result for a job with a possible purchase on record
+  // is unverified (check by hand), never failed; the console's own refusal
+  // stays failed (nothing was bought).
+  const text = String(message || "");
+  if ((status === STATUS.FAILED || status === STATUS.STOPPED) && purchaseOnRecord(queue[jobIndex]) && !text.startsWith(REFUSED_PREFIX)) {
+    message = `${onRecordWords(queue[jobIndex])} but the job then ended ${status}: ${text}; check manually`;
+    status = STATUS.UNVERIFIED;
+  }
   queue[jobIndex] = Object.assign({}, queue[jobIndex], { status, message: String(message || ""), finishedAt: Date.now(), phase: PHASE.FINISHED });
   const updates = { [KEYS.QUEUE]: queue, [KEYS.CURRENT]: Object.assign({}, current, { phase: PHASE.FINISHED, updatedAt: Date.now() }) };
   if (stopAfter === true) updates[KEYS.STOP_REQUESTED] = true;
@@ -485,17 +626,46 @@ async function stopRunUnsafe(reason) {
   const queue = o[KEYS.QUEUE] || [];
   if (current && queue[current.jobIndex] && queue[current.jobIndex].status === STATUS.RUNNING) {
     const job = queue[current.jobIndex];
-    const clicked = job.agreeClicked === true;
+    const clicked = purchaseOnRecord(job);
     const clause = /^stopped/.test(reason) ? `the run was ${reason}` : `the ${reason}`;
     queue[current.jobIndex] = Object.assign({}, job, {
       status: clicked ? STATUS.UNVERIFIED : STATUS.STOPPED,
-      message: clicked ? `Agree was clicked but ${clause}; no confirmation observed; check manually` : reason,
+      message: clicked ? `${onRecordWords(job)} but ${clause}; no confirmation observed; check manually` : reason,
       finishedAt: Date.now(),
       phase: PHASE.FINISHED
     });
     await set({ [KEYS.QUEUE]: queue });
   }
   await finishRunUnsafe(reason);
+  return { ok: true };
+}
+
+/**
+ * Pause and Resume, from the extension's own pages only. Pause takes effect
+ * at the next job boundary: the job in progress runs to its result as
+ * usual (advanceUnsafe then starts no new one). Neither touches the run's
+ * mode snapshot, the settings or the queue, so a resumed run is the same
+ * run, with the same guard and the same mode; Stop works while paused.
+ */
+async function pauseRunUnsafe(fromTab) {
+  if (fromTab !== null) return { ok: false, error: "only the extension's own pages can pause a run" };
+  const o = await get([KEYS.RUNNING, KEYS.PAUSED, KEYS.CURRENT]);
+  if (o[KEYS.RUNNING] !== true) return { ok: false, error: "no run in progress" };
+  if (o[KEYS.PAUSED] === true) return { ok: true, note: "already paused" };
+  await set({ [KEYS.PAUSED]: true });
+  const busy = o[KEYS.CURRENT] && o[KEYS.CURRENT].phase !== PHASE.FINISHED;
+  await appendLogUnsafe("info", `pause requested: ${busy ? `job ${o[KEYS.CURRENT].jobIndex} finishes first, then ` : ""}no new job starts until Resume`);
+  return { ok: true };
+}
+
+async function resumeRunUnsafe(fromTab) {
+  if (fromTab !== null) return { ok: false, error: "only the extension's own pages can resume a run" };
+  const o = await get([KEYS.RUNNING, KEYS.PAUSED]);
+  if (o[KEYS.RUNNING] !== true) return { ok: false, error: "no run in progress" };
+  if (o[KEYS.PAUSED] !== true) return { ok: true, note: "not paused" };
+  await set({ [KEYS.PAUSED]: false });
+  await appendLogUnsafe("info", "resumed: the run continues with the next job");
+  await advanceUnsafe();
   return { ok: true };
 }
 
@@ -517,6 +687,11 @@ async function recoverUnsafe() {
   if (o[KEYS.RUNNING] !== true) return;
   const current = o[KEYS.CURRENT];
   if (!current || current.phase === PHASE.FINISHED) {
+    // A paused run stays paused across a worker restart: one info line, no advance.
+    if ((await get(KEYS.PAUSED))[KEYS.PAUSED] === true) {
+      await appendLogUnsafe("info", "worker restarted between jobs; the run is still paused (Resume in the popup continues it)");
+      return;
+    }
     await appendLogUnsafe("warn", "worker restarted between jobs; advancing");
     return advanceUnsafe();
   }
@@ -538,10 +713,10 @@ async function recoverUnsafe() {
   const queue = o[KEYS.QUEUE] || [];
   const job = queue[current.jobIndex];
   if (job && job.status === STATUS.RUNNING) {
-    const clicked = job.agreeClicked === true;
+    const clicked = purchaseOnRecord(job);
     queue[current.jobIndex] = Object.assign({}, job, {
       status: clicked ? STATUS.UNVERIFIED : STATUS.STOPPED,
-      message: clicked ? `Agree was clicked but the ${reason}; no confirmation observed; check manually` : reason,
+      message: clicked ? `${onRecordWords(job)} but the ${reason}; no confirmation observed; check manually` : reason,
       finishedAt: Date.now(),
       phase: PHASE.FINISHED
     });
@@ -583,6 +758,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return serialized(() => startRunUnsafe(msg));
       case MSG.STOP:
         return serialized(() => stopRunUnsafe("stopped by user"));
+      case MSG.PAUSE:
+        return serialized(() => pauseRunUnsafe(fromTab));
+      case MSG.RESUME:
+        return serialized(() => resumeRunUnsafe(fromTab));
+      case MSG.GUARD_PREVIEW:
+        return serialized(() => guardPreviewUnsafe(msg, fromTab));
       case MSG.WHOAMI: {
         // isWorkerTab: the tab of the run in progress. showsSummary: the tab
         // the finished run used, while its summary is unacknowledged.
@@ -710,8 +891,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     if (current.phase === PHASE.AWAITING_CONFIRMATION) return;
     const job = (o[KEYS.QUEUE] || [])[current.jobIndex] || {};
     const why = `no result within ${await watchdogMinutesUnsafe()} minutes in phase ${current.phase}`;
-    if (job.agreeClicked === true) {
-      await finishJobUnsafe(current.jobIndex, STATUS.UNVERIFIED, `Agree was clicked but ${why}; check manually`);
+    if (purchaseOnRecord(job)) {
+      await finishJobUnsafe(current.jobIndex, STATUS.UNVERIFIED, `${onRecordWords(job)} but ${why}; check manually`);
     } else {
       await finishJobUnsafe(current.jobIndex, STATUS.FAILED, `timeout: ${why}`);
     }

@@ -161,6 +161,13 @@
           const r = o.outcome();
           if (r) return r;
         }
+        // An extra consent control or a permission error ends the job at
+        // once (no Continue can get past it).
+        const blocked = blockerThrottled();
+        if (blocked) {
+          ctx.log(`${blocked.message}; the job ends here`);
+          return blocked;
+        }
         const open = S.dialogs.visible();
         if (open.length) {
           const api = S.dialogs.findApiEnableDialog();
@@ -210,6 +217,64 @@
     }
   };
 
+  /* -------------------------------------------------------- blockers */
+
+  /**
+   * The job's result when the page shows something the extension does not
+   * support (selectors.js, S.blockers): a permission error ("missing
+   * permission: <excerpt>") or an extra consent control, a dialog or a
+   * banner such as the Fable 5.1 "Advanced AI Safety Addendum" (its title
+   * or text excerpt). { status: failed, message } or null. Nothing inside
+   * it is ever clicked or ticked.
+   */
+  A.blockerResult = function () {
+    // Consent first: a consent banner that also mentions permissions (the
+    // addendum asks for the authority to bind the organisation) is
+    // reported as the consent control it is.
+    const c = S.blockers.consent();
+    if (c) {
+      const named = c.title ? `"${c.title}": ${c.excerpt}` : c.excerpt;
+      return { status: STATUS.FAILED, message: `extra consent required, not supported (${c.where}): ${named}; nothing in it was clicked; accept it by hand in the console, then start the job again` };
+    }
+    const p = S.blockers.permission();
+    if (p) return { status: STATUS.FAILED, message: `missing permission: ${p.excerpt || p.title || p.where}` };
+    return null;
+  };
+
+  // Every wait of the flow (D.waitFor) checks for a blocker and ends at once
+  // with a BlockedError, instead of running to its timeout. The check reads
+  // the whole document, so it runs at most once per BLOCKER_CHECK_MS (one
+  // poll at the default poll interval), not on every poll of a faster wait.
+  const BLOCKER_CHECK_MS = 250;
+  let lastBlockerCheck = 0;
+  function blockerThrottled() {
+    if (Date.now() - lastBlockerCheck < BLOCKER_CHECK_MS) return null;
+    lastBlockerCheck = Date.now();
+    return A.blockerResult();
+  }
+  D.interrupt = function () {
+    const r = blockerThrottled();
+    if (r) throw new D.BlockedError(r.message);
+  };
+
+  /** The blocker's message, or null: what the Agree guard's `refuse` option is given. */
+  function blockerMessage() {
+    const r = A.blockerResult();
+    return r ? r.message : null;
+  }
+
+  /**
+   * The unthrottled check, run right before every action (the "Enable
+   * APIs" dialog's Enable, Enable, each dropdown and the AUP radio, Next,
+   * the terms tick, the call into the Agree guard): a blocker that a
+   * throttled wait missed, or whose error a wait swallowed, still stops
+   * the action. Throws BlockedError (fatal: the job fails, no retry).
+   */
+  A.assertNoBlocker = function () {
+    const r = A.blockerResult();
+    if (r) throw new D.BlockedError(r.message);
+  };
+
   async function waitForPageOtherThan(page) {
     await D.waitFor(() => S.detectPage() !== page, { timeout: T.NAV, what: `page change away from ${page}` });
   }
@@ -246,6 +311,10 @@
       throw new Error('dialogs.findApiEnableDialog() must return an enableButton whose text is exactly "Enable"');
     }
     await ctx.assertMayAct();
+    // Never enable an API while the page shows a permission error or an
+    // extra consent control (this covers every caller: the page loop, the
+    // model handler and the step-by-step panel's wait).
+    A.assertNoBlocker();
     apiDialogSeen.add(key);
     D.click(btn);
     ctx.log('"Enable APIs" dialog: clicked Enable, waiting for it to close');
@@ -309,8 +378,9 @@
           const btn = S.model.enableButton();
           if (!btn) return null;
           if (D.isDisabled(btn)) {
-            if (S.model.uncheckedCheckbox()) {
-              throw new D.FatalError("Enable is disabled on the model page next to an unchecked consent checkbox; the model page needs a manual step: tick it by hand in the console, then start the job again");
+            const box = S.model.uncheckedCheckbox();
+            if (box) {
+              throw new D.FatalError(`Enable is disabled on the model page next to an unchecked consent checkbox ("${D.text(box).slice(0, 160)}"); the model page needs a manual step: tick it by hand in the console, then start the job again`);
             }
             return null;
           }
@@ -343,6 +413,7 @@
       return { status: STATUS.SKIPPED, message: "skipped: already enabled" };
     }
     await ctx.assertMayAct();
+    A.assertNoBlocker();
     ctx.step("clicking Enable");
     ctx.mark("action started: click Enable");
     D.click(found.btn);
@@ -419,6 +490,7 @@
     // A stored value the panel does not offer is deterministic, so the job
     // fails at once (no retry) naming the field and the offered options.
     const pick = async (name, host, value) => {
+      A.assertNoBlocker();
       try {
         await D.selectOption(host, value, { onOptions: (names) => ctx.log(`select "${name}" offers ${names.length} options: ${names.join(" | ")}`) });
       } catch (err) {
@@ -436,13 +508,16 @@
     D.setInputValue(S.questionnaire.useCases(), s.use_cases);
 
     const wantYes = K.aupYes(s);
+    A.assertNoBlocker();
     D.chooseMatRadio(S.questionnaire.aupRadioGroup(), wantYes ? "Yes" : "No");
 
     // The details field is hidden by the console once "No" is chosen, so it
     // is only filled after a "Yes" (the options page requires it then).
     if (wantYes && s.aup_details) {
+      // A missing details field is tolerated; a blocker seen during the
+      // wait is not swallowed with it.
       const details = await D.waitFor(() => S.questionnaire.aupDetails(), { timeout: 5000, what: "AUP details field" })
-        .catch(() => null);
+        .catch((err) => { if (err instanceof D.BlockedError) throw err; return null; });
       if (details) D.setInputValue(details, s.aup_details);
       else ctx.log("AUP details field not present; skipped");
     }
@@ -474,6 +549,7 @@
         userActed: () => S.detectPage() !== PAGE.QUESTIONNAIRE
       });
       await ctx.setPhase(PHASE.QUESTIONNAIRE);
+      if (how && typeof how === "object") return how; // the wait ended the job (a blocker, or the "Enable APIs" dialog came back)
       if (how === "user") { ctx.mark("left the questionnaire (Next clicked by you)"); return null; }
       await ctx.assertMayAct();
     }
@@ -482,6 +558,7 @@
       const b = S.questionnaire.nextButton();
       return b && !D.isDisabled(b) ? b : null;
     }, { timeout: T.NEXT_BUTTON, what: "enabled Next button" });
+    A.assertNoBlocker();
     ctx.step("clicking Next");
     ctx.mark("action started: click Next");
     D.click(next);
@@ -524,7 +601,7 @@
   function agreementsControlsMissing(secs) {
     if (!S.agreements.hasShell()) return null;
     const missing = [];
-    if (!S.agreements.termsCheckbox()) missing.push("the terms checkbox (mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox, mp-agreements-tos, or the one mat-checkbox inside billing-integrated-ai-agreements-body)");
+    if (!S.agreements.termsCheckbox()) missing.push("the terms checkbox (mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox or mp-agreements-tos)");
     if (!S.agreements.hasAgreeButton()) missing.push('the Agree button (button[data-prober="cloud-marketplace-request-product"] or button[aria-label^="Agree to the terms"])');
     if (!missing.length) return null;
     return `the Agreements page rendered (billing-integrated-ai-agreements-body or mp-agreements-tos is present) but ${missing.join(" and ")} was not found within ${secs} s; the console changed the page: see docs/MAINTENANCE.md`;
@@ -552,8 +629,8 @@
     // now shows.
     const before = await ctx.refresh();
     const job = (before.queue && before.queue[ctx.jobIndex]) || ctx.job;
-    if (job && job.agreeClicked) {
-      return { status: STATUS.UNVERIFIED, message: "Agree was already clicked for this job; no confirmation observed; check manually" };
+    if (job && (job.agreeClicked || job.purchaseObserved)) {
+      return { status: STATUS.UNVERIFIED, message: `${job.agreeClicked ? "Agree was already clicked for this job" : "the console already reported a purchase for this job"}; no confirmation observed; check manually` };
     }
 
     // Both modes: the page must be the job's own Agreements page before the
@@ -585,6 +662,7 @@
       throw err;
     }
     await ctx.assertMayAct();
+    A.assertNoBlocker();
     ctx.step("ticking the terms checkbox");
     ctx.mark("action started: tick the terms checkbox");
     await D.setCheckbox(checkbox, true);
@@ -645,16 +723,33 @@
               const d = S.agreements.successDialogs().find((x) => !dialogsBefore.has(x.dialog) && D.isVisible(x.dialog));
               if (!d) return null;
               ctx.log(`a purchase confirmation opened while waiting for your Continue and no Agree activation by you was seen: "${d.title}"`);
-              return { status: STATUS.UNVERIFIED, message: "unverified: the console reported a purchase while waiting for confirmation; check manually" };
+              return { status: STATUS.UNVERIFIED, message: "unverified: the console reported a purchase while waiting for confirmation; check manually", purchaseObserved: true };
             }
           });
           await ctx.setPhase(PHASE.AGREEMENTS);
-          if (how && typeof how === "object") return how;
+          if (how && typeof how === "object") {
+            // A purchase the console reported is recorded on the job, so the
+            // cross-run guard counts the pair as done (no repeat purchase).
+            if (how.purchaseObserved === true) {
+              const rec = await ctx.updateJob({ purchaseObserved: true });
+              if (!rec || !rec.ok) ctx.log("could not record the observed purchase on the job (stale run or tab)");
+            }
+            return how;
+          }
           if (how === "user") {
             byUser = true;
             break;
           }
           await ctx.assertMayAct();
+          // The user's own Agree comes first: once it was seen, its outcome
+          // is judged, even when a blocker shows (the click happened).
+          if (userAgree !== null) { byUser = true; break; }
+          try {
+            A.assertNoBlocker();
+          } catch (err) {
+            if (userAgree !== null && err instanceof D.BlockedError) { byUser = true; break; }
+            throw err;
+          }
           // Dialog nodes that came and went during the wait are not this click's outcome.
           dialogsBefore = new Set(S.dialogs.all());
           ctx.step("clicking Agree");
@@ -663,7 +758,7 @@
             // The guard asks `refuse` at every check and right before the
             // click: once the user's own Agree activation was seen, the
             // extension's click is refused (one click total, the user's).
-            await A.clickAgreeGuarded(ctx, { refuse: () => (userAgree !== null ? "you activated the console's Agree yourself" : null) });
+            await A.clickAgreeGuarded(ctx, { refuse: () => (userAgree !== null ? "you activated the console's Agree yourself" : blockerMessage()) });
             ctx.mark("action done: Agree clicked");
             break;
           } catch (err) {
@@ -676,6 +771,10 @@
               byUser = true;
               break;
             }
+            // A blocker on the page ends the job here instead of asking for
+            // a Continue the blocker would refuse again.
+            const blocked = blockerMessage();
+            if (blocked) throw new D.BlockedError(blocked);
             const current = await ctx.refresh();
             const rec = current.queue && current.queue[ctx.jobIndex];
             const recordClean = !(rec && rec.agreeClicked);
@@ -700,9 +799,12 @@
         }
       } else {
         await ctx.assertMayAct();
+        A.assertNoBlocker();
         ctx.step("clicking Agree");
         ctx.mark("action started: click Agree");
-        await A.clickAgreeGuarded(ctx);
+        // The guard asks `refuse` at every check and right before the click:
+        // a blocker that appears during the record round trip stops it too.
+        await A.clickAgreeGuarded(ctx, { refuse: blockerMessage });
         ctx.mark("action done: Agree clicked");
       }
     } finally {
@@ -757,7 +859,7 @@
         }
         if (generic && Date.now() - generic.at >= T.AGREE_GRACE && D.isVisible(generic.dialog)) return { generic };
         return null;
-      }, { timeout: T.CONFIRM, what: "confirmation or error dialog after Agree" });
+      }, { timeout: T.CONFIRM, what: "confirmation or error dialog after Agree", interrupt: false }); // after the click: judged by the outcome dialogs alone, as before 0.8.0
     } catch (err) {
       const why = err instanceof D.TimeoutError ? `no confirmation observed within ${T.CONFIRM / 1000} s` : `error while waiting for the confirmation: ${err.message}`;
       const seen = generic ? `; an error dialog that is not the console's refusal was seen meanwhile: "${generic.detail}"` : "";

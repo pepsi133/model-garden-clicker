@@ -54,7 +54,7 @@
   }
 
   async function readState() {
-    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUN, KEYS.RUNNING, KEYS.STOP_REQUESTED, KEYS.TIMING, KEYS.SUMMARY_ACK]);
+    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUN, KEYS.RUNNING, KEYS.STOP_REQUESTED, KEYS.TIMING, KEYS.SUMMARY_ACK, KEYS.PAUSED]);
     // Advanced timing settings override the constants; absent = constants.
     if (o[KEYS.TIMING] && typeof o[KEYS.TIMING] === "object") K.applyTiming(o[KEYS.TIMING]);
     return {
@@ -64,6 +64,7 @@
       run: o[KEYS.RUN] || null,
       running: o[KEYS.RUNNING] === true,
       stopRequested: o[KEYS.STOP_REQUESTED] === true,
+      paused: o[KEYS.PAUSED] === true,
       summary: o[KEYS.SUMMARY_ACK] || null
     };
   }
@@ -197,7 +198,8 @@
     const nextJob = nextIndex >= 0 ? { projectId: st.queue[nextIndex].projectId, modelSlug: st.queue[nextIndex].modelSlug } : null;
     return {
       mode, jobIndex, total: st.queue.length, projectId: job.projectId, modelSlug: job.modelSlug,
-      jobStartedAt: job.startedAt || null, plan: planFor(page, mode === "FULL RUN", st.settings.step_by_step === true), nextJob, note
+      jobStartedAt: job.startedAt || null, plan: planFor(page, mode === "FULL RUN", st.settings.step_by_step === true), nextJob, note,
+      paused: st.paused === true
     };
   }
 
@@ -226,7 +228,7 @@
     const jobKey = `${runId}|${jobIndex}`;
     if (boundJob === null) boundJob = jobKey;
     if (reported.has(jobKey) || st.current.phase === PHASE.FINISHED) {
-      B.update(badgeInfo(st, jobIndex, mode, null, "finished, waiting for next job"));
+      B.update(badgeInfo(st, jobIndex, mode, null, st.paused ? "PAUSED: Resume in the popup starts the next job" : "finished, waiting for next job"));
       return;
     }
 
@@ -251,6 +253,26 @@
       return;
     }
 
+    // A possible purchase on record: the extension's Agree click, or a
+    // purchase the console reported. Such a job never ends failed (the
+    // purchase may have gone through): on the Agreements page its handler
+    // returns unverified at once (its re-entry check reads both flags);
+    // anywhere else the loop reports it unverified (below).
+    const onRecord = job.agreeClicked === true || job.purchaseObserved === true;
+    const onRecordWords = (j) => (j && j.agreeClicked === true ? "Agree was clicked" : "the console reported a purchase");
+
+    // An extra consent control or a permission error on whatever the tab
+    // shows ends the job at once, before anything is clicked (the "Enable
+    // APIs" dialog's Enable included) and before any handler runs or waits.
+    // With a purchase on record this check is skipped here: the job ends
+    // unverified (the dialog step below, the page check after it, or the
+    // Agreements handler).
+    const blocked = onRecord ? null : A.blockerResult();
+    if (blocked) {
+      await report(runId, jobIndex, blocked.status, blocked.message);
+      return;
+    }
+
     // Pre-action step: a blocking "Enable APIs" modal can sit on any page.
     try {
       const dialog = await A.clearBlockingDialog(makeCtx(st, jobIndex));
@@ -264,6 +286,12 @@
       }
     } catch (err) {
       if (err instanceof D.StoppedError) { await report(runId, jobIndex, STATUS.STOPPED, "stopped by request"); return; }
+      if (err instanceof D.BlockedError) {
+        // The dialog's Enable was not clicked. With an Agree click on record the job is unverified, never failed.
+        if (onRecord) await report(runId, jobIndex, STATUS.UNVERIFIED, `${onRecordWords(job)} but the page now shows a blocker (${err.message}); no confirmation observed; check manually`);
+        else await report(runId, jobIndex, STATUS.FAILED, err.message);
+        return;
+      }
       if (D.isFatal(err) || err instanceof D.TimeoutError) {
         await report(runId, jobIndex, STATUS.FAILED, `"Enable APIs" dialog: ${err.message}`);
         return;
@@ -278,6 +306,13 @@
     } catch (err) {
       B.update(badgeInfo(st, jobIndex, mode, null, `error: ${err.message}`));
       await report(runId, jobIndex, STATUS.FAILED, err.message);
+      return;
+    }
+    // Agree on record and the tab is not on the Agreements page (a page the
+    // flow would act on again, a blocker, another route): unverified, and
+    // no handler runs.
+    if (onRecord && page !== PAGE.AGREEMENTS) {
+      await report(runId, jobIndex, STATUS.UNVERIFIED, `${onRecordWords(job)} but the tab now shows ${page === PAGE.UNKNOWN ? location.pathname : `the ${page} page`}; no confirmation observed; check manually`);
       return;
     }
     B.update(badgeInfo(st, jobIndex, mode, page, `phase ${st.current.phase}, page ${page}`));
@@ -335,7 +370,15 @@
       if (err instanceof D.StoppedError) {
         await report(runId, jobIndex, STATUS.STOPPED, "stopped by request");
       } else if (D.isFatal(err)) {
-        await report(runId, jobIndex, STATUS.FAILED, err.message);
+        // With Agree on record by now (the guard records it before its click),
+        // the job is unverified, never failed.
+        const fresh = await readState();
+        const rec = fresh.queue && fresh.queue[jobIndex];
+        if (rec && (rec.agreeClicked === true || rec.purchaseObserved === true)) {
+          await report(runId, jobIndex, STATUS.UNVERIFIED, `${onRecordWords(rec)} but ${err.message}; no confirmation observed; check manually`);
+        } else {
+          await report(runId, jobIndex, STATUS.FAILED, err.message);
+        }
       } else {
         // A timeout is a slow page and is retried at warn level; any other
         // error a handler throws is a bug or a changed page, retried too but
@@ -391,7 +434,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes[KEYS.CURRENT] || changes[KEYS.RUNNING] || changes[KEYS.STOP_REQUESTED] || changes[KEYS.SUMMARY_ACK]) tick();
+    if (changes[KEYS.CURRENT] || changes[KEYS.RUNNING] || changes[KEYS.STOP_REQUESTED] || changes[KEYS.SUMMARY_ACK] || changes[KEYS.PAUSED]) tick();
   });
 
   tick();

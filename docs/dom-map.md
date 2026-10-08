@@ -23,6 +23,7 @@ through. Run directories are named `<timestamp>-<project>-<model>`.
 | 190511 | project-b | claude-haiku-4-5 | dry run 3.5 min after the Haiku purchase: already enabled, no dialog |
 | 190535 | project-a | claude-haiku-4-5 | final dry run with the final code, stops at 05, Agree not clicked |
 | 194426 | project-b | claude-sonnet-5 | gallery -> search -> results table -> model page, then Agree; purchase succeeded (section "Gallery path") |
+| 20261008-004621 | project-b | claude-fable-5-1 | model page with the Advanced AI Safety Addendum banner and a disabled Enable; the run stops at 01 (section "Conditional: extra consent banner (Fable 5.1)") |
 
 ## Conventions that hold on all three pages
 
@@ -607,6 +608,60 @@ body > div.cdk-overlay-container > ... >
   run against the same project no dialog was shown at all.
 - Do not confuse its `Enable` with the model page's `Enable`: scope the
   model-page search outside `mat-dialog-container`.
+
+## Conditional: extra consent banner (Fable 5.1)
+
+Recorded on the `claude-fable-5-1` model page (run 20261008-004621,
+project-b). Above the model header the page renders a warning banner that
+asks for Google's "Advanced AI Safety Addendum"; the model page's Enable
+button is rendered disabled until the addendum is accepted. The extension
+does not support this step: it never ticks the box and never clicks
+"Accept Terms". `content/selectors.js` (`S.blockers.consent`) finds the
+banner by structure (a visible message banner outside any dialog holding a
+visible checkbox, or a `cfc-message` holding an accept button, also inside
+a status or alert region and also when moved into an overlay pane; either
+is enough) and the job fails at once naming it. The terms box is taken only
+when its two hooks lead to exactly one checkbox outside any banner or
+dialog, so this banner's checkbox ("... to these terms ...") is never taken
+for it, even inside billing-integrated-ai-agreements-body or wrapped in
+mp-agreements-tos. Every recorded Agreements page holds exactly one
+visible checkbox (the terms box) and no recorded model or questionnaire
+page holds any; `extension/test/selectors.cjs` checks both.
+
+```html
+cfc-panel-body > ... > div.cfc-panel-body-scroll-content >
+<div class="addendum-banner-container">
+  <cfc-message type="warning">
+    <div class="cfc-message cfc-message-warning" role="status">
+      <cm-icon aria-label="Warning">...</cm-icon>
+      <div class="cfc-message-text-actions-section">
+        <cfc-message-text class="cfc-message-text"><div class="cfc-message-text-wrapper">
+          <div class="addendum-intro"> To enable this model on Agent Platform, you must accept Google's
+            <a class="cfc-doc-link" href="https://cloud.google.com/terms/advanced-ai-safety-addendum">Advanced AI Safety Addendum</a>
+            for this project. </div>
+          <div class="addendum-checkbox-row">
+            <mat-checkbox class="mat-mdc-checkbox ...">
+              <input type="checkbox" aria-label="Accept the Advanced AI Safety Addendum">
+              <span class="mdc-label"> By checking this box, you agree to the Advanced AI Safety Addendum on behalf of
+                your organization, confirming your authority to bind Customer to these terms for <b>PROJECT</b>. </span>
+            </mat-checkbox>
+          </div>
+        </div></cfc-message-text>
+        <cfc-message-actions>
+          <button mat-stroked-button class="... addendum-accept-button addendum-accept-button-disabled ..." aria-disabled="true"> Accept Terms </button>
+        </cfc-message-actions>
+      </div>
+    </div>
+  </cfc-message>
+</div>
+<div class="details-body"> ... <vai-model-garden-call-to-action-button-stack> (Enable rendered disabled) ...
+```
+
+Anchors: `div.addendum-banner-container`, `cfc-message[type="warning"]`, the
+`mat-checkbox` inside it and the "Addendum" wording. None of these appear on
+any other recorded page; the offline absence control in
+`extension/test/selectors.cjs` runs the detector over every recorded dump
+and finds this banner only.
 
 ---
 

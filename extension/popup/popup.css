@@ -4,7 +4,7 @@
  * input keep their natural size (the inputs never sit in a scroll region),
  * and the results and the log share the remaining height with their own
  * scroll; the page itself never scrolls. At 800 px the model checklist is
- * a four-column grid, so the twelve models of models.json show without a
+ * a four-column grid, so the thirteen models of models.json show without a
  * scrollbar; a longer list scrolls inside the box (max-height). html.tab
  * (set by popup.js when the page is open in a normal tab) makes the column
  * fluid: it fills the window and the checklist takes as many columns as
@@ -45,7 +45,7 @@ label { display: block; font-weight: 600; margin: 4px 0; }
 textarea, input[type="text"] { width: 100%; box-sizing: border-box; font: 12px var(--mgc-mono); padding: 4px; }
 /* The checklist: a grid of rows at their natural line height (rows never
  * shrink or overlap); four columns in the popup, as many as fit in a tab.
- * Twelve models make three rows, well under the max-height, so no
+ * Thirteen models make four rows, well under the max-height, so no
  * scrollbar; a longer models.json scrolls inside the box. */
 .models { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-content: start; max-height: 170px; overflow-y: auto; box-sizing: border-box; border: 1px solid var(--mgc-border); background: var(--mgc-surface); padding: 4px; margin-bottom: 4px; border-radius: 4px; }
 html.tab .models { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
@@ -57,7 +57,7 @@ button.primary { font-size: 15px; padding: 8px 28px; }
 
 /* The notice keeps the UA's [hidden] { display: none }: no rule here sets
  * display on it, so the hidden attribute always wins. */
-.missing { margin: 0 0 8px; padding: 8px 10px; }
+.missing { margin: 0 0 4px; padding: 5px 10px; }
 .status { padding: 4px 8px; background: var(--mgc-neutral); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .step { margin-top: 4px; padding: 4px 8px; background: var(--mgc-surface); color: var(--mgc-info); border: 1px solid var(--mgc-border); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .error { margin-top: 6px; padding: 6px 8px; }

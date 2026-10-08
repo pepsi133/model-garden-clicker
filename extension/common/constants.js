@@ -25,7 +25,8 @@
     RUN: "run",                     // { runId, live, startedAt, finishedAt, reason }: the run's identity and mode snapshot
     TIMING: "timing",               // advanced timing settings (options page "Advanced"); absent = constants below
     SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
-    RUNS_KEEP: "runs_keep"          // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
+    RUNS_KEEP: "runs_keep",         // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
+    PAUSED: "paused"                // boolean: the popup's Pause; the worker starts no new job while true (the job in progress finishes); cleared by Resume, Stop and the run's end
   };
 
   /*
@@ -96,7 +97,10 @@
     VERSION: "mgc:version",         // any -> worker: { manifest, keys } of the worker that is running
     SUMMARY_ACK: "mgc:summary-ack", // popup or worker-tab content -> worker { runId }: OK on the end-of-run summary
     RUNS_DELETE: "mgc:runs-delete", // runs page -> worker { runId }: delete that run's full log (refused for the run in progress)
-    RUNS_PURGE: "mgc:runs-purge"    // runs or options page -> worker: delete every full log (the run in progress is kept)
+    RUNS_PURGE: "mgc:runs-purge",   // runs or options page -> worker: delete every full log (the run in progress is kept)
+    PAUSE: "mgc:pause",             // popup -> worker: start no new job until RESUME (the job in progress finishes)
+    RESUME: "mgc:resume",           // popup -> worker: clear the pause and start the next pending job
+    GUARD_PREVIEW: "mgc:guard-preview" // popup -> worker { projects, models }: { total, done, skipped } for the full-run confirm (read-only)
   };
 
   /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
@@ -144,9 +148,11 @@
   /* Job fields the content script may set through JOB_UPDATE. `step` is the
    * current step line shown in the popup (mirrors the worker tab's badge);
    * `agreeClickedByUser` records that the user clicked the console's own
-   * Agree while the step-by-step panel was waiting. The trusted Continue
+   * Agree while the step-by-step panel was waiting; `purchaseObserved`
+   * records that the console reported a purchase with no Agree activation
+   * seen (the cross-run guard counts it as done). The trusted Continue
    * itself is recorded only in the content script's memory, for the guard. */
-  MGC.JOB_UPDATE_FIELDS = ["productId", "agreeClicked", "agreeClickedByUser", "step"];
+  MGC.JOB_UPDATE_FIELDS = ["productId", "agreeClicked", "agreeClickedByUser", "purchaseObserved", "step"];
 
   MGC.CONSOLE_BASE = "https://console.cloud.google.com";
   MGC.MODEL_PATH_PREFIX = "/agent-platform/publishers/anthropic/model-garden/";
@@ -375,7 +381,13 @@
     aup_additional_requirements: "no",
     aup_details: "",
     live_mode: false,               // false = dry run (the options page shows it as a ticked "DRY RUN" box)
-    step_by_step: false             // true = wait for Continue in the page before Next and before Agree
+    step_by_step: false,            // true = wait for Continue in the page before Next and before Agree
+    inside_joke: false              // options page "inside joke" box: true shows step-by-step off as "kubardy mode", false as "fast mode" (text only)
+  };
+
+  /** The user-visible name of step-by-step off: "kubardy mode" with the inside joke box ticked, else "fast mode". */
+  MGC.stepOffName = function (settings) {
+    return settings && settings.inside_joke === true ? "kubardy mode" : "fast mode";
   };
 
   /**
@@ -395,6 +407,157 @@
     if (o[MGC.KEYS.RUNNING] === true && modeChanged) return { ok: false, error: MGC.RUN_LOCK_MESSAGE, settings: stored };
     await area.set({ [MGC.KEYS.SETTINGS]: next });
     return { ok: true, settings: next };
+  };
+
+  /*
+   * The settings file (options page, Advanced: Export settings / Import
+   * settings). One JSON object:
+   *   { app, schema, exported, settings: { questionnaire fields,
+   *     step_by_step, inside_joke }, popup: { projects: [ids], models:
+   *     [ticked slugs], extra: "extra slugs" }, timing: {...}, runs_keep }
+   * The DRY RUN / full-run mode (live_mode) is never exported or imported,
+   * nor is the per-run "Include pairs already done or skipped" box. A
+   * timing-only object (what the Advanced field takes) is the old format
+   * and still imports as the timing section.
+   */
+  MGC.CONFIG_APP = "model-garden-clicker";
+  MGC.CONFIG_SCHEMA = 1;
+  MGC.CONFIG_TEXT_MAX = 2000;       // the longest text value an import accepts (a longer one is refused, naming the key)
+  MGC.CONFIG_SETTINGS_KEYS = MGC.SETTINGS_FIELDS.concat(["step_by_step", "inside_joke"]);
+  const CONFIG_TOP_KEYS = ["app", "schema", "exported", "settings", "popup", "timing", "runs_keep"];
+  const NEVER_IMPORTED = ["live_mode", "dry_run", "include_done", "includeDone"];
+  const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+  /** The settings file for what is stored: settings, popup_state, timing and runs_keep as chrome.storage.local holds them. */
+  MGC.buildConfig = function (stored) {
+    const o = stored || {};
+    const s = Object.assign({}, MGC.DEFAULT_SETTINGS, isPlainObject(o[MGC.KEYS.SETTINGS]) ? o[MGC.KEYS.SETTINGS] : {});
+    const settings = {};
+    for (const k of MGC.CONFIG_SETTINGS_KEYS) settings[k] = k === "step_by_step" || k === "inside_joke" ? s[k] === true : String(s[k] === undefined || s[k] === null ? "" : s[k]);
+    const ps = isPlainObject(o[MGC.KEYS.POPUP_STATE]) ? o[MGC.KEYS.POPUP_STATE] : {};
+    return {
+      app: MGC.CONFIG_APP,
+      schema: MGC.CONFIG_SCHEMA,
+      exported: new Date().toISOString(),
+      settings,
+      popup: {
+        projects: String(ps.projects || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
+        models: Array.isArray(ps.models) ? ps.models.filter((m) => typeof m === "string") : [],
+        extra: typeof ps.extra === "string" ? ps.extra : ""
+      },
+      timing: MGC.timingFrom(o[MGC.KEYS.TIMING]),
+      runs_keep: MGC.runsKeepFrom(o[MGC.KEYS.RUNS_KEEP])
+    };
+  };
+
+  /**
+   * Read a parsed settings file. Returns { ok, errors, notices, values,
+   * format }: errors name the key of every invalid value (the import is
+   * refused as a whole when there is one); notices name the keys that are
+   * ignored (unknown keys, and the mode, which is never imported); values
+   * holds only what the file sets: { settings: {}, popup: {}, timing: {},
+   * runs_keep? }. A missing, null or empty value is left out, so it leaves
+   * the current value unchanged; a text value longer than CONFIG_TEXT_MAX
+   * is refused. format is "full" or "timing" (the old,
+   * timing-only object).
+   */
+  MGC.parseConfig = function (obj) {
+    const errors = [], notices = [];
+    const values = { settings: {}, popup: {}, timing: {} };
+    if (!isPlainObject(obj)) return { ok: false, errors: ["the file must hold one JSON object"], notices, values, format: null };
+    // null means missing, for every key: it leaves the current value and
+    // raises no notice.
+    const entries = (o) => Object.entries(o).filter(([, v]) => v !== null && v !== undefined);
+    const present = (o, k) => own(o, k) && o[k] !== null && o[k] !== undefined;
+    const tooLong = (path, text) => {
+      if (text.length <= MGC.CONFIG_TEXT_MAX) return false;
+      errors.push(`${path} is longer than ${MGC.CONFIG_TEXT_MAX} characters`);
+      return true;
+    };
+    const full = CONFIG_TOP_KEYS.some((k) => own(obj, k));
+    const ignore = (path, key) => {
+      if (NEVER_IMPORTED.includes(key)) notices.push(`${path} is never imported (the mode and the per-run box stay as they are)`);
+      else notices.push(`${path} is not a known key`);
+    };
+    const takeTiming = (src, prefix) => {
+      for (const [k, v] of entries(src)) {
+        if (!own(MGC.TIMING_KEYS, k)) { ignore(`${prefix}${k}`, k); continue; }
+        const [lo, hi] = MGC.TIMING_BOUNDS[k];
+        if (typeof v !== "number" || !Number.isInteger(v) || v < lo || v > hi) { errors.push(`${prefix}${k} must be an integer between ${lo} and ${hi}`); continue; }
+        values.timing[k] = v;
+      }
+    };
+    if (!full) {
+      takeTiming(obj, "");
+      return { ok: errors.length === 0, errors, notices, values, format: "timing" };
+    }
+    for (const [k] of entries(obj)) if (!CONFIG_TOP_KEYS.includes(k)) ignore(k, k);
+    if (present(obj, "app") && obj.app !== MGC.CONFIG_APP) errors.push(`app must be "${MGC.CONFIG_APP}"`);
+    if (present(obj, "schema") && !(Number.isInteger(obj.schema) && obj.schema >= 1 && obj.schema <= MGC.CONFIG_SCHEMA)) errors.push(`schema must be an integer from 1 to ${MGC.CONFIG_SCHEMA} (this version reads ${MGC.CONFIG_SCHEMA})`);
+    if (present(obj, "settings")) {
+      if (!isPlainObject(obj.settings)) errors.push("settings must be an object");
+      else for (const [k, v] of entries(obj.settings)) {
+        const path = `settings.${k}`;
+        if (!MGC.CONFIG_SETTINGS_KEYS.includes(k)) { ignore(path, k); continue; }
+        if (k === "step_by_step" || k === "inside_joke") {
+          if (typeof v !== "boolean") errors.push(`${path} must be true or false`);
+          else values.settings[k] = v;
+          continue;
+        }
+        if (typeof v !== "string") { errors.push(`${path} must be text`); continue; }
+        if (tooLong(path, v)) continue;
+        const t = v.trim();
+        if (!t) continue; // empty: leaves the current value
+        if (k === "aup_additional_requirements" && !/^(yes|no)$/i.test(t)) { errors.push(`${path} must be "yes" or "no"`); continue; }
+        values.settings[k] = k === "aup_additional_requirements" ? t.toLowerCase() : t;
+      }
+    }
+    if (present(obj, "popup")) {
+      const p = obj.popup;
+      if (!isPlainObject(p)) errors.push("popup must be an object");
+      else for (const [k, v] of entries(p)) {
+        const path = `popup.${k}`;
+        if (k === "projects") {
+          // null entries in a list are missing entries, dropped; the cap
+          // applies to the trimmed IDs joined, whether the file gives a list
+          // or one text.
+          const list = typeof v === "string" ? v.split(/\r?\n/) : Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : v;
+          if (!Array.isArray(list) || list.some((x) => typeof x !== "string")) { errors.push(`${path} must be a list of project IDs`); continue; }
+          const ids = list.map((x) => x.trim()).filter(Boolean);
+          if (tooLong(path, ids.join("\n"))) continue;
+          const bad = ids.find((x) => !MGC.isValidProjectId(x));
+          if (bad) { errors.push(`${path} holds an invalid project ID: "${bad.slice(0, 60)}"`); continue; }
+          if (ids.length) values.popup.projects = ids;
+          else notices.push(`${path} holds no project ID, so the current ones are kept`);
+        } else if (k === "models") {
+          const list = Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : v;
+          if (!Array.isArray(list) || list.some((x) => typeof x !== "string")) { errors.push(`${path} must be a list of model slugs`); continue; }
+          const slugs = list.map((x) => x.trim()).filter(Boolean);
+          if (tooLong(path, slugs.join(", "))) continue;
+          const bad = slugs.find((x) => !MGC.isValidModelSlug(x));
+          if (bad) { errors.push(`${path} holds an invalid model slug: "${bad.slice(0, 60)}"`); continue; }
+          if (slugs.length) values.popup.models = slugs;
+          else notices.push(`${path} holds no model slug, so the current selection is kept`);
+        } else if (k === "extra") {
+          if (typeof v !== "string") { errors.push(`${path} must be text`); continue; }
+          if (tooLong(path, v)) continue;
+          const bad = v.split(/[\s,]+/).filter(Boolean).find((x) => !MGC.isValidModelSlug(x));
+          if (bad) { errors.push(`${path} holds an invalid model slug: "${bad.slice(0, 60)}"`); continue; }
+          if (v.trim()) values.popup.extra = v.trim();
+        } else ignore(path, k);
+      }
+    }
+    if (present(obj, "timing")) {
+      if (!isPlainObject(obj.timing)) errors.push("timing must be an object");
+      else takeTiming(obj.timing, "timing.");
+    }
+    if (present(obj, "runs_keep")) {
+      const [lo, hi] = MGC.RUNS_KEEP_BOUNDS;
+      if (!Number.isInteger(obj.runs_keep) || obj.runs_keep < lo || obj.runs_keep > hi) errors.push(`runs_keep must be an integer between ${lo} and ${hi}`);
+      else values.runs_keep = obj.runs_keep;
+    }
+    return { ok: errors.length === 0, errors, notices, values, format: "full" };
   };
 
   /**

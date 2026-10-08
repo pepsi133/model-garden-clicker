@@ -263,6 +263,25 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     try { await env.A.handleQuestionnaire(ctx); } catch (e) { err = e; }
     ok(nextClicks === 1 && err && err.name === "TimeoutError" && ctx.rec.phases.join() === "questionnaire" && panelOf(env) === null, "control: step-by-step off, Next clicked once, no panel, no awaiting phase", ctx.rec.phases.join());
     env.win.close();
+
+    // (d) (0.8.0) an extra consent dialog opens while the panel waits before Next: the job ends at once
+    // as failed naming the dialog; Next is not clicked, nothing in the dialog is clicked or ticked.
+    env = serve();
+    state = stateFor();
+    ctx = qctx(env, state);
+    nextClicks = 0; env.S.questionnaire.nextButton().addEventListener("click", () => { nextClicks += 1; });
+    done = null;
+    const pd = env.A.handleQuestionnaire(ctx).then((r) => { done = { r }; }, (e) => { done = { e }; });
+    await sleep(500);
+    ok(done === null && panelOf(env) !== null, "(d) the panel waits before Next");
+    env.document.body.insertAdjacentHTML("beforeend", '<div class="cdk-overlay-container" id="consent"><mat-dialog-container role="dialog"><h1 matdialogtitle>Additional terms</h1><div matdialogcontent>Accept the terms of service for this model.</div><mat-checkbox><label><input type="checkbox"> I accept the terms of service</label></mat-checkbox><button> Accept </button></mat-dialog-container></div>');
+    let dialogClicks = 0; for (const b of env.D.qa("#consent button, #consent input")) b.addEventListener("click", () => { dialogClicks += 1; });
+    const t0d = Date.now();
+    await pd;
+    ok(done && !done.e && done.r && done.r.status === "failed" && /^extra consent required, not supported \(mat-dialog-container\): "Additional terms": .*terms of service/.test(done.r.message) && Date.now() - t0d < 600,
+      "(d) (0.8.0) the consent dialog ends the job at once: failed, naming the dialog's title and text", done && (done.e ? done.e.message : JSON.stringify(done.r)));
+    ok(nextClicks === 0 && dialogClicks === 0 && !env.D.q("#consent input").checked && panelOf(env) === null, "(d) Next not clicked, nothing in the dialog clicked or ticked, the panel closed", `next ${nextClicks} dialog ${dialogClicks}`);
+    env.win.close();
   }
 
   console.log("--- handleAgreements with step-by-step: dry run (Next job / Stop)");
@@ -343,7 +362,19 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     await out.p;
     ok(out.done && !out.done.e && out.done.r.status === "unverified" && out.done.r.message === "unverified: the console reported a purchase while waiting for confirmation; check manually", "(S1) a success dialog with no Agree activation seen: unverified with that message", says(out));
     ok(clicks() === 0 && !recordedClick(out) && !out.ctx.rec.updates.some((u) => u.agreeClickedByUser), "no click, agreeClicked not recorded (no retry lock), agreeClickedByUser not set", JSON.stringify(out.ctx.rec.updates));
+    ok(out.ctx.rec.updates.some((u) => u.purchaseObserved === true), "(0.8.0) the observed purchase is recorded on the job (purchaseObserved), so the next run's cross-run guard counts the pair as done", JSON.stringify(out.ctx.rec.updates));
     ok(out.ctx.rec.logs.some((m) => /a purchase confirmation opened while waiting for your Continue and no Agree activation by you was seen: "Successfully purchased Claude Haiku 4\.5"/.test(m)), "it was logged", out.ctx.rec.logs.join(" | "));
+    env.win.close();
+
+    // (0.8.0) a permission error appears while the panel waits before Agree: failed at once, no Agree click, nothing recorded.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    out = start(env, stateFor({ live: true }));
+    await sleep(300);
+    env.document.body.insertAdjacentHTML("beforeend", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>You don\'t have permission to purchase this product. Contact your administrator.</simple-snack-bar></mat-snack-bar-container></div>');
+    await out.p;
+    ok(out.done && !out.done.e && out.done.r.status === "failed" && out.done.r.message === "missing permission: You don't have permission to purchase this product. Contact your administrator." && clicks() === 0 && !recordedClick(out),
+      "(0.8.0) full run, panel before Agree: a permission snackbar ends the job failed with \"missing permission: <excerpt>\"; Agree never clicked, nothing recorded", says(out));
     env.win.close();
 
     // (S1) an error dialog opens while nobody activated Agree: the wait goes on with Continue disabled; nothing is judged.
@@ -463,7 +494,56 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
       trustedClick(contOf(env));
       await out.p;
       ok(out.done && !out.done.e && out.done.r.status === "done" && /Agree clicked by you/.test(out.done.r.message) && clicks() === 1, "(S10) Continue, then the user's Agree before the guard ran: the guard's refusal is not a failure, done through the user's click", says(out) + " clicks=" + clicks());
-      ok(out.ctx.rec.logs.some((m) => /the guard refused \(refused to click: you activated the console's Agree yourself\) after you activated the console's Agree yourself/.test(m)) && out.ctx.rec.updates.some((u) => u.agreeClickedByUser === true) && !out.ctx.rec.updates.some((u) => u.agreeClicked === true && !u.agreeClickedByUser), "the refusal was logged with its reason (the guard's own check of the user's activation, before any record) and the user's click recorded", out.ctx.rec.logs.join(" | "));
+      // (0.8.0) the user's Agree is checked before the pre-click checks, so the guard is never called: no refusal, no record of the extension's own click.
+      ok(!out.ctx.rec.logs.some((m) => /the guard refused|LIVE: clicking Agree/.test(m)) && out.ctx.rec.updates.some((u) => u.agreeClickedByUser === true) && !out.ctx.rec.updates.some((u) => u.agreeClicked === true && !u.agreeClickedByUser), "the user's activation is seen before the guard is called (no guard call, no refusal) and the user's click is recorded", out.ctx.rec.logs.join(" | "));
+    }
+    env.win.close();
+
+    // (0.8.0) Continue, then the user's own Agree together with a permission alert, before the pre-click check: the
+    // user's click is judged (it happened), not failed by the blocker.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      let calls = 0;
+      ctx.assertMayAct = async () => {
+        if (++calls !== 3) return;
+        const b = agreeNode(env);
+        b.addEventListener("click", (ev) => { if (ev.isTrusted) { b.style.display = "none"; setTimeout(() => env.document.body.insertAdjacentHTML("beforeend", SUCCESS), 150); } });
+        env.document.body.insertAdjacentHTML("beforeend", '<div role="alert" id="perm">Permission denied: billing.accounts.get</div>');
+        trustedClick(b);
+      };
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      trustedClick(contOf(env));
+      await out.p;
+      ok(out.done && !out.done.e && out.done.r.status === "done" && /Agree clicked by you/.test(out.done.r.message) && clicks() === 1 && out.ctx.rec.updates.some((u) => u.agreeClickedByUser === true),
+        "(0.8.0) Continue, then the user's Agree with a permission alert on the page: the user's click is judged (done), not failed by the blocker", says(out));
+    }
+    env.win.close();
+
+    // (0.8.0) a guard refusal while a blocker shows (a permission alert that appears during the record round trip):
+    // the job ends with the blocker, the panel does not ask for Continue again, Agree is never clicked.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      const update = ctx.updateJob;
+      ctx.updateJob = async (f) => {
+        if (f.agreeClicked === true) env.document.body.insertAdjacentHTML("beforeend", '<div role="alert">Permission denied: you cannot purchase in this billing account.</div>');
+        return update(f);
+      };
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      trustedClick(contOf(env));
+      await out.p;
+      ok(out.done && out.done.e && out.done.e.name === "BlockedError" && /^missing permission: Permission denied: you cannot purchase/.test(out.done.e.message) && clicks() === 0 && state.queue[0].agreeClicked === false
+        && !out.ctx.rec.logs.some((m) => /asking for your confirmation again/.test(m)),
+        "(0.8.0) a guard refusal while a blocker shows: BlockedError naming it, no second Continue asked, no click, the record undone", says(out) + " | " + out.ctx.rec.logs.join(" | "));
     }
     env.win.close();
 

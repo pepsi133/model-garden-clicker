@@ -185,9 +185,9 @@ function armEnable(env) {
   const box = (checked, where) => `<mat-checkbox class="mat-mdc-checkbox${checked ? " mat-mdc-checkbox-checked" : ""}"><label><input type="checkbox"${checked ? " checked" : ""}><span>By checking this box, you agree to the addendum</span></label></mat-checkbox>`;
   const mainPage = (inner) => '<!doctype html><html><head></head><body><div role="main">' + inner + '</div></body></html>';
   const consentCases = [
-    ["unchecked box in the main content", mainPage(box(false) + page().replace(/^.*<body>|<\/body>.*$/g, "")), true],
-    ["box in the main content, already checked", mainPage(box(true) + page().replace(/^.*<body>|<\/body>.*$/g, "")), false],
-    ["unchecked box only inside a dialog", mainPage(page().replace(/^.*<body>|<\/body>.*$/g, "")) + '<div class="cdk-overlay-container"><mat-dialog-container role="dialog">' + box(false) + "</mat-dialog-container></div>", false],
+    ["unchecked box in the main content", mainPage(box(false) + page().replace(/^.*<body>|<\/body>.*$/g, "")), "page"],
+    ["box in the main content, already checked", mainPage(box(true) + page().replace(/^.*<body>|<\/body>.*$/g, "")), "page"],
+    ["unchecked box only inside a dialog", mainPage(page().replace(/^.*<body>|<\/body>.*$/g, "")) + '<div class="cdk-overlay-container"><mat-dialog-container role="dialog">' + box(false) + "</mat-dialog-container></div>", "blocked"],
     ["unchecked box in the main content, hidden", mainPage('<div style="display: none;">' + box(false) + "</div>" + page().replace(/^.*<body>|<\/body>.*$/g, "")), false]
   ];
   for (const [label, html, fatal] of consentCases) {
@@ -198,9 +198,17 @@ function armEnable(env) {
     let err = null;
     try { await env.A.handleModelPage(ctxFor(env)); } catch (e) { err = e; }
     const ms = Date.now() - t0;
-    if (fatal) {
-      ok(clicks() === 0 && err && env.D.isFatal(err) && /Enable is disabled on the model page next to an unchecked consent checkbox/.test(err.message) && /manual step/.test(err.message) && ms < 150,
-        `${label}: fatal at once with the manual-step message, no click`, err ? `${err.name}: ${err.message.slice(0, 80)} (${ms} ms)` : "no error");
+    if (fatal === "page") {
+      // (0.8.0) any visible checkbox on the model page is an extra consent control, ticked or not, whatever its label.
+      ok(clicks() === 0 && err && err.name === "BlockedError" && /^extra consent required, not supported \(checkbox on the model page\): By checking this box, you agree to the addendum/.test(err.message) && ms < 150,
+        `${label}: (0.8.0) fatal at once as an extra checkbox on the model page, naming its label, no click`, err ? `${err.name}: ${err.message.slice(0, 120)} (${ms} ms)` : "no error");
+    } else if (fatal === "blocked") {
+      // (0.8.0) a consent dialog is an extra consent control: the job ends at once naming it.
+      ok(clicks() === 0 && err && err.name === "BlockedError" && env.D.isFatal(err) && /^extra consent required, not supported \(mat-dialog-container\): By checking this box, you agree to the addendum; nothing in it was clicked/.test(err.message) && ms < 150,
+        `${label}: (0.8.0) fatal at once naming the dialog's text, no click (it was a timeout before 0.8.0)`, err ? `${err.name}: ${err.message.slice(0, 120)} (${ms} ms)` : "no error");
+    } else if (fatal) {
+      ok(clicks() === 0 && err && env.D.isFatal(err) && /Enable is disabled on the model page next to an unchecked consent checkbox \("By checking this box, you agree to the addendum"\)/.test(err.message) && /manual step/.test(err.message) && ms < 150,
+        `${label}: fatal at once with the manual-step message naming the box's label, no click`, err ? `${err.name}: ${err.message.slice(0, 120)} (${ms} ms)` : "no error");
     } else {
       ok(clicks() === 0 && err && err.name === "TimeoutError" && !env.D.isFatal(err) && ms >= 300, `${label}: no fast failure, the wait times out as before`, err ? `${err.name}: ${err.message.slice(0, 80)} (${ms} ms)` : "no error");
     }
@@ -221,7 +229,9 @@ function armEnable(env) {
     const t0 = Date.now();
     let err = null;
     try { await consent.A.handleModelPage(ctxFor(consent)); } catch (e) { err = e; }
-    ok(clicks() === 0 && err && D.isFatal(err) && /unchecked consent checkbox/.test(err.message) && Date.now() - t0 < 300, "fatal at once with the manual-step message, Enable never clicked", err ? `${err.message.slice(0, 80)} (${Date.now() - t0} ms)` : "no error");
+    ok(clicks() === 0 && err && err.name === "BlockedError" && /^extra consent required, not supported \(div\.addendum-banner-container\): .*Advanced AI Safety Addendum.*; nothing in it was clicked; accept it by hand in the console/.test(err.message) && Date.now() - t0 < 300, "(0.8.0) fatal at once naming the banner and its text excerpt (the Advanced AI Safety Addendum), Enable never clicked", err ? `${err.message.slice(0, 200)} (${Date.now() - t0} ms)` : "no error");
+    const boxEl = S.model.uncheckedCheckbox();
+    ok(!!boxEl && !D.isCheckboxChecked(boxEl) && D.qa("mat-checkbox").every((b) => !D.isCheckboxChecked(b)), "(0.8.0) the addendum checkbox was never ticked");
     consent.win.close();
   }
 

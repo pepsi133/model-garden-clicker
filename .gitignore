@@ -12,6 +12,7 @@ python/.chrome-profile/
 python/config.local.json
 *.local.json
 python/recon/
+python/recon
 python/recon*/
 
 # Node

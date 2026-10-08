@@ -21,7 +21,7 @@
       <li><strong>Start.</strong> One console tab opens and the jobs run in order. Leave that tab alone while a run is active.</li>
       <li><strong>DRY RUN</strong> (ticked, the default): Enable, fill, Next, tick the checkbox, stop. Agree is never clicked and nothing is purchased or enabled. Result <code>dry-run</code>.</li>
       <li><strong>Full run</strong> (DRY RUN unticked): Start asks once more. Agree is clicked once per job, only on the Agreements page of the job's own project, product and exact model version. That is a Marketplace purchase billed to the project. Result <code>done</code> when the console reports "Successfully purchased".</li>
-      <li><strong>Step-by-step confirmation</strong> (either mode): a panel in the console tab waits for your Continue or Stop before Next and, in a full run, before Agree; in a dry run it ends with Next job or Stop. The popup header shows it as slow mode (snail icon) or kubardy mode (warning-sign icon).</li>
+      <li><strong>Step-by-step confirmation</strong> (either mode): a panel in the console tab waits for your Continue or Stop before Next and, in a full run, before Agree; in a dry run it ends with Next job or Stop. The popup header shows it as slow mode (snail icon) or <span class="step-off-name">fast mode</span> (warning-sign icon).</li>
       <li><strong>The badge</strong>, bottom-right in the console tab, updated every second:
         <pre class="badge-sketch">MG Clicker [DRY RUN] job 2/4 · my-project · claude-haiku-4-5 · 00:37
 step: waiting for Enable button · 12 s / 60 s
@@ -72,7 +72,7 @@ then: click Enable, then the questionnaire · next job: my-project · claude-son
       <div id="full-run-warning" class="warning" hidden>Full run: every queued project and model will be purchased and billed. The popup asks once more before a full run starts.</div>
 
       <label class="check"><input type="checkbox" name="step_by_step"> <strong>Step-by-step confirmation</strong></label>
-      <p class="explain">The extension fills each page and then waits for you: a panel in the page offers Continue and Stop before Next and before Agree (in a dry run, Next job and Stop once the checkbox is ticked). If you click the console's own button yourself, the extension notices and continues. The popup's header shows this as "slow mode" (on) or "kubardy mode" (off) and can toggle it too.</p>
+      <p class="explain">The extension fills each page and then waits for you: a panel in the page offers Continue and Stop before Next and before Agree (in a dry run, Next job and Stop once the checkbox is ticked). If you click the console's own button yourself, the extension notices and continues. The popup's header shows this as "slow mode" (on) or "<span class="step-off-name">fast mode</span>" (off) and can toggle it too.</p>
     </fieldset>
 
     <fieldset class="advanced">
@@ -81,6 +81,12 @@ then: click Enable, then the questionnaire · next job: my-project · claude-son
       <label>Timing <textarea name="timing_json" rows="8" spellcheck="false"></textarea></label>
       <p id="timing-error" class="error" hidden></p>
       <button type="button" id="timing-reset">Reset to defaults</button>
+      <p class="note">Export settings saves everything stored on this page and in the popup as one JSON file: the questionnaire, step-by-step, the timing, runs to keep, the inside joke box, the project IDs, the ticked models and the extra slugs. The DRY RUN mode is never in it. Import settings fills this page from such a file, or from a timing-only JSON like the field above; empty or missing values leave the current ones. Click Save to keep what was imported.</p>
+      <div class="config-row">
+        <button type="button" id="config-export">Export settings</button>
+        <label class="file">Import settings <input type="file" id="config-import" accept=".json,application/json"></label>
+      </div>
+      <p id="config-note" hidden></p>
     </fieldset>
 
     <fieldset class="logs">
@@ -99,6 +105,8 @@ then: click Enable, then the questionnaire · next job: my-project · claude-son
       <button type="submit" class="primary">Save</button>
       <span id="saved" class="saved" hidden>Saved.</span>
     </div>
+
+    <label class="check inside-joke"><input type="checkbox" name="inside_joke"> inside joke</label>
   </form>
 
   <script src="../common/constants.js"></script>

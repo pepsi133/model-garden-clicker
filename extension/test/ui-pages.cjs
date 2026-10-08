@@ -65,10 +65,38 @@ function fakeChrome(store, extra) {
 }
 
 /** Load an extension page (html + its scripts) into jsdom with `store` behind chrome.storage.local. */
+/*
+ * Every page load collects window "error" events, unhandled rejections and
+ * jsdom virtual-console errors (jsdomError and console.error); closing the
+ * page (win.close) records one check that none occurred, and the end of
+ * the file checks that every loaded page was closed that way.
+ */
+const openPages = new Set();
+let pageSeq = 0;
 async function loadPage(rel, store, scripts, query) {
+  const { VirtualConsole } = require("jsdom");
   const html = fs.readFileSync(path.join(E.EXT, rel), "utf8");
-  const dom = new JSDOM(html, { url: "chrome-extension://x/" + rel + (query || ""), runScripts: "outside-only", pretendToBeVisual: true });
+  const errors = [];
+  const vc = new VirtualConsole();
+  vc.on("jsdomError", (e) => errors.push(`jsdomError: ${e && e.message}`));
+  vc.on("error", (...a) => errors.push(`console.error: ${a.map(String).join(" ")}`));
+  const dom = new JSDOM(html, { url: "chrome-extension://x/" + rel + (query || ""), runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
   const win = dom.window;
+  win.addEventListener("error", (e) => errors.push(`window error: ${e.message}`));
+  // jsdom fires no window "unhandledrejection": a rejection nobody handled
+  // reaches node's process event, which this page listens to while open.
+  const onRejection = (reason) => errors.push(`unhandled rejection: ${reason && reason.message ? reason.message : reason}`);
+  process.on("unhandledRejection", onRejection);
+  const label = rel + (query || "");
+  const caller = ((new Error().stack || "").split("\n")[2] || "").match(/ui-pages\.cjs:(\d+)/);
+  const key = `${label}#${++pageSeq} (loaded at ui-pages.cjs:${caller ? caller[1] : "?"})`;
+  openPages.add(key);
+  const close = win.close.bind(win);
+  win.close = () => {
+    process.off("unhandledRejection", onRejection);
+    if (openPages.delete(key)) ok(errors.length === 0, `${label}: no window error, unhandled rejection or jsdom/console error while the page was open`, errors.join(" | "));
+    close();
+  };
   win.chrome = fakeChrome(store);
   win.confirm = () => true;
   win.indexedDB = fakeIDB; // the per-run logs (common/runlog.js); fakeIDB.reset() between pages that must start empty
@@ -81,7 +109,7 @@ async function loadPage(rel, store, scripts, query) {
   const ctx = dom.getInternalVMContext();
   for (const f of scripts) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   await new Promise((r) => setTimeout(r, 30)); // DOMContentLoaded + async load()
-  return { dom, win, document: win.document, K: win.MGC, O: win.MGC_OPTIONS, RL: win.MGC_RUNLOG };
+  return { dom, win, document: win.document, K: win.MGC, O: win.MGC_OPTIONS, RL: win.MGC_RUNLOG, pageErrors: errors };
 }
 
 const OPTIONS_SCRIPTS = ["common/constants.js", "common/option-lists.js", "common/runlog.js", "options/options.js"];
@@ -403,7 +431,7 @@ function setSelect(p, name, value) {
     ok(!d.getElementById("step") && !d.getElementById("icon-warning") && !d.getElementById("log-details"), "fixture: the three optional elements are absent");
     ok(d.getElementById("mode").textContent === "MODE: DRY RUN" && /idle; last run all jobs processed/.test(d.getElementById("status").textContent), "the banner and the status rendered", d.getElementById("status").textContent);
     ok(d.querySelectorAll("#results tbody tr").length === 1 && d.querySelector("#results tbody td.st").textContent === "dry-run", "the results table rendered after the missing elements (the render did not abort)");
-    ok(d.getElementById("step-toggle-label").textContent === "kubardy mode" && d.getElementById("start").disabled === false, "the step toggle label and Start were set");
+    ok(d.getElementById("step-toggle-label").textContent === "fast mode" && d.getElementById("start").disabled === false, "the step toggle label and Start were set");
     d.getElementById("start").click(); await tick();
     ok(d.getElementById("error").hidden === false && /enter at least one project ID/.test(d.getElementById("error").textContent), "Start is wired (its validation error shows)", d.getElementById("error").textContent);
     ok(errors.length === 0, "no unhandled rejection from the render or init", errors.join(" | "));
@@ -438,7 +466,7 @@ function setSelect(p, name, value) {
         await tick(); await tick(); await tick();
         process.off("unhandledRejection", onRejection);
         const d = dom.window.document;
-        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === 12 && d.querySelectorAll("#models input:checked").length === 0 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
+        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === 13 && d.querySelectorAll("#models input:checked").length === 0 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
           : rel.startsWith("runs") ? d.getElementById("empty").hidden === false && d.getElementById("notice").hidden === true && d.getElementById("keep").textContent === "50"
           : d.getElementById("form").elements.business_name.value === "b" && d.getElementById("form").elements.industry_choice && d.getElementById("form").elements.industry_choice.value === "Education" && d.getElementById("form").elements.runs_keep.value === "50";
         ok(errors.length === 0 && rendered, `${rel} in the ${stateName} state: loaded, initialised and rendered with no thrown error and no unhandled rejection`, errors.join(" | ") || (rendered ? "" : "render check failed"));
@@ -452,7 +480,7 @@ function setSelect(p, name, value) {
     const store = { settings: Object.assign({}, FULL), running: false };
     let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     let d = p.document;
-    ok(d.querySelectorAll("#models input").length === 12 && d.querySelectorAll("#models input:checked").length === 0 && store.popup_state && store.popup_state.models.length === 0 && store.popup_state.version === MANIFEST_VERSION, "first use (no popup_state): twelve models, none ticked; the version marker is stored with an empty selection", `${d.querySelectorAll("#models input:checked").length} ticked, ps ${JSON.stringify(store.popup_state)}`);
+    ok(d.querySelectorAll("#models input").length === 13 && d.querySelectorAll("#models input:checked").length === 0 && store.popup_state && store.popup_state.models.length === 0 && store.popup_state.version === MANIFEST_VERSION, "first use (no popup_state): thirteen models, none ticked; the version marker is stored with an empty selection", `${d.querySelectorAll("#models input:checked").length} ticked, ps ${JSON.stringify(store.popup_state)}`);
     d.getElementById("projects").value = "proj-one";
     d.getElementById("start").click(); await tick();
     ok(/select at least one model/.test(d.getElementById("error").textContent) && !(store.__messages || []).some((m) => m.type === p.K.MSG.START), "Start with nothing ticked is refused in the popup, no START message", d.getElementById("error").textContent);
@@ -466,7 +494,7 @@ function setSelect(p, name, value) {
     // loadPage stubs HTMLAnchorElement.prototype.click (download capture), so the links get a dispatched click.
     const clickLink = (id) => d.getElementById(id).dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true }));
     clickLink("models-all"); await tick();
-    ok(d.querySelectorAll("#models input:checked").length === 12 && store.popup_state.models.length === 12, "the all link ticks every model and stores it", JSON.stringify(store.popup_state.models));
+    ok(d.querySelectorAll("#models input:checked").length === 13 && store.popup_state.models.length === 13, "the all link ticks every model and stores it", JSON.stringify(store.popup_state.models));
     clickLink("models-none"); await tick();
     ok(d.querySelectorAll("#models input:checked").length === 0 && store.popup_state.models.length === 0, "the none link unticks every model and stores the empty selection", JSON.stringify(store.popup_state.models));
     p.win.close();
@@ -540,8 +568,8 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.7.0", "the manifest version is 0.7.0", manifest.version);
-    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.7.0 added no permission: still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
+    ok(manifest.version === "0.8.0", "the manifest version is 0.8.0", manifest.version);
+    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.8.0 added no permission (Pause, export and import included): still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
     ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
     ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
@@ -638,7 +666,7 @@ function setSelect(p, name, value) {
     const shown = (id) => doc.getElementById(id).style.display !== "none";
     let confirms = []; p.win.confirm = (msg) => { confirms.push(msg); return true; };
     ok(mode.tagName === "BUTTON" && mode.type === "button" && mode.getAttribute("aria-pressed") === "false" && /Click to switch to FULL RUN/.test(mode.title), "the MODE banner is a button with aria-pressed false and a title that explains the switch", mode.title);
-    ok(stepBtn && stepBtn.tagName === "BUTTON" && stepBtn.closest("header") && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "kubardy mode", 'the step-by-step button sits in the header, aria-pressed false, labelled "kubardy mode" while step-by-step is off', stepBtn && stepBtn.textContent.trim());
+    ok(stepBtn && stepBtn.tagName === "BUTTON" && stepBtn.closest("header") && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "fast mode", 'the step-by-step button sits in the header, aria-pressed false, labelled "fast mode" while step-by-step is off (inside joke off, the default)', stepBtn && stepBtn.textContent.trim());
     ok(shown("icon-warning") && !shown("icon-snail") && doc.querySelector("#icon-warning path") && doc.getElementById("icon-warning").getAttribute("aria-hidden") === "true", "the warning-sign SVG is displayed and the snail SVG is not (display style, not the hidden attribute: it does not apply to inline SVG)");
     const warningSvg = doc.getElementById("icon-warning");
     const triangle = warningSvg.querySelector("path");
@@ -647,7 +675,7 @@ function setSelect(p, name, value) {
     const popupCssText = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
     ok(/header \.step-toggle \.icon\s*\{[^}]*color:\s*var\(--mgc-accent-dark\)/.test(popupCssText) && warningSvg.classList.contains("icon") && doc.getElementById("icon-snail").classList.contains("icon"),
       "both icons take the same colour (currentColor from the .icon rule: the dark accent), as the dog did");
-    ok(/kubardy mode: step-by-step confirmation is off/.test(stepBtn.title) && /runs each job through without pausing: no Continue before Next, and in a full run no Continue before Agree/.test(stepBtn.title) && /Click for slow mode/.test(stepBtn.title), "its title explains that kubardy mode runs without pauses, and the switch", stepBtn.title);
+    ok(/^fast mode: step-by-step confirmation is off/.test(stepBtn.title) && !/kubardy/.test(stepBtn.title) && /runs each job through without pausing: no Continue before Next, and in a full run no Continue before Agree/.test(stepBtn.title) && /Click for slow mode/.test(stepBtn.title), "its title explains that fast mode runs without pauses, and the switch (no \"kubardy\" text)", stepBtn.title);
     ok(!doc.querySelector('header img[src*="icon-master"]') && doc.querySelectorAll("header svg").length === 2 && !/<img[^>]*icon-(snail|warning|dog)/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.html"), "utf8")), "both icons are inline SVG, no external assets");
 
     mode.click(); await tick();
@@ -663,7 +691,7 @@ function setSelect(p, name, value) {
     stepBtn.click(); await tick();
     ok(store.settings.step_by_step === true && stepBtn.getAttribute("aria-pressed") === "true" && doc.getElementById("step-toggle-label").textContent === "slow mode" && shown("icon-snail") && !shown("icon-warning") && /slow mode: step-by-step confirmation is on/.test(stepBtn.title), 'clicking the step button writes step_by_step=true: "slow mode" with the snail only, aria-pressed true, title updated', stepBtn.textContent.trim());
     stepBtn.click(); await tick();
-    ok(store.settings.step_by_step === false && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "kubardy mode" && shown("icon-warning") && !shown("icon-snail"), 'clicking again writes false: "kubardy mode" with the warning sign only', stepBtn.textContent.trim());
+    ok(store.settings.step_by_step === false && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "fast mode" && shown("icon-warning") && !shown("icon-snail"), 'clicking again writes false: "fast mode" with the warning sign only', stepBtn.textContent.trim());
     ok(doc.getElementById("error").hidden === true, "no error shown for an accepted toggle");
     p.win.close();
     const p2 = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
@@ -682,10 +710,10 @@ function setSelect(p, name, value) {
     ok(store.settings.live_mode === false && doc.getElementById("mode").textContent === "MODE: DRY RUN" && err.hidden === false && /A run is in progress: stop it before changing the mode or step-by-step confirmation/.test(err.textContent), "toggling the mode during a run is refused with the message; nothing written", err.textContent);
     ok(/A run is in progress: stop it before changing the mode/.test(doc.getElementById("mode").title), "the banner's title says the mode is locked during the run", doc.getElementById("mode").title);
     doc.getElementById("step-toggle").click(); await tick();
-    ok(store.settings.step_by_step === false && doc.getElementById("step-toggle-label").textContent === "kubardy mode" && err.hidden === false && /A run is in progress/.test(err.textContent), "toggling step-by-step during a run is refused the same way", err.textContent);
+    ok(store.settings.step_by_step === false && doc.getElementById("step-toggle-label").textContent === "fast mode" && err.hidden === false && /A run is in progress/.test(err.textContent), "toggling step-by-step during a run is refused the same way", err.textContent);
     const popupJs = fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8");
     const optionsJs = fs.readFileSync(path.join(E.EXT, "options/options.js"), "utf8");
-    ok((popupJs.match(/K\.saveSettings\(/g) || []).length === 2 && (optionsJs.match(/K\.saveSettings\(/g) || []).length === 1 && !/storage\.local\.set\(\{\s*\[KEYS\.SETTINGS\]/.test(popupJs + optionsJs), "both pages write settings only through MGC.saveSettings (the one path)");
+    ok((popupJs.match(/K\.saveSettings\(/g) || []).length === 2 && (optionsJs.match(/K\.saveSettings\(/g) || []).length === 2 && !/storage\.local\.set\(\{\s*\[KEYS\.SETTINGS\]/.test(popupJs + optionsJs), "both pages write settings only through MGC.saveSettings (the one path)");
     p.win.close();
   }
 
@@ -731,11 +759,13 @@ function setSelect(p, name, value) {
     const openTab = doc.getElementById("open-tab");
     ok(runs && runs.tagName === "A" && runs.closest("header") && runs.textContent === "Runs" && /full log/.test(runs.title), 'the header has a "Runs" link whose title names the full log', runs && runs.title);
     ok(runs.parentElement === openTab.parentElement && runs.parentElement.classList.contains("header-links") && runs.nextElementSibling === openTab, 'it sits next to "Open in a tab" in the same header row');
+    const realClose = p.win.close;
     store.__closed = false; p.win.close = () => { store.__closed = true; };
     runs.dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true })); // (loadPage stubs HTMLAnchorElement.prototype.click to capture downloads)
     ok(store.__tab === "chrome-extension://x/runs/runs.html" && store.__closed === false, "clicking it opens runs/runs.html in a new tab through chrome.tabs.create (the popup stays)", store.__tab);
     const css = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
     ok(/header \.header-links\s*\{[^}]*display:\s*flex/.test(css), "popup.css lays the two links out in a row");
+    p.win.close = realClose;
     p.win.close();
   }
 
@@ -1036,9 +1066,20 @@ function setSelect(p, name, value) {
     p.document.getElementById("projects").value = "proj-z";
     const haiku4 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
     haiku4.checked = true; haiku4.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    store4.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 1, done: 1, skipped: 0 } : { ok: true });
     p.document.getElementById("start").click(); await tick();
-    ok(confirms.length === 1 && /FULL RUN/.test(confirms[0]) && /guard is off/.test(confirms[0]) && /pairs already done in earlier runs will be processed again/.test(confirms[0]), "(N1) the full-run confirm names the override when the box is ticked", confirms[0]);
+    ok(confirms.length === 1 && /FULL RUN/.test(confirms[0]) && /guard is off/.test(confirms[0]) && /pairs already done or skipped in earlier runs will be processed again \(1 done, 0 skipped\)/.test(confirms[0]), "(N1) the full-run confirm names the override when the box is ticked, with the counts of each kind", confirms[0]);
+    const pv4 = (store4.__messages || []).filter((m) => m.type === p.K.MSG.GUARD_PREVIEW);
+    ok(pv4.length === 1 && JSON.stringify(pv4[0].projects) === '["proj-z"]' && pv4[0].models.length === 1, "(0.8.0) the confirm's counts come from one mgc:guard-preview for the pairs the Start would send", JSON.stringify(pv4));
     ok(p.document.getElementById("include-done").checked === false && !(store4.__messages || []).some((m) => m.type === p.K.MSG.START), "(P1) a cancelled full-run confirm spends the tick: the box is cleared and no START was sent");
+    // (0.8.0) box not ticked: the confirm names how many pairs the guard leaves out, of each kind.
+    store4.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 3, done: 1, skipped: 1 } : { ok: true });
+    p.document.getElementById("projects").value = "proj-z\nproj-y\nproj-x";
+    p.document.getElementById("start").click(); await tick();
+    ok(confirms.length === 2 && /for up to 1 of 3 project\/model pair\(s\)/.test(confirms[1]) && /leaves out 1 pair\(s\) done and 1 pair\(s\) skipped \(already enabled\) in earlier runs/.test(confirms[1]), "(0.8.0) box not ticked: the full-run confirm names the pairs left out, done and skipped, and the remaining count", confirms[1]);
+    store4.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: false, error: "database cannot be opened" } : { ok: true });
+    p.document.getElementById("start").click(); await tick();
+    ok(confirms.length === 3 && /could not be counted \(database cannot be opened\)/.test(confirms[2]), "(0.8.0) a preview that fails says so in the confirm (the worker still refuses the full run at Start)", confirms[2]);
     p.win.close();
     // (P1) every Start click spends the tick: a refusal by the popup's own check and a refusal by the worker clear it too.
     const store5 = { settings: Object.assign({}, FULL) };
@@ -1099,6 +1140,193 @@ function setSelect(p, name, value) {
     fakeIDB.reset();
   }
 
+  console.log('--- (0.8.0) the "inside joke" box: the last control on the options page; off shows "fast mode", on shows "kubardy mode" (text only)');
+  {
+    const store = { settings: Object.assign({}, FULL) };
+    let p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    let doc = p.document;
+    const controls = Array.from(doc.querySelectorAll("input, button, select, textarea"));
+    const last = controls[controls.length - 1];
+    ok(last && last.name === "inside_joke" && last.type === "checkbox" && last.closest("label").textContent.trim() === "inside joke", 'the last control on the options page is a checkbox labelled "inside joke"', last && last.outerHTML);
+    ok(last.checked === false && p.K.DEFAULT_SETTINGS.inside_joke === false, "unticked by default (DEFAULT_SETTINGS.inside_joke false)");
+    const names = () => Array.from(doc.querySelectorAll(".step-off-name")).map((e) => e.textContent);
+    ok(names().length === 2 && names().every((t) => t === "fast mode") && !/kubardy/i.test(doc.body.textContent), 'off: every step-by-step-off name on the page reads "fast mode", no "kubardy" text anywhere', names().join(","));
+    // An unsaved DRY RUN edit survives the box's own instant save.
+    doc.getElementById("form").elements.dry_run.checked = false;
+    last.checked = true; last.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    p.win.chrome.__fire({ settings: { oldValue: Object.assign({}, FULL), newValue: store.settings } }); await tick();
+    ok(store.settings.inside_joke === true && store.settings.live_mode === false && names().every((t) => t === "kubardy mode"), 'ticking stores inside_joke true at once (the mode untouched) and the page reads "kubardy mode"', JSON.stringify(store.settings));
+    ok(doc.getElementById("form").elements.dry_run.checked === false, "an unsaved DRY RUN edit in the form is left as it was by that instant save");
+    p.win.close();
+    // The popup follows the setting; the icon stays the warning sign.
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    doc = p.document;
+    const stepBtn = doc.getElementById("step-toggle");
+    ok(doc.getElementById("step-toggle-label").textContent === "kubardy mode" && /^kubardy mode: step-by-step confirmation is off/.test(stepBtn.title) && doc.getElementById("icon-warning").style.display !== "none", 'popup with the box ticked: "kubardy mode", same warning-sign icon', stepBtn.title);
+    stepBtn.click(); await tick();
+    ok(/Click for kubardy mode \(no pauses\)/.test(stepBtn.title), "slow mode's title names kubardy mode as the other choice", stepBtn.title);
+    p.win.close();
+    store.settings.inside_joke = false; store.settings.step_by_step = false;
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    doc = p.document;
+    const allText = doc.body.textContent + Array.from(doc.querySelectorAll("[title]")).map((e) => e.title).join(" ");
+    ok(doc.getElementById("step-toggle-label").textContent === "fast mode" && !/kubardy/i.test(allText), 'popup with the box unticked: "fast mode", no "kubardy" in any text or title', doc.getElementById("step-toggle-label").textContent);
+    p.win.close();
+    // During a run the box still saves (text only, not a mode).
+    const storeRun = { settings: Object.assign({}, FULL), running: true, run: { runId: "r", live: false } };
+    p = await loadPage("options/options.html", storeRun, OPTIONS_SCRIPTS);
+    const box = p.document.getElementById("form").elements.inside_joke;
+    box.checked = true; box.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    ok(storeRun.settings.inside_joke === true && storeRun.settings.live_mode === false, "during a run the inside joke box saves (it changes no mode)");
+    p.win.close();
+  }
+
+  console.log("--- (0.8.0) popup: Pause next to Stop while a run is active, Resume while paused");
+  {
+    const store = { settings: Object.assign({}, FULL) };
+    let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    let doc = p.document;
+    const pause = () => doc.getElementById("pause");
+    ok(pause() && pause().hidden === true && pause().previousElementSibling === doc.getElementById("stop"), "idle: the Pause button sits right after Stop and is hidden");
+    p.win.close();
+    Object.assign(store, { running: true, run: { runId: "r", live: false }, current: { jobIndex: 0, phase: "model" },
+      queue: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "running", phase: "model" }, { projectId: "proj-two", modelSlug: "claude-haiku-4-5", status: "pending" }] });
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    doc = p.document;
+    ok(pause().hidden === false && pause().disabled === false && pause().textContent === "Pause" && doc.getElementById("stop").disabled === false, "a run is active: Pause shown and enabled next to an enabled Stop");
+    store.__reply = (m) => { if (m.type === p.K.MSG.PAUSE) store.paused = true; if (m.type === p.K.MSG.RESUME) store.paused = false; return { ok: true }; };
+    pause().click(); await tick();
+    ok((store.__messages || []).some((m) => m.type === p.K.MSG.PAUSE) && store.settings.live_mode === false, "Pause sends mgc:pause (the mode untouched)");
+    p.win.chrome.__fire({ paused: { newValue: true } }); await tick();
+    ok(pause().textContent === "Resume" && /\(PAUSED after this job\)/.test(doc.getElementById("status").textContent), "while job 1 runs: the button reads Resume and the status says PAUSED after this job", doc.getElementById("status").textContent);
+    store.current = { jobIndex: 0, phase: "finished" }; store.queue[0].status = "dry-run";
+    p.win.chrome.__fire({ current: { newValue: store.current } }); await tick();
+    ok(/^PAUSED before job 2\/2: proj-two \/ claude-haiku-4-5; Resume continues, Stop ends the run/.test(doc.getElementById("status").textContent) && doc.getElementById("stop").disabled === false && doc.getElementById("start").disabled === true, "paused between jobs: the status names the next job; Stop stays enabled, Start disabled", doc.getElementById("status").textContent);
+    pause().click(); await tick();
+    ok((store.__messages || []).some((m) => m.type === p.K.MSG.RESUME) && store.paused === false, "Resume sends mgc:resume");
+    store.__reply = () => ({ ok: false, error: "no run in progress" });
+    p.win.chrome.__fire({ paused: { newValue: false } }); await tick();
+    pause().click(); await tick();
+    ok(/no run in progress/.test(doc.getElementById("error").textContent), "a refused pause shows the worker's reason");
+    p.win.close();
+  }
+
+  console.log("--- (0.8.0) options page: Export settings / Import settings in the Advanced section");
+  {
+    const stored = () => ({
+      settings: Object.assign({}, FULL, { live_mode: true, step_by_step: true, inside_joke: true }),
+      timing: Object.assign({}, globalThis.MGC.TIMING_DEFAULTS, { poll_ms: 400 }),
+      runs_keep: 30,
+      popup_state: { projects: "proj-one\nproj-two\n", models: ["claude-haiku-4-5", "claude-opus-5-5"], extra: "claude-x-1", version: MANIFEST_VERSION },
+      running: true, run: { runId: "r-act", live: true }, queue: [{ projectId: "proj-run", modelSlug: "claude-haiku-4-5", status: "running" }]
+    });
+    let store = stored();
+    let p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    let doc = p.document;
+    const adv = doc.querySelector("fieldset.advanced");
+    ok(adv.contains(doc.getElementById("config-export")) && adv.contains(doc.getElementById("config-import")) && doc.getElementById("config-import").type === "file", "Export settings (a button) and Import settings (a file input) sit in the Advanced section");
+    doc.getElementById("config-export").click(); await tick(); await tick();
+    const dl = (store.__downloads || [])[0];
+    ok(dl && /^model-garden-clicker-settings-\d{8}-\d{6}\.json$/.test(dl.download) && /^blob:/.test(dl.href), "Export saves a file through a blob link (no downloads permission)", JSON.stringify(dl));
+    const exported = JSON.parse(await store.__blobs[0].text());
+    ok(exported.app === "model-garden-clicker" && exported.schema === 1 && exported.settings.business_name === "b" && exported.settings.step_by_step === true && exported.settings.inside_joke === true, "the file holds the schema, the questionnaire, step-by-step and the inside joke box", JSON.stringify(exported.settings));
+    ok(JSON.stringify(exported.popup) === JSON.stringify({ projects: ["proj-one", "proj-two"], models: ["claude-haiku-4-5", "claude-opus-5-5"], extra: "claude-x-1" }) && exported.timing.poll_ms === 400 && exported.runs_keep === 30, "the file holds the project IDs, the ticked models, the extra slugs, the timing and runs to keep", JSON.stringify(exported.popup));
+    ok(!/live_mode|dry_run|include_?done/i.test(JSON.stringify(exported)), "the file never holds the mode (live_mode) or the per-run include box", JSON.stringify(exported).slice(0, 200));
+    p.win.close();
+
+    /** Choose `text` as the import file and wait for the reader. */
+    const choose = async (pg, text, name) => {
+      const input = pg.document.getElementById("config-import");
+      Object.defineProperty(input, "files", { configurable: true, value: [new pg.win.File([text], name || "settings.json", { type: "application/json" })] });
+      input.dispatchEvent(new pg.win.Event("change", { bubbles: true }));
+      await tick(); await tick();
+      const n = pg.document.getElementById("config-note");
+      return { text: n.hidden ? "" : n.textContent, error: n.className === "error" };
+    };
+    // Import into a page whose store is in DRY RUN, during an active run: everything but the mode is filled; Save keeps it.
+    store = { settings: Object.assign({}, FULL, { business_name: "old", live_mode: false }), popup_state: { projects: "keep-me-1", models: [], extra: "", version: MANIFEST_VERSION },
+      running: true, run: { runId: "r-act", live: false }, queue: [{ projectId: "proj-run", modelSlug: "claude-haiku-4-5", status: "running" }] };
+    p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    doc = p.document;
+    const form = doc.getElementById("form");
+    const file = Object.assign({}, exported, { settings: Object.assign({}, exported.settings, { live_mode: true, business_website: "", favourite: "x" }), popup: Object.assign({}, exported.popup, { includeDone: true }), dry_run: false, extra_top: 1 });
+    let r = await choose(p, JSON.stringify(file));
+    ok(!r.error && /Imported \d+ value\(s\) from settings\.json\. Click Save to keep them\./.test(r.text) && /written to the popup on Save/.test(r.text), "a full file imports with a notice to Save", r.text);
+    ok(/Ignored: /.test(r.text) && /settings\.live_mode is never imported/.test(r.text) && /popup\.includeDone is never imported/.test(r.text) && /dry_run is never imported/.test(r.text) && /settings\.favourite is not a known key/.test(r.text) && /extra_top is not a known key/.test(r.text), "unknown keys and the mode keys are ignored with a visible notice naming each", r.text);
+    ok(form.elements.business_name.value === "b" && form.elements.business_website.value === FULL.business_website && form.elements.step_by_step.checked === true && form.elements.inside_joke.checked === true && form.elements.runs_keep.value === "30" && JSON.parse(form.elements.timing_json.value).poll_ms === 400, "the fields are filled; an empty value (business_website \"\") leaves the current one", form.elements.business_website.value);
+    ok(form.elements.dry_run.checked === true && store.settings.live_mode === false, "the DRY RUN box is untouched by the import (live_mode true in the file is ignored)");
+    ok(store.settings.business_name === "old" && store.popup_state.projects === "keep-me-1", "nothing is stored before Save");
+    ok(/if the popup is open, reopen it to see them/.test(r.text), "the notice says an open popup must be reopened to show the imported projects and models", r.text);
+    ok(/A run is in progress and the imported step-by-step setting differs from the current one: Save is refused while the run is active\. Stop the run first, then Save\./.test(r.text), "importing a different step-by-step value during a run says that Save is refused while the run is active", r.text);
+    const refused = await submit(p);
+    ok(refused.error && /A run is in progress/.test(refused.text) && store.settings.business_name === "old", "and Save is indeed refused while the run is active; nothing stored", refused.text);
+    // With step-by-step put back as stored, the rest saves.
+    form.elements.step_by_step.checked = false;
+    const sv = await submit(p);
+    ok(!sv.error && store.settings.business_name === "b" && store.settings.live_mode === false && store.settings.inside_joke === true && store.timing.poll_ms === 400 && store.runs_keep === 30, "Save keeps the imported values, still DRY RUN", JSON.stringify(sv));
+    ok(store.popup_state.projects === "proj-one\nproj-two" && JSON.stringify(store.popup_state.models) === '["claude-haiku-4-5","claude-opus-5-5"]' && store.popup_state.extra === "claude-x-1" && store.popup_state.version === MANIFEST_VERSION, "Save writes the project IDs, models and extra slugs to the popup's state (with the version marker)", JSON.stringify(store.popup_state));
+    ok(store.queue.length === 1 && store.queue[0].projectId === "proj-run" && store.running === true && store.run.runId === "r-act", "the active run's queue and run are untouched");
+    // Invalid values: refused as a whole, each key named, nothing filled.
+    form.elements.business_name.value = "typed";
+    r = await choose(p, JSON.stringify({ schema: 1, settings: { business_name: "new", step_by_step: "yes" }, timing: { poll_ms: 1 }, runs_keep: 0, popup: { projects: ["Bad_ID"] } }));
+    ok(r.error && /^Not imported, nothing changed: /.test(r.text) && /settings\.step_by_step must be true or false/.test(r.text) && /timing\.poll_ms must be an integer between 50 and 5000/.test(r.text) && /runs_keep must be an integer between 1 and 500/.test(r.text) && /popup\.projects holds an invalid project ID: "Bad_ID"/.test(r.text) && form.elements.business_name.value === "typed", "invalid values refuse the import with a message naming every key; nothing is filled", r.text);
+    r = await choose(p, JSON.stringify({ schema: 2 }));
+    ok(r.error && /schema must be an integer from 1 to 1/.test(r.text), "a newer schema is refused naming the key", r.text);
+    r = await choose(p, "{ not json", "broken.json");
+    ok(r.error && /broken\.json is not valid JSON/.test(r.text), "a file that is not JSON is refused", r.text);
+    // The old format: a timing-only object, as the Advanced field takes it.
+    form.elements.timing_json.value = JSON.stringify(Object.assign({}, globalThis.MGC.TIMING_DEFAULTS, { nav_ms: 50000 }));
+    r = await choose(p, JSON.stringify({ poll_ms: 300, live_mode: true }), "timing.json");
+    const tj = JSON.parse(form.elements.timing_json.value);
+    ok(!r.error && /\(a timing-only file\)/.test(r.text) && tj.poll_ms === 300 && tj.nav_ms === 50000 && /live_mode is never imported/.test(r.text) && form.elements.dry_run.checked === true, "the old timing-only format imports into the timing field (other keys kept); live_mode in it is ignored", r.text);
+    p.win.close();
+    // A file with no popup part, or an empty project list, leaves the popup's state alone.
+    store = { settings: Object.assign({}, FULL), popup_state: { projects: "keep-me-1", models: ["claude-haiku-4-5"], extra: "", version: MANIFEST_VERSION } };
+    p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: [], models: [], extra: "" }, settings: { industry: "Education" } }));
+    await submit(p);
+    ok(!r.error && store.popup_state.projects === "keep-me-1" && JSON.stringify(store.popup_state.models) === '["claude-haiku-4-5"]' && !/written to the popup/.test(r.text), "an empty project list and empty models leave the popup's state unchanged", JSON.stringify(store.popup_state));
+    // Ticked models that are not in models.json move to the extra slugs, named in the notice.
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { models: ["claude-haiku-5-5", "claude-private-9", "claude-other-2"], extra: "claude-x-1" } }));
+    await submit(p);
+    ok(!r.error && /Not in the model list, so moved to the extra slugs: claude-private-9, claude-other-2\./.test(r.text) && JSON.stringify(store.popup_state.models) === '["claude-haiku-5-5"]' && store.popup_state.extra === "claude-x-1, claude-private-9, claude-other-2", "ticked models not in models.json are moved to the extra slugs and named in the notice", `${r.text} | ${JSON.stringify(store.popup_state)}`);
+    // null means missing for every key: nothing changes, no notice.
+    const form2 = p.document.getElementById("form");
+    const before = { name: form2.elements.business_name.value, step: form2.elements.step_by_step.checked, timing: form2.elements.timing_json.value, keep: form2.elements.runs_keep.value };
+    r = await choose(p, JSON.stringify({ app: null, schema: null, exported: null, settings: { business_name: null, step_by_step: null, inside_joke: null, unknown_key: null }, popup: null, timing: { poll_ms: null }, runs_keep: null, other: null }));
+    ok(!r.error && /Imported 0 value\(s\)/.test(r.text) && !/Ignored/.test(r.text) && form2.elements.business_name.value === before.name && form2.elements.step_by_step.checked === before.step && form2.elements.timing_json.value === before.timing && form2.elements.runs_keep.value === before.keep, "null is missing for every key: nothing filled, nothing refused, no notice", r.text);
+    r = await choose(p, JSON.stringify({ poll_ms: null, nav_ms: 50000 }), "timing.json");
+    ok(!r.error && JSON.parse(form2.elements.timing_json.value).nav_ms === 50000 && /Imported 1 value/.test(r.text), "null is missing in a timing-only file too", r.text);
+    // Text values are capped at 2,000 characters.
+    r = await choose(p, JSON.stringify({ schema: 1, settings: { use_cases: "x".repeat(2001), business_name: "fine" }, popup: { extra: "a".repeat(2001) } }));
+    ok(r.error && /settings\.use_cases is longer than 2000 characters/.test(r.text) && /popup\.extra is longer than 2000 characters/.test(r.text) && form2.elements.business_name.value === before.name, "a text value over 2,000 characters refuses the file, naming each key; nothing is filled", r.text);
+    r = await choose(p, JSON.stringify({ schema: 1, settings: { use_cases: "y".repeat(2000) } }));
+    ok(!r.error && form2.elements.use_cases.value.length === 2000, "2,000 characters is accepted", r.text);
+    // Ticked models are matched to the model list case-insensitively and keep the list's spelling; null entries in a list are dropped.
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { models: ["Claude-Haiku-5-5", null, "claude-haiku-5-5", "Claude-Private-9"], projects: [null, "proj-one"] } }));
+    await submit(p);
+    ok(!r.error && JSON.stringify(store.popup_state.models) === '["claude-haiku-5-5"]' && /moved to the extra slugs: Claude-Private-9\./.test(r.text) && store.popup_state.projects === "proj-one", "ticked models match the list case-insensitively (the list's spelling kept, once); null entries in a list are dropped", `${r.text} | ${JSON.stringify(store.popup_state)}`);
+    // The project and model lists are capped at 2,000 characters joined, and the extra slugs again after the move.
+    const capIds = Array.from({ length: 90 }, (_, i) => `proj-cap-${String(i).padStart(4, "0")}-abcdefghij`);
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: capIds } }));
+    ok(r.error && /popup\.projects is longer than 2000 characters/.test(r.text), "a project list over 2,000 characters joined is refused naming the key", r.text);
+    const capSlugs = Array.from({ length: 120 }, (_, i) => `claude-cap-${i}-abcdefg`);
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { models: capSlugs } }));
+    ok(r.error && /popup\.models is longer than 2000 characters/.test(r.text), "a model list over 2,000 characters joined is refused naming the key", r.text);
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { models: capSlugs.slice(0, 60), extra: capSlugs.slice(60, 100).join(",") } }));
+    ok(r.error && /popup\.extra is longer than 2000 characters once the ticked models not in the model list are moved into it/.test(r.text), "the extra slugs are capped again after the unknown ticked models move into them", r.text);
+    // The project cap applies to the trimmed IDs joined, in the text form too; padding alone does not trip it.
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: capIds.join("\n") } }));
+    ok(r.error && /popup\.projects is longer than 2000 characters/.test(r.text), "a project text over 2,000 characters (trimmed IDs joined) is refused naming the key", r.text);
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: "   proj-pad-one   \n" + " ".repeat(2100) + "\n   proj-pad-two   " } }));
+    await submit(p);
+    ok(!r.error && store.popup_state.projects === "proj-pad-one\nproj-pad-two", "a project text padded past 2,000 characters with blanks is accepted (the cap counts the trimmed IDs)", `${r.text} | ${JSON.stringify(store.popup_state.projects)}`);
+    // A list that empties to nothing leaves the current value, with a notice.
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: [null, "  "], models: [null] } }));
+    ok(!r.error && /popup\.projects holds no project ID, so the current ones are kept/.test(r.text) && /popup\.models holds no model slug, so the current selection is kept/.test(r.text), "a project or model list that empties to nothing keeps the current value and says so", r.text);
+    p.win.close();
+  }
+
   console.log("--- the release zip and the file table carry the runs page");
   {
     const zipScript = fs.readFileSync(path.join(E.EXT, "..", "scripts/build-extension-zip.sh"), "utf8");
@@ -1107,5 +1335,18 @@ function setSelect(p, name, value) {
     ok(/`runs\/`/.test(readme) && /`common\/runlog\.js`/.test(readme) && /Runs to keep/.test(readme), "extension/README.md documents runs/, common/runlog.js and the retention setting");
   }
 
+  {
+    // Control: the capture is live (a console.error, a window error event and an unhandled rejection in the page are collected).
+    const p = await loadPage("popup/popup.html", { settings: Object.assign({}, FULL) }, POPUP_SCRIPTS);
+    p.win.console.error("control console.error");
+    p.win.dispatchEvent(new p.win.ErrorEvent("error", { message: "control window error" }));
+    p.win.Promise.reject(new p.win.Error("control rejection"));
+    await tick();
+    const seen = p.pageErrors.join(" | ");
+    ok(/console\.error: control console\.error/.test(seen) && /window error: control window error/.test(seen) && /unhandled rejection: control rejection/.test(seen), "control: the page loader's error capture is live (console.error, window error events and unhandled rejections are collected)", seen);
+    p.pageErrors.length = 0; // the control's own errors are not a failure of the page
+    p.win.close();
+  }
+  ok(openPages.size === 0, "every page loaded by loadPage was closed, so each one's error check ran", [...openPages].join(", "));
   E.finish("ui pages");
 })();

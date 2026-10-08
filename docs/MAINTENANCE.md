@@ -151,7 +151,7 @@ grep -o 'p6ntest-mp-agreements-body-tos-checkbox\|data-prober="cloud-marketplace
 |---|---|---|
 | model | `vertex-ai-request-access-button button` with trimmed text `Enable`, else the button reading `Enable` inside `vai-model-garden-call-to-action-button-stack` (never one elsewhere on the page); `vertex-ai-open-generation-ai-studio-button` or the text `Open in Agent Studio` (already enabled); `apis-enabler` or the h1 `Enable APIs` (the dialog); path `/agent-platform/publishers/anthropic/model-garden/`, with the stack as the page's DOM-side shell | "Page 1: model page", "Conditional: Enable APIs dialog" |
 | questionnaire | `raf-runtime-form-element[raf-name=...]` for `businessName`, `businessWebsite`, `contactEmailAddress`, `businessHeadquarterSelect`, `industrySelect`, `intendedUserSelect`, `intendedUseCasesSelect`, `hasAdditionalRequirements`, `additionalRequirements`; `cfc-select` dropdowns (their `.cfc-select-trigger` and `.cfc-select-option-primary` classes live in `content/dom.js`, which handles how a control registers a value); the button `Next` inside `cfc-panel-footer.mg-questionnaire-footer` (or any `.mg-questionnaire-footer` element; never one elsewhere); URL parameters `model=` and `mp=`; `raf-form[raf-entry-name="RequestAccessFormGroup"]` or the footer as the page's DOM-side shell | "Page 2: questionnaire" |
-| agreements | `mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox`, else `mp-agreements-tos` (its closest `mat-checkbox`), else the one `mat-checkbox` inside `billing-integrated-ai-agreements-body`; `button[data-prober="cloud-marketplace-request-product"]` or `aria-label^="Agree to the terms"` (no text locator for Agree); `mp-consent-complete-dialog` (success), `behavior-failure-dialog` (error); path `/marketplace/agreements/anthropic/`, with `billing-integrated-ai-agreements-body` or `mp-agreements-tos` as the page's DOM-side shell | "Page 3: Agreements", "After Agree" |
+| agreements | `mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox`, else `mp-agreements-tos` (its closest `mat-checkbox`), taken only when the two hooks lead to exactly one `mat-checkbox` on the page, outside any banner or dialog (no positional fallback; otherwise the job fails and nothing is ticked); `button[data-prober="cloud-marketplace-request-product"]` or `aria-label^="Agree to the terms"` (no text locator for Agree); `mp-consent-complete-dialog` (success), `behavior-failure-dialog` (error); path `/marketplace/agreements/anthropic/`, with `billing-integrated-ai-agreements-body` or `mp-agreements-tos` as the page's DOM-side shell | "Page 3: Agreements", "After Agree" |
 | dialogs | `mat-dialog-container`, or any element with `role="dialog"` and `aria-modal="true"`; a non-modal `role="dialog"` (a drawer, a survey panel) blocks nothing, and every refusal or panel note names the element that matched | "Conditional: Enable APIs dialog", "After Agree" |
 
 Rules that held on every recorded page: generated ids (`_0rif_...`,
@@ -197,6 +197,26 @@ Where things live when the change is not a locator:
 `run.sh` checks that `unguardedClick()` and `agreeButton()` are consumed
 only inside `clickAgreeGuarded()`. Do not add a second path to the Agree
 button while repairing a selector.
+
+### The Agree guard
+
+`run.sh` also prints the md5 of the body of `clickAgreeGuarded()` in
+`extension/content/actions.js` (the lines from
+`A.clickAgreeGuarded = async function` to the closing `  };`) on every run,
+and says whether it matches this baseline:
+
+- guard md5 baseline: `cb9355fd64564c8cca121beccd4d42fc` (0.7.0, unchanged in 0.8.0)
+
+To compute it by hand:
+
+```sh
+awk '/A.clickAgreeGuarded = async function/,/^  };/' extension/content/actions.js | md5sum
+```
+
+The 0.7.0 baseline replaced `44b0762609188c286515dced64e89638`: one
+statement changed (the dialog-open refusal message is now built by
+`dialogNamed()`), a cosmetic edit. Any edit to the guard is named in its
+commit message, and the new md5 is recorded here in the same commit.
 
 ## 5. Run the offline suite against the new dumps
 
@@ -348,6 +368,8 @@ the two dump-independent suites (`worker-harness.mjs`, `ui-pages.cjs`) a
 second time under a strict wrapper that fails on a non-zero exit, on a
 missing summary line and on any skipped check, then runs
 `scripts/build-extension-zip.sh` and
-attaches `dist/model-garden-clicker-<version>.zip` to a GitHub release.
+attaches `dist/model-garden-clicker-<version>.zip` to a GitHub release named
+with the bare tag (for example `v0.8.0`), whose body is the tag's
+`CHANGELOG.md` section.
 Then upload that zip to the Chrome Web Store by hand; `store/CHECKLIST.md`
 walks the dashboard tabs.

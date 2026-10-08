@@ -252,7 +252,7 @@ withSnapshot(RUN_A, "02-after-enable", ({ S, D, document: doc }) => {
 });
 
 withSnapshot(RUN_A, "04-agreements", ({ S, D, document: doc }) => {
-  console.log("--- (T6) agreements: the terms checkbox's three locators, the Agree button's two, the DOM-side page detector");
+  console.log("--- (T6) agreements: the terms checkbox's two locators, the Agree button's two, the DOM-side page detector");
   ok(S.detectPageByDom() === "agreements" && S.agreements.hasShell() && !S.model.hasShell() && !S.questionnaire.hasShell(), "detectPageByDom = agreements: billing-integrated-ai-agreements-body / mp-agreements-tos are the shell (the footer class in a stylesheet is not an element)");
   const cb = S.agreements.termsCheckbox();
   cb.classList.remove("p6ntest-mp-agreements-body-tos-checkbox");
@@ -261,11 +261,10 @@ withSnapshot(RUN_A, "04-agreements", ({ S, D, document: doc }) => {
   const tosRenamed = doc.createElement("mp-renamed-tos");
   while (tos.firstChild) tosRenamed.appendChild(tos.firstChild);
   tos.replaceWith(tosRenamed);
-  ok(S.agreements.termsCheckbox() === cb, "with mp-agreements-tos renamed too, the checkbox is the only mat-checkbox inside billing-integrated-ai-agreements-body (third locator)");
-  D.q("billing-integrated-ai-agreements-body").insertAdjacentHTML("beforeend", '<mat-checkbox class="newsletter"><label><input type="checkbox"> Email me offers</label></mat-checkbox>');
-  ok(S.agreements.termsCheckbox() === null, "a second mat-checkbox in the body makes the third locator refuse (null): the handler then halts naming the locators instead of ticking a guess");
-  doc.querySelector("mat-checkbox.newsletter").remove();
-  ok(S.agreements.termsCheckbox() === cb, "control: with the second box gone the third locator finds it again");
+  ok(S.agreements.termsCheckbox() === null, "with mp-agreements-tos renamed too, no locator matches (no positional fallback): null, so the handler halts naming the two locators and nothing is ticked");
+  ok(D.qa("mat-checkbox", D.q("billing-integrated-ai-agreements-body")).length === 1, "control: the box is still the only mat-checkbox in the body, and it is not taken by position");
+  cb.classList.add("p6ntest-mp-agreements-body-tos-checkbox");
+  ok(S.agreements.termsCheckbox() === cb, "control: with the test hook class back it is found again");
   const agree = S.agreements.agreeButton();
   agree.removeAttribute("data-prober");
   ok(S.agreements.agreeButton() === agree && S.agreements.hasAgreeButton() === true, "with data-prober gone, Agree is found by its aria-label (second locator)");
@@ -293,11 +292,222 @@ withSnapshot(RUN_B, "01-model-page-api-dialog", ({ S, document: doc }) => {
   env.win.close();
 })();
 
+/* ------------------------------------------------------------ (0.8.0) blockers */
+
+(function blockersSynthetic() {
+  console.log("--- (0.8.0) blockers: permission wording inside error, alert, snackbar or dialog elements only");
+  const MODEL = "https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-haiku-4-5?project=proj-one";
+  const page = (inner) => `<!doctype html><html><head></head><body><nav><a>IAM &amp; Admin</a><a>Permissions</a></nav><div role="main"><p>Grant access with IAM. A 403 is a permission error; contact your administrator if you do not have access.</p>${inner || ""}</div></body></html>`;
+  const positives = [
+    ["a snackbar: \"You do not have permission ...\"", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>You do not have permission to enable models in this project.</simple-snack-bar></mat-snack-bar-container></div>', /^You do not have permission to enable models in this project\.$/],
+    ["an alert banner: \"Permission denied ... requires the ... role\"", '<div role="alert" class="banner">Permission denied: this action requires the Vertex AI Administrator (roles/aiplatform.admin) role.</div>', /Permission denied: this action requires the Vertex AI Administrator/],
+    ["a modal dialog: \"403 ... contact your administrator\"", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Error 403</h1><div matdialogcontent>That is all we know. Contact your administrator.</div></mat-dialog-container></div>', /403/],
+    ["an error cfc-message: \"You don't have access ... IAM\"", '<cfc-message type="error"><div class="cfc-message cfc-message-error">You don\'t have access to project proj-one. Ask an owner for an IAM role.</div></cfc-message>', /You don't have access to project proj-one/],
+    ["an error page component in the main content", '<div class="pcc-error-page">Sorry, you lack the required permissions to view this page.</div>', /required permissions/],
+    ["a snackbar with the API status PERMISSION_DENIED", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>Request failed: PERMISSION_DENIED</simple-snack-bar></mat-snack-bar-container></div>', /PERMISSION_DENIED/],
+    ["a form error: \"Error 403: Forbidden\"", '<mat-form-field><mat-error>Error 403: Forbidden</mat-error></mat-form-field>', /Forbidden/],
+    ["a dialog: \"You need additional access\"", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Cannot continue</h1><div matdialogcontent>You need additional access to use this model.</div></mat-dialog-container></div>', /need additional access/],
+    ["a snackbar: \"You don't have sufficient permissions ...\"", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>You don\'t have sufficient permissions to view this page.</simple-snack-bar></mat-snack-bar-container></div>', /sufficient permissions/],
+    ["an alert: \"You do not have the required permissions ...\"", '<div role="alert">You do not have the required permissions to enable this model.</div>', /required permissions/],
+    ["a dialog: \"You are missing at least one of the following required permissions ...\"", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Cannot enable</h1><div matdialogcontent>You are missing at least one of the following required permissions: aiplatform.models.get</div></mat-dialog-container></div>', /missing at least one of the following required permissions/],
+    ["a snackbar: \"Required 'serviceusage.services.enable' permission for 'projects/x'\"", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>Required \'serviceusage.services.enable\' permission for \'projects/x\'</simple-snack-bar></mat-snack-bar-container></div>', /serviceusage\.services\.enable/],
+    ["an alert: \"Permission error: ...\"", '<div role="alert">Permission error: the request was refused.</div>', /Permission error/],
+    ["an error banner: \"requires the ... role\" (weak wording counts in an error banner)", '<cfc-message type="error"><div class="cfc-message cfc-message-error">This action requires the Vertex AI User role.</div></cfc-message>', /requires the Vertex AI User role/]
+  ];
+  for (const [label, html, re] of positives) {
+    const env = E.makeEnv({ html: page(html), url: MODEL });
+    const p = env.S.blockers.permission();
+    ok(!!p && re.test(p.excerpt) && env.S.blockers.consent() === null, `permission() matches ${label}`, JSON.stringify(p));
+    const r = env.A.blockerResult();
+    ok(r && r.status === "failed" && r.message === `missing permission: ${p.excerpt}`, `  -> result failed, reason "missing permission: <excerpt>"`, r && r.message);
+    env.win.close();
+  }
+  const negatives = [
+    ["ordinary page text with every phrase (nav IAM & Admin, a paragraph naming permission, 403, administrator)", ""],
+    ["a hidden alert", '<div role="alert" style="display: none;">Permission denied</div>'],
+    ["an info cfc-message (not error/warning)", '<cfc-message type="info"><div class="cfc-message">Permissions are managed in IAM.</div></cfc-message>'],
+    ["the \"Enable APIs\" dialog", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><apis-enabler><h1 matdialogtitle> Enable APIs </h1><div matdialogcontent>The Agent Platform API must be enabled to use this page. Requires permission serviceusage.services.enable.</div></apis-enabler></mat-dialog-container></div>'],
+    ["a warning banner: \"Request more under IAM & Admin > Quotas\"", '<cfc-message type="warning"><div class="cfc-message cfc-message-warning">You are close to your quota. Request more under IAM &amp; Admin &gt; Quotas.</div></cfc-message>'],
+    ["a warning banner naming a product \"anthropic-403\"", '<cfc-message type="warning"><div class="cfc-message cfc-message-warning">The listing anthropic-403.cloudpartnerservices.goog has a new version.</div></cfc-message>'],
+    ["a warning banner that mentions permissions without denying anything", '<cfc-message type="warning"><div class="cfc-message cfc-message-warning">Permissions for this model are managed in IAM.</div></cfc-message>'],
+    ["an alert: \"If you need access to Claude in more regions ...\"", '<div role="alert">If you need access to Claude in more regions, request a quota increase.</div>'],
+    ["a dialog: \"forbidden content ...\"", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Usage policy</h1><div matdialogcontent>Prompts must not include forbidden content such as malware.</div></mat-dialog-container></div>'],
+    ["an alert: \"forbidden by your organization policy\"", '<div role="alert">Exporting logs is forbidden by your organization policy.</div>'],
+    ["a \"Manage permissions\" dialog", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Manage permissions</h1><div matdialogcontent>Choose who can use this model.</div><button>Close</button></mat-dialog-container></div>'],
+    ["a snackbar: \"Permission name copied\"", '<div class="cdk-overlay-container"><mat-snack-bar-container><simple-snack-bar>Permission name copied</simple-snack-bar></mat-snack-bar-container></div>'],
+    ["an alert tip: \"requires the Vertex AI User role\"", '<div role="alert">Tip: calling this model from code requires the Vertex AI User role.</div>'],
+    ["a form error: \"not allowed to\" validation text", '<mat-form-field><mat-error>Project IDs are not allowed to start with a digit.</mat-error></mat-form-field>'],
+    ["the console's refusal dialog after Agree", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"><behavior-failure-dialog><h1 matdialogtitle>Action Required</h1><div matdialogcontent>Denied: choose a different billing account.</div></behavior-failure-dialog></mat-dialog-container></div>']
+  ];
+  for (const [label, html] of negatives) {
+    const env = E.makeEnv({ html: page(html), url: MODEL });
+    ok(env.S.blockers.permission() === null && env.A.blockerResult() === null, `no match: ${label}`, JSON.stringify(env.S.blockers.permission()));
+    env.win.close();
+  }
+
+  console.log("--- (0.8.0) blockers: extra consent controls (dialog or banner), never the flow's own dialogs or the terms box");
+  const consentPos = [
+    ["a banner holding a checkbox (the Fable 5.1 shape)", '<div class="addendum-banner-container"><cfc-message type="warning"><div class="addendum-intro">To enable this model you must accept the Extra Addendum for this project.</div><mat-checkbox><label><input type="checkbox"> By checking this box, you agree</label></mat-checkbox><button> Accept Terms </button></cfc-message></div>', /^div\.addendum-banner-container$/, /Extra Addendum/],
+    ["a dialog with consent wording and a checkbox", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Before you continue</h1><mat-checkbox><label><input type="checkbox"> I accept the model addendum</label></mat-checkbox><button>Continue</button></mat-dialog-container></div>', /^mat-dialog-container$/, /I accept the model addendum/],
+    ["a banner with consent wording and only an \"Accept Terms\" button (no checkbox)", '<cfc-message type="warning"><div class="cfc-message">You must accept the model addendum for this project.</div><button> Accept Terms </button></cfc-message>', /^cfc-message$/, /addendum/],
+    ["a dialog checkbox whose consent wording is in its aria-label only", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>One more step</h1><mat-checkbox><label><input type="checkbox" aria-label="I agree to the model addendum"></label></mat-checkbox><button>Continue</button></mat-dialog-container></div>', /^mat-dialog-container$/, /model addendum/],
+    ["a dialog checkbox whose consent wording is in the element its aria-labelledby names", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>One more step</h1><span id="lbl-x">I agree to the extra terms of service</span><mat-checkbox><label><input type="checkbox" aria-labelledby="lbl-x"></label></mat-checkbox></mat-dialog-container></div>', /^mat-dialog-container$/, /terms of service/],
+    ["a banner with any visible checkbox, no wording needed (\"Don't show this again\")", '<cfc-message type="info"><div class="cfc-message">New models are available in Model Garden.</div><mat-checkbox><label><input type="checkbox"> Don\'t show this again</label></mat-checkbox></cfc-message>', /^cfc-message$/, /New models are available/],
+    ["any other visible checkbox on a flow page (the model page), whatever its label", '<mat-checkbox><label><input type="checkbox"> Show deprecated models</label></mat-checkbox>', /^checkbox on the model page$/, /Show deprecated models/],
+    ["a hooked terms-looking box inside a status region (not the terms box: it sits in a banner)", '<billing-integrated-ai-agreements-body><div role="status"><mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><label><input type="checkbox"> I agree to the terms</label></mat-checkbox></div></billing-integrated-ai-agreements-body>', /^div$/, /I agree to the terms/],
+    ["a cfc-message whose accept button carries an icon ligature (mat-icon text \"check\" is left out)", '<cfc-message type="warning"><div class="cfc-message">Review the model terms.</div><button><mat-icon>check</mat-icon> Accept </button></cfc-message>', /^cfc-message$/, /Review the model terms/],
+    ["a banner whose first checkbox is hidden and whose second, visible one carries the consent wording", '<cfc-message type="warning"><div class="cfc-message">Before using this model, review the addendum.</div><mat-checkbox style="display: none;"><label><input type="checkbox"> Remember me</label></mat-checkbox><mat-checkbox><label><input type="checkbox"> I agree to the addendum</label></mat-checkbox></cfc-message>', /^cfc-message$/, /addendum/]
+  ];
+  for (const [label, html, where, text] of consentPos) {
+    const env = E.makeEnv({ html: page(html), url: MODEL });
+    const c = env.S.blockers.consent();
+    ok(!!c && where.test(c.where) && text.test(c.excerpt), `consent() matches ${label}`, JSON.stringify(c));
+    const r = env.A.blockerResult();
+    ok(r && r.status === "failed" && /^extra consent required, not supported \(/.test(r.message) && r.message.includes(c.excerpt) && (!c.title || r.message.includes(`"${c.title}"`)), "  -> result failed, reason names the element, the title if any and the text excerpt", r && r.message);
+    env.win.close();
+  }
+  const consentNeg = [
+    ["the \"Enable APIs\" dialog", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><apis-enabler><h1 matdialogtitle> Enable APIs </h1><div matdialogcontent>Enable it to agree to nothing.</div><mat-checkbox><label><input type="checkbox"> x</label></mat-checkbox></apis-enabler></mat-dialog-container></div>'],
+    ["the purchase confirmation (mp-consent-complete-dialog)", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><mp-consent-complete-dialog><h1 matdialogtitle>Successfully purchased Claude Haiku 4.5</h1><p>You agree to the terms of service.</p></mp-consent-complete-dialog></mat-dialog-container></div>'],
+    ["a banner without a checkbox", '<cfc-message type="warning"><div class="cfc-message">You must accept the addendum.</div></cfc-message>'],
+    ["a modal dialog with consent wording and an \"I agree\" button but no checkbox (an accept button alone counts only in a cfc-message or addendum banner)", '<div role="dialog" aria-modal="true"><h2>Terms</h2><p>Accept the terms of service to continue.</p><button>I agree</button></div>'],
+    ["a dialog with consent wording and an accept button with an icon, no checkbox", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Model terms</h1><div matdialogcontent>Accept the terms of service for this model.</div><button><mat-icon>check</mat-icon> Accept </button></mat-dialog-container></div>'],
+    ["a role=\"status\" cookie-style notice with \"Accept all\"", '<div role="status" class="cookie-notice">We use cookies to improve this site. <button>Accept all</button><button>Manage</button></div>'],
+    ["a \"What's new\" dialog with a \"Don't show this again\" checkbox (no consent wording)", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>What\'s new</h1><div matdialogcontent>Agent Platform now lists more models.</div><mat-checkbox><label><input type="checkbox"> Don\'t show this again</label></mat-checkbox><button>Close</button></mat-dialog-container></div>'],
+    ["a feedback dialog whose footer says \"you agree to Google's terms\" (Send and Cancel, no checkbox, no accepting button)", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Send feedback</h1><textarea></textarea><p>By sending feedback, you agree to Google\'s terms of service and privacy policy.</p><button>Cancel</button><button>Send</button></mat-dialog-container></div>'],
+    ["a feedback dialog with an \"Include screenshot\" checkbox and a terms footer (Send and Cancel)", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Send feedback</h1><textarea></textarea><mat-checkbox><label><input type="checkbox"> Include screenshot</label></mat-checkbox><p>By sending feedback, you agree to Google\'s terms of service.</p><button>Cancel</button><button>Send</button></mat-dialog-container></div>']
+  ];
+  {
+    // Consent is checked before permission: an addendum banner that names the required permissions is reported as consent.
+    const env = E.makeEnv({ html: page('<div class="addendum-banner-container"><cfc-message type="warning"><div class="addendum-intro">To enable this model you must accept the Advanced AI Safety Addendum; the required permissions are missing until it is accepted.</div><mat-checkbox><label><input type="checkbox"> By checking this box, you agree to the addendum</label></mat-checkbox></cfc-message></div>'), url: MODEL });
+    const r = env.A.blockerResult();
+    ok(r && /^extra consent required, not supported \(div\.addendum-banner-container\)/.test(r.message) && !!env.S.blockers.permission(), "an addendum banner that also names the required permissions is reported as extra consent (consent is checked first)", r && r.message);
+    env.win.close();
+  }
+  // A warning banner with real denial wording still counts.
+  {
+    const env = E.makeEnv({ html: page('<cfc-message type="warning"><div class="cfc-message cfc-message-warning">You don\'t have permission to view quotas in this project.</div></cfc-message>'), url: MODEL });
+    const p = env.S.blockers.permission();
+    ok(!!p && /You don't have permission to view quotas/.test(p.excerpt), "a warning banner with denial wording (\"You don't have permission\") still counts", JSON.stringify(p));
+    env.win.close();
+  }
+  for (const [label, html] of consentNeg) {
+    const env = E.makeEnv({ html: page(html), url: MODEL });
+    ok(env.S.blockers.consent() === null && env.A.blockerResult() === null, `no consent match and no blocker: ${label}`, JSON.stringify(env.A.blockerResult()));
+    env.win.close();
+  }
+})();
+
+
+(function termsInvariantAndPageRule() {
+  console.log("--- (0.8.0) the terms box: its two hooks must resolve to exactly one mat-checkbox, outside any banner or dialog");
+  const AGR = "https://console.cloud.google.com/marketplace/agreements/anthropic/anthropic-867.cloudpartnerservices.goog?project=proj-one";
+  const terms = (cls, tos, text) => `<mat-checkbox class="${cls}"><label><input type="checkbox">${tos ? "<mp-agreements-tos>" : ""}<span>${text}</span>${tos ? "</mp-agreements-tos>" : ""}</label></mat-checkbox>`;
+  const cases = [
+    ["the hook class and the label component on the same box", `<billing-integrated-ai-agreements-body>${terms("p6ntest-mp-agreements-body-tos-checkbox", true, "Terms")}</billing-integrated-ai-agreements-body>`, 1],
+    ["the hook class on one box, the label component on another", `<billing-integrated-ai-agreements-body>${terms("p6ntest-mp-agreements-body-tos-checkbox", false, "Terms")}${terms("other", true, "Other")}</billing-integrated-ai-agreements-body>`, 0],
+    ["two boxes with the hook class", `<billing-integrated-ai-agreements-body>${terms("p6ntest-mp-agreements-body-tos-checkbox", false, "A")}${terms("p6ntest-mp-agreements-body-tos-checkbox", false, "B")}</billing-integrated-ai-agreements-body>`, 0],
+    ["the one hooked box inside a cfc-message banner", `<billing-integrated-ai-agreements-body><cfc-message type="warning">${terms("p6ntest-mp-agreements-body-tos-checkbox", true, "Terms")}</cfc-message></billing-integrated-ai-agreements-body>`, 0],
+    ["the one hooked box inside a dialog", `<div class="cdk-overlay-container"><mat-dialog-container role="dialog">${terms("p6ntest-mp-agreements-body-tos-checkbox", true, "Terms")}</mat-dialog-container></div>`, 0]
+  ];
+  for (const [label, body, expect] of cases) {
+    const env = E.makeEnv({ html: `<!doctype html><html><head></head><body>${body}</body></html>`, url: AGR });
+    const box = env.S.agreements.termsCheckbox();
+    ok(expect ? !!box : box === null, `${label}: ${expect ? "found" : "null (the job ends without ticking anything)"}`);
+    env.win.close();
+  }
+
+  console.log("--- (0.8.0) any other visible checkbox on a flow page is an extra consent control; the questionnaire's own form is the flow's");
+  const Q = "https://console.cloud.google.com/agent-platform/model-garden/questionnaire?project=proj-one&model=publishers/anthropic/models/claude-haiku-4-5";
+  const box = '<mat-checkbox><label><input type="checkbox"> Send me product updates</label></mat-checkbox>';
+  let env = E.makeEnv({ html: `<!doctype html><html><head></head><body><raf-form raf-entry-name="RequestAccessFormGroup">${box}</raf-form></body></html>`, url: Q });
+  ok(env.A.blockerResult() === null, "a checkbox inside the questionnaire form: not a blocker");
+  env.win.close();
+  env = E.makeEnv({ html: `<!doctype html><html><head></head><body><raf-form raf-entry-name="RequestAccessFormGroup"></raf-form>${box}</body></html>`, url: Q });
+  const r = env.A.blockerResult();
+  ok(r && /^extra consent required, not supported \(checkbox on the questionnaire page\): Send me product updates/.test(r.message), "a checkbox outside the questionnaire form: a blocker naming its label", r && r.message);
+  env.win.close();
+  env = E.makeEnv({ html: `<!doctype html><html><head></head><body>${box}</body></html>`, url: "https://console.cloud.google.com/agent-platform/model-garden?project=proj-one" });
+  ok(env.A.blockerResult() === null, "control: a checkbox on a page outside the flow (the gallery) is not judged by the page rule");
+  env.win.close();
+  env = E.makeEnv({ html: `<!doctype html><html><head></head><body><billing-integrated-ai-agreements-body>${terms("p6ntest-mp-agreements-body-tos-checkbox", true, "I agree to the Terms")}${box}</billing-integrated-ai-agreements-body></body></html>`, url: AGR });
+  const r2 = env.A.blockerResult();
+  ok(r2 && /\(checkbox on the agreements page\): Send me product updates/.test(r2.message) && env.S.agreements.termsCheckbox() !== null, "the Agreements page: the terms box is the flow's, a second box is a blocker", r2 && r2.message);
+  env.win.close();
+})();
+
+(function nestedRoleAndOverlay() {
+  console.log("--- (0.8.0) a box nested in the terms label is not the terms box; role=\"checkbox\" counts, role=\"switch\" does not; overlay panes are judged except the questionnaire's select panel");
+  const AGR = "https://console.cloud.google.com/marketplace/agreements/anthropic/anthropic-867.cloudpartnerservices.goog?project=proj-one";
+  const MODEL = "https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-haiku-4-5?project=proj-one";
+  const Q = "https://console.cloud.google.com/agent-platform/model-garden/questionnaire?project=proj-one&model=publishers/anthropic/models/claude-haiku-4-5";
+  // The nested box comes first in document order inside the terms label.
+  const nested = '<billing-integrated-ai-agreements-body><mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox" id="terms"><label><mat-checkbox id="inner"><label><input type="checkbox" id="inner-input"> Also subscribe</label></mat-checkbox><input type="checkbox" id="terms-input"><mp-agreements-tos>I agree to the Terms</mp-agreements-tos></label></mat-checkbox></billing-integrated-ai-agreements-body>';
+  let env = E.makeEnv({ html: `<!doctype html><html><head></head><body>${nested}</body></html>`, url: AGR });
+  const terms = env.S.agreements.termsCheckbox();
+  const host = env.document.getElementById("terms");
+  ok(terms === null && env.D.ownCheckboxInput(host) === null, "a terms host holding more than one checkbox-like element (a nested box in its label) is ambiguous: termsCheckbox() and its own input are null", terms && terms.id);
+  env.document.getElementById("terms-input").checked = true;
+  ok(env.D.isCheckboxChecked(host) === false, "an ambiguous host never reads as checked (no class or aria fallback)");
+  ok(env.D.checkboxControls(host).length === 3, "control: the host holds three checkbox-like elements (the nested host, its input, the terms input), which setCheckbox refuses to click");
+  const r = env.A.blockerResult();
+  ok(r && /^extra consent required, not supported \(terms checkbox\): the terms checkbox holds 3 checkbox controls;/.test(r.message), "the blocker names the ambiguous terms box: \"the terms checkbox holds 3 checkbox controls\"", r && r.message);
+  env.win.close();
+  env = E.makeEnv({ html: '<!doctype html><html><head></head><body><div role="checkbox" aria-checked="false" aria-label="Share usage data with the publisher" tabindex="0"></div></body></html>', url: MODEL });
+  const r2 = env.A.blockerResult();
+  ok(r2 && /\(checkbox on the model page\): Share usage data with the publisher/.test(r2.message), "a role=\"checkbox\" element on the model page is an extra checkbox, named by its aria-label", r2 && r2.message);
+  env.win.close();
+  env = E.makeEnv({ html: '<!doctype html><html><head></head><body><mat-slide-toggle><button role="switch" aria-checked="false" disabled>Show deprecated</button></mat-slide-toggle></body></html>', url: MODEL });
+  ok(env.A.blockerResult() === null, "a role=\"switch\" slide toggle is not a checkbox");
+  env.win.close();
+  const paneBox = '<div class="cdk-overlay-container"><div class="cdk-overlay-pane"><div role="listbox"><mat-option>Canada</mat-option><mat-checkbox><label><input type="checkbox"> Select all</label></mat-checkbox></div></div></div>';
+  env = E.makeEnv({ html: `<!doctype html><html><head></head><body><raf-form raf-entry-name="RequestAccessFormGroup"></raf-form>${paneBox}</body></html>`, url: Q });
+  ok(env.A.blockerResult() === null, "the questionnaire's own select panel (an overlay pane with a listbox and options) is not judged");
+  env.win.close();
+  env = E.makeEnv({ html: `<!doctype html><html><head></head><body>${paneBox}</body></html>`, url: MODEL });
+  ok(!!env.A.blockerResult(), "the same overlay pane on the model page is judged like the page: a blocker");
+  env.win.close();
+  env = E.makeEnv({ html: '<!doctype html><html><head></head><body><raf-form raf-entry-name="RequestAccessFormGroup"></raf-form><div class="cdk-overlay-container"><div class="cdk-overlay-pane"><mat-checkbox><label><input type="checkbox"> Send me offers</label></mat-checkbox></div></div></body></html>', url: Q });
+  ok(!!env.A.blockerResult(), "an overlay pane on the questionnaire page without a select panel is judged: a blocker");
+  env.win.close();
+})();
+(function blockersOnEveryDump() {
+  console.log("--- (0.8.0) absence control: both detectors over every recon dump; the only match is the Fable 5.1 consent banner (run E)");
+  const fs = require("fs");
+  const path = require("path");
+  const { execFileSync } = require("child_process");
+  const runs = E.listRuns();
+  const expected = [];
+  for (const run of runs) for (const step of fs.readdirSync(E.reconPath(run))) if (fs.existsSync(E.reconPath(run, step, "page.html"))) expected.push(`${run}/${step}`);
+  if (!expected.length) { skip("blocker absence control", "no recon dumps under python/recon"); return; }
+  const rows = [];
+  for (const run of runs) {
+    const out = execFileSync(process.execPath, [path.join(__dirname, "lib", "blocker-scan.cjs"), run], { encoding: "utf8", maxBuffer: 1 << 24 });
+    for (const line of out.split("\n")) if (line.startsWith("{")) rows.push(JSON.parse(line));
+  }
+  const fable = E.findRun("E");
+  ok(rows.length === expected.length && rows.length >= 2, `every dump was scanned: ${rows.length} of ${expected.length} page.html files`, `${rows.length}/${expected.length}`);
+  const normal = rows.filter((r) => r.run !== fable);
+  const hits = normal.filter((r) => r.consent || r.permission);
+  ok(normal.length === rows.length - rows.filter((r) => r.run === fable).length && hits.length === 0, `absence control: 0 matches on the ${normal.length} dumps of normal pages (model, Enable APIs dialog, questionnaire, Agreements, post-Agree dialogs, gallery)`, JSON.stringify(hits).slice(0, 300));
+  console.log(`     blocker absence control: ${normal.length} normal-page dumps scanned, ${hits.length} matches`);
+  const agreementsDumps = rows.filter((r) => r.page === "agreements");
+  ok(agreementsDumps.length >= 1 && agreementsDumps.every((r) => r.checkboxes === 1 && r.termsIsTheBox), `every recorded Agreements page (${agreementsDumps.length}) has exactly one visible checkbox, and it is the box the terms hooks find`, JSON.stringify(agreementsDumps.filter((r) => !(r.checkboxes === 1 && r.termsIsTheBox)).map((r) => [r.run, r.step, r.checkboxes])));
+  ok(agreementsDumps.every((r) => r.termsChecked === !/^04-/.test(r.step)), `the terms box reads unticked on every 04 step and ticked on every later Agreements step (${agreementsDumps.filter((r) => r.termsChecked).length} ticked, ${agreementsDumps.filter((r) => r.termsChecked === false).length} unticked)`, JSON.stringify(agreementsDumps.map((r) => [r.step, r.termsChecked])));
+  const otherFlow = rows.filter((r) => r.run !== fable && (r.page === "model" || r.page === "questionnaire"));
+  ok(otherFlow.every((r) => r.checkboxes === 0), `no recorded model or questionnaire page (${otherFlow.length}) besides the Fable dump has a visible checkbox outside dialogs`, JSON.stringify(otherFlow.filter((r) => r.checkboxes).map((r) => [r.run, r.step, r.checkboxes])));
+  console.log(`     checkbox survey: ${agreementsDumps.length} Agreements-page dumps with one box each; ${otherFlow.length} model/questionnaire dumps with none`);
+  if (!fable) { skip("the Fable 5.1 dump (run E) is detected", "no run of shape E"); return; }
+  const fr = rows.filter((r) => r.run === fable);
+  ok(fr.length >= 1 && fr.every((r) => r.consent && /addendum-banner-container/.test(r.consent.where) && /Advanced AI Safety Addendum/.test(r.consent.excerpt) && r.permission === null), `the Fable 5.1 model page (${fable}) is detected as an extra consent control naming the Advanced AI Safety Addendum; no permission match`, JSON.stringify(fr));
+})();
+
 /* ------------------------------------------------------------ dom.js on synthetic markup */
 
 (function domHelpers() {
   console.log("--- dom.js helpers on synthetic markup (shapes from docs/dom-map.md)");
   const env = E.makeEnv({ url: "https://console.cloud.google.com/agent-platform/model-garden/questionnaire?project=p" });
+  env.D.interrupt = null; // dom.js helpers alone: this synthetic markup is not a console page, so the blocker hook actions.js installs is off
   const { D, document: doc, win } = env;
 
   const option = (label) => `<mat-option role="option" class="mat-mdc-option"><span class="mdc-list-item__primary-text"><cfc-select-rich-option>` +

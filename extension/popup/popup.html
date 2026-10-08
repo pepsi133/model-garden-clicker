@@ -28,7 +28,7 @@
             <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
             <circle cx="12" cy="17" r="1.3" fill="currentColor"/>
           </svg>
-          <span id="step-toggle-label">kubardy mode</span>
+          <span id="step-toggle-label">fast mode</span>
         </button>
       </div>
     </div>
@@ -55,7 +55,7 @@
       <div id="models" class="models"></div>
       <label for="extra-models">Extra model slugs, comma or newline separated</label>
       <input id="extra-models" type="text" spellcheck="false" placeholder="claude-opus-4-6">
-      <label><input type="checkbox" id="include-done"> Include pairs already done in earlier runs</label>
+      <label><input type="checkbox" id="include-done"> Include pairs already done or skipped in earlier runs</label>
     </section>
 
     <div id="missing" class="missing" hidden></div>
@@ -63,6 +63,7 @@
     <section class="controls fixed">
       <button id="start" class="primary">Start</button>
       <button id="stop">Stop</button>
+      <button id="pause" type="button" hidden title="Pause the run at the next job boundary: the job in progress finishes, the next one does not start until Resume">Pause</button>
     </section>
 
     <div id="status" class="status">idle</div>

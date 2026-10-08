@@ -4,6 +4,53 @@ All notable changes to Model Garden Clicker are listed here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-08
+
+### Added
+- Claude Haiku 5.5 in the model list.
+- A Pause button next to Stop while a run is active. The current job
+  finishes, the next one waits until you press Resume. The popup and the
+  console tab's badge show PAUSED. Stop works while paused.
+- Export settings and Import settings in the options page's Advanced
+  section: one JSON file with the questionnaire, step-by-step, the timing,
+  runs to keep, the project IDs and the models. The DRY RUN mode is never
+  in it. A timing-only JSON still imports.
+- An "inside joke" box at the bottom of the options page.
+
+### Changed
+- The step-by-step off setting is now called "fast mode". Tick "inside
+  joke" to see "kubardy mode" again. The icons are the same.
+- Pairs whose latest result was skipped (already enabled) are left out of
+  a new run, like pairs already done in any run. The box is now "Include pairs already
+  done or skipped in earlier runs", and the full-run confirmation and the
+  log name how many of each kind are left out.
+- An extra consent control ends the job as failed at once, quoting it, and
+  nothing in it is clicked: any checkbox on the model, questionnaire or
+  Agreements page other than the terms box (the questionnaire's own form
+  and its dropdown panel excepted), overlays included; any checkbox in a
+  message banner; an accept button in a console message banner (such as
+  the Fable 5.1 addendum's), also inside a status or alert region; or a
+  dialog checkbox labelled with consent wording.
+- A permission error shown by the console ends the job as failed at once
+  with "missing permission:" and the console's words.
+- Both checks also run right before every click and tick, the "Enable
+  APIs" dialog's Enable, each dropdown and the Acceptable Use Policy radio
+  included.
+
+### Security
+- The terms checkbox is ticked only when its two page hooks lead to exactly
+  one checkbox on the page, outside any banner or dialog. The positional
+  fallback is gone, so another checkbox (such as the addendum's) can never
+  be ticked in its place; otherwise the job fails and nothing is ticked.
+- A pair is never bought twice: once Agree was clicked, or the console
+  reported a purchase while the step-by-step panel waited, the job ends
+  unverified (never failed or stopped, except the console's own refusal),
+  and every later run leaves that pair out.
+- The test run prints the checksum of the Agree guard. The guard itself is
+  unchanged.
+
+[0.8.0]: https://github.com/pepsi133/model-garden-clicker/releases/tag/v0.8.0
+
 ## [0.7.0] - 2026-10-08
 
 ### Changed

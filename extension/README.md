@@ -42,7 +42,9 @@ extension's card in `chrome://extensions`.
 4. Leave the **DRY RUN** box ticked (see "Modes" below). Tick
    **Step-by-step confirmation** if you want to approve every Next and
    Agree yourself. Leave **Advanced** alone unless a timeout needs changing
-   (see "Advanced timing settings" below).
+   (see "Advanced timing settings" below). **Export settings** and
+   **Import settings** there save and load every setting as one JSON file
+   (see "Export and import" below).
 5. Click **Save**. Save refuses with the reason when a required field or the
    AUP details are missing or the advanced JSON is invalid.
 
@@ -65,8 +67,9 @@ The two settings can also be switched from the popup's header:
   full run asks once more). Its tooltip explains the current mode and what
   a click does.
 - next to it, a second button shows the step-by-step setting: **slow mode**
-  with a snail icon while step-by-step confirmation is on, **kubardy mode**
-  with a warning-sign icon (a triangle with an exclamation mark, in the
+  with a snail icon while step-by-step confirmation is on, **fast mode**
+  (or **kubardy mode** with the **inside joke** box ticked, the last box
+  on the options page; it changes the text only) with a warning-sign icon (a triangle with an exclamation mark, in the
   same colour) while it is off: each job runs through without pausing, no
   Continue before Next and, in a full run, none before Agree. The button's
   tooltip says so. Clicking it switches the setting, the icon and the label.
@@ -82,7 +85,7 @@ it. The header (photo, title, the two header buttons, **Open in a tab**,
 **Options**) and the inputs (the three-row project text area, the model
 checklist, the extra-slugs field, Start and Stop, the status line) keep
 their natural size and never sit inside a scroll region. The checklist is
-a four-column grid, so the twelve models of `models.json` are all visible
+a four-column grid, so the thirteen models of `models.json` are all visible
 without a scrollbar (a longer list scrolls inside the box). The results
 table and the log share the remaining height below them with their own
 scroll, so unfolding the log never scrolls the whole popup. The log starts
@@ -109,18 +112,23 @@ by its tab id). The geometry is checked in headless Chrome by
    Add any other model slugs in the extra field,
    separated by commas or new lines. Slugs are the last path segment of a
    model's Model Garden URL, for example `claude-haiku-4-5`.
-   The **Include pairs already done in earlier runs** box (a per-run choice:
+   The **Include pairs already done or skipped in earlier runs** box (a per-run choice:
    it starts unchecked on every popup open and every Start click spends it,
    whether the run starts, is refused or its confirmation is cancelled, so
    one tick cannot quietly stay on) controls the cross-run guard:
    with it unchecked, a project and model pair that an earlier run recorded
-   as done, or as unverified with Agree already clicked, is created as
+   as done, or with Agree clicked or a purchase the console reported
+   (whatever the result, except the console's own refusal), is created as
    `skipped` in the new queue (the message names the earlier run) so the
    extension does not line up a purchase for a pair it may already have
-   bought. Tick the box to run those pairs anyway; a full run then confirms
-   that the guard is off for that run. A pair that was only dry-run, or
-   skipped because the model was already enabled, is never skipped by this
-   guard. This is separate from, and in addition to, the model page's own
+   bought. A pair whose latest result, in a dry or a full run, was
+   `skipped` (the model was already enabled) is left out the same way; a
+   newer failed, stopped or dry-run result wins over an older skip, while a
+   pair done in any earlier run stays left out. Tick the box to run both
+   kinds anyway. The full-run confirmation and the log line name how many
+   pairs of each kind are left out (or, with the box ticked, run again).
+   A pair whose latest result was dry-run, failed or stopped is attempted
+   again. This is separate from, and in addition to, the model page's own
    already-enabled check, which still runs for every job.
    The guard has two memories: the run records shown on the Runs page and
    the previous run's results as the popup still shows them (its queue in
@@ -166,6 +174,10 @@ by its tab id). The geometry is checked in headless Chrome by
    with the reason instead (a summary that never names the model fails
    after `agreements_ready_ms`).
 7. Click **Stop** at any time to end the run after the current action.
+   **Pause**, next to Stop while a run is active, lets the current job
+   finish and starts no new one; the button then reads **Resume**, and the
+   popup and the console tab's badge show PAUSED. Resume starts the next
+   job. Stop works while paused. Pausing never changes the mode.
 
 The log (bottom of the popup, last 50 lines) carries timing marks per
 phase: `<page> page detected`, `action started: ...` and `action done: ...`,
@@ -232,6 +244,46 @@ has the same **Purge all** button. Everything stays in this browser's
 local extension database; nothing is synced or sent anywhere, and the
 manifest asks for no new permission for any of this (no `downloads`, no
 `unlimitedStorage`; see "Permissions").
+
+An extra consent control the extension does not support ends the job
+`failed` at once with its title or an excerpt of its text. It is, by
+structure: any visible checkbox (`mat-checkbox`, a native checkbox or a
+`role="checkbox"` element, not a `role="switch"` toggle) on the model,
+questionnaire or Agreements page other than the terms box itself, whatever
+its label, overlay panes included; on the questionnaire page its own form
+and the dropdown panel it opens are the flow's and are excepted. Also any
+visible checkbox in a message banner (`cfc-message`, the addendum
+container, a status or alert region); an accept button in a `cfc-message`
+or the addendum container, wherever it sits (a status or alert region
+around it included, but not a status notice such as a cookie bar that has
+no `cfc-message` inside); or, in a dialog, a checkbox labelled (by its
+text, `aria-label` or `aria-labelledby`) with consent wording, and a
+dialog without such a checkbox is not one. The
+Fable 5.1 "Advanced AI Safety Addendum" banner is one. Denial wording
+("permission denied", "403 Forbidden", "you don't have permission",
+"missing required permissions", "contact your administrator") in an error
+banner, a snackbar, an alert, a form error or a dialog ends the job
+`failed` with `missing permission: <excerpt>`; the bare word "permission"
+counts only in an error banner, and "IAM" or "403" alone never count.
+Both checks run on every page before anything else, and again right before
+every click and tick (the "Enable APIs" dialog's Enable, Enable, each
+dropdown, the AUP radio, Next, the terms tick, Agree): nothing is clicked
+while either shows. Nothing inside either is clicked or ticked, and no
+timeout is waited out. The terms checkbox is ticked only when its two page
+hooks lead to exactly one checkbox, outside any banner or dialog, that
+holds exactly one checkable control (its own native input), and only
+through that input. Any other checkable control inside it (a checkbox or
+radio input, any `role` naming a checkbox, switch or checkable menu item in
+any case, anything with `aria-checked`, a Material checkbox, slide toggle
+or radio) makes it ambiguous: the job fails naming "the terms checkbox
+holds N checkbox controls";
+otherwise the job fails and nothing is ticked.
+
+Once Agree was clicked (or the console reported a purchase while the
+step-by-step panel waited), a job never ends `failed` or `stopped`: a
+blocker, a page other than the Agreements page, a Stop, the watchdog or a
+restart all end it `unverified`, except the console's own refusal, and the
+cross-run guard leaves the pair out of every later run.
 
 Some model pages need a manual step before Enable works (an additional
 consent checkbox; see `docs/BACKLOG.md`). The extension never clicks a
@@ -430,6 +482,23 @@ is active.
 A full run accepts the publisher's terms and enables billing-relevant
 products in every project you queue. Tick **DRY RUN** again when you are
 finished.
+
+## Export and import
+
+The **Advanced** section of the options page has **Export settings** and
+**Import settings**. Export saves one JSON file with what is stored: the
+questionnaire, step-by-step, the timing, runs to keep, the inside joke box,
+and the popup's project IDs, ticked models and extra slugs. The DRY RUN
+mode and the per-run include box are never in it. Import fills the options
+page from such a file, or from a timing-only JSON like the Advanced field
+takes. Empty, null or missing values leave the current ones. Unknown keys
+are ignored and named in a notice. An invalid value, or a text over 2,000
+characters, refuses the whole file and the message names the key. A ticked
+model that is not in the model list moves to the extra slugs, and the
+notice names it. Click **Save** to keep what was imported; Save also writes
+the project IDs and models to the popup (reopen the popup if it is open).
+An active run keeps its own job list, and Save is refused while a run is
+active if the imported step-by-step setting differs; the notice says so.
 
 ## Advanced timing settings
 

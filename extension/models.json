@@ -1,6 +1,7 @@
 [
   {"slug": "claude-opus-5-5", "name": "Claude Opus 5.5", "launchStage": "GA"},
   {"slug": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "launchStage": "GA"},
+  {"slug": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "launchStage": "GA"},
   {"slug": "claude-fable-5-1", "name": "Claude Fable 5.1", "launchStage": "GA"},
   {"slug": "claude-opus-5", "name": "Claude Opus 5", "launchStage": "GA"},
   {"slug": "claude-sonnet-5", "name": "Claude Sonnet 5", "launchStage": "GA"},

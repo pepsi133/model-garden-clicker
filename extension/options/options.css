@@ -38,3 +38,9 @@ button { padding: 8px 20px; font-size: 14px; }
 .saved { color: var(--mgc-ok); font-weight: 600; }
 .error { font-weight: bold; }
 p.error { padding: 6px 10px; }
+fieldset.advanced .config-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+fieldset.advanced .config-row label.file { margin: 0; }
+fieldset.advanced .config-row input[type="file"] { display: block; margin-top: 4px; font-weight: 400; max-width: 100%; }
+fieldset.advanced #config-note { font-size: 13px; }
+fieldset.advanced #config-note.saved { color: var(--mgc-ok); font-weight: 600; }
+label.inside-joke { margin-top: 16px; font-size: 13px; font-weight: 400; color: var(--mgc-muted); }

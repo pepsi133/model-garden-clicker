@@ -279,6 +279,219 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     dry.win.close();
   }
 
+
+  // (0.8.0) The recorded Fable 5.1 addendum banner placed inside the recorded Agreements body, with the terms
+  // box's two hooks present and with both gone: the job fails as extra consent in both cases (full run), the
+  // addendum box is never ticked and Agree is never clicked. There is no positional terms-box locator to take
+  // the addendum box ("... to these terms ...") for the terms box.
+  {
+    const fableRun = E.findRun("E");
+    const fableSnap = fableRun && E.readSnapshot(fableRun, "01-model-page");
+    const agr = E.readSnapshot(E.findRun("A") || "", "04-agreements");
+    if (!fableSnap || !agr) skip("the Fable addendum banner on an Agreements page", "recon dump not present");
+    else {
+      console.log("--- (0.8.0) the recorded Fable addendum banner inside the recorded Agreements body: failed as extra consent, nothing ticked, Agree never clicked");
+      const fableEnv = E.makeEnv({ html: fableSnap.html, url: fableSnap.url });
+      const bannerHtml = fableEnv.D.q(".addendum-banner-container").outerHTML;
+      fableEnv.win.close();
+      const project = new URL(agr.url).searchParams.get("project");
+      // Variants: [hooks on the terms box, terms box moved out of the body, the addendum's label reuses mp-agreements-tos, the real terms box removed]
+      for (const [hooks, moveTerms, reuseTos, dropTerms] of [[true, false, false, false], [false, false, false, false], [false, true, false, false], [true, false, true, false], [true, false, true, true]]) {
+        const env = E.makeEnv({ html: agr.html, url: agr.url }); E.rehydrate(env.document, agr.forms);
+        env.K.TIMEOUTS.AGREEMENTS_READY = 1500; env.K.TIMEOUTS.CONFIRM = 300; env.K.URL_POLL_MS = 20;
+        const body = env.D.q("billing-integrated-ai-agreements-body");
+        body.insertAdjacentHTML("afterbegin", bannerHtml);
+        const terms = env.D.q("mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox");
+        if (reuseTos) {
+          // The addendum's label component is the terms label component, earlier in the DOM than the real one.
+          const span = env.D.q(".addendum-banner-container mat-checkbox .mdc-label");
+          const tosEl = env.document.createElement("mp-agreements-tos");
+          span.parentNode.insertBefore(tosEl, span); tosEl.appendChild(span);
+        }
+        if (dropTerms) terms.remove();
+        if (!hooks) {
+          terms.classList.remove("p6ntest-mp-agreements-body-tos-checkbox");
+          const tos = env.D.q("mp-agreements-tos"); const renamed = env.document.createElement("mp-renamed-tos");
+          while (tos.firstChild) renamed.appendChild(tos.firstChild); tos.replaceWith(renamed);
+        }
+        // The terms box moved out of the body, so the addendum box is the body's only mat-checkbox.
+        if (moveTerms) body.parentNode.insertBefore(terms, body.nextSibling);
+        const addendumInput = env.D.q('.addendum-banner-container input[type="checkbox"]');
+        let agreeClicks = 0; env.S.agreements.agreeButton().addEventListener("click", () => { agreeClicks += 1; });
+        let addendumClicks = 0; addendumInput.addEventListener("click", () => { addendumClicks += 1; });
+        const state = liveState(project);
+        const ctx = Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+        let err = null, result = null;
+        try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
+        const label = reuseTos && dropTerms ? "with the addendum's label reusing mp-agreements-tos and the real terms box gone (the hooks find one box, inside a banner)"
+          : reuseTos ? "with the addendum's label reusing mp-agreements-tos earlier in the DOM (the hooks resolve to two boxes)"
+          : hooks ? "with both terms-box hooks" : moveTerms ? "with both terms-box hooks gone and the terms box moved out of the body (the addendum box is the body's only mat-checkbox)" : "with both terms-box hooks gone";
+        const expectTerms = hooks && !reuseTos;
+        ok(expectTerms ? env.S.agreements.termsCheckbox() === terms : env.S.agreements.termsCheckbox() === null, `${label}: termsCheckbox() is ${expectTerms ? "the hooked terms box" : "null (never the addendum box)"}`);
+        ok(result === null && err && err.name === "BlockedError" && /^extra consent required, not supported \(div\.addendum-banner-container\): .*Advanced AI Safety Addendum/.test(err.message),
+          `${label}: the job fails at once as extra consent naming the addendum`, err ? `${err.name}: ${err.message.slice(0, 160)}` : JSON.stringify(result));
+        ok(!addendumInput.checked && addendumClicks === 0 && !env.D.isCheckboxChecked(terms) && agreeClicks === 0 && !state.queue[0].agreeClicked,
+          `${label}: the addendum box is never ticked, the terms box is untouched, Agree is never clicked or recorded`, `addendum ${addendumInput.checked}/${addendumClicks} agree ${agreeClicks}`);
+        env.win.close();
+      }
+    }
+  }
+
+  // (0.8.0) the guard's `refuse` carries the blocker check: a permission alert that appears during the guard's own
+  // record round trip (after every pre-action check passed) refuses the click; the record is undone.
+  {
+    const s05 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+    if (!s05) skip("the guard refuses on a blocker that appears during its record round trip", "recon dump not present");
+    else {
+      console.log("--- (0.8.0) a permission alert that appears during the guard's record round trip: no click, the record undone");
+      const env = E.makeEnv({ html: s05.html, url: s05.url }); E.rehydrate(env.document, s05.forms);
+      env.K.TIMEOUTS.CONFIRM = 300; env.K.URL_POLL_MS = 20;
+      const state = liveState(new URL(s05.url).searchParams.get("project"));
+      const base = mk(state);
+      const ctx = Object.assign(base, { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {},
+        updateJob: async (fields) => {
+          if (fields.agreeClicked === true) env.document.body.insertAdjacentHTML("beforeend", '<div role="alert">Permission denied: you cannot purchase in this billing account.</div>');
+          Object.assign(state.queue[0], fields); return { ok: true };
+        } });
+      let clicks = 0; env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+      let err = null, result = null;
+      try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
+      ok(clicks === 0 && err && err.name === "ForbiddenClickError" && /refused to click: missing permission: Permission denied: you cannot purchase/.test(err.message) && state.queue[0].agreeClicked === false && err.recordCleared === true,
+        "the guard refuses with the blocker's message, no click, the Agree record undone", err ? `${err.name}: ${err.message} clicks=${clicks} rec=${state.queue[0].agreeClicked}` : JSON.stringify(result));
+      env.win.close();
+    }
+  }
+
+  // (0.8.0) The recorded Fable banner moved into an overlay pane (not a modal dialog), and the banner with only
+  // its "Accept Terms" button wrapped in a role="alert" / role="status" live region, on the recorded ticked
+  // Agreements page in a full run: a blocker, no tick, Agree never clicked.
+  {
+    const fableSnap = E.readSnapshot(E.findRun("E") || "", "01-model-page");
+    const agr5 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+    if (!fableSnap || !agr5) skip("the Fable banner in an overlay pane or a live region on the Agreements page", "recon dump not present");
+    else {
+      console.log("--- (0.8.0) the recorded Fable banner in an overlay pane, or accept-button-only inside a live region, on the recorded Agreements page: blocked");
+      const fableEnv = E.makeEnv({ html: fableSnap.html, url: fableSnap.url });
+      const bannerHtml = fableEnv.D.q(".addendum-banner-container").outerHTML;
+      fableEnv.D.q(".addendum-banner-container .addendum-checkbox-row").remove();
+      const acceptOnlyHtml = fableEnv.D.q(".addendum-banner-container").outerHTML;
+      fableEnv.win.close();
+      const project = new URL(agr5.url).searchParams.get("project");
+      const variants = [
+        ["in .cdk-overlay-container > .cdk-overlay-pane", `<div class="cdk-overlay-container"><div class="cdk-overlay-pane">${bannerHtml}</div></div>`],
+        ["accept button only, wrapped in role=\"alert\"", `<div role="alert">${acceptOnlyHtml}</div>`],
+        ["accept button only, wrapped in role=\"status\"", `<div role="status">${acceptOnlyHtml}</div>`]
+      ];
+      for (const [label, html] of variants) {
+        const env = E.makeEnv({ html: agr5.html, url: agr5.url }); E.rehydrate(env.document, agr5.forms);
+        env.K.TIMEOUTS.AGREEMENTS_READY = 1500; env.K.TIMEOUTS.CONFIRM = 300; env.K.URL_POLL_MS = 20;
+        env.document.body.insertAdjacentHTML("beforeend", html);
+        const terms = env.S.agreements.termsCheckbox();
+        if (terms) env.D.ownCheckboxInput(terms).checked = false; // the 05 dump is ticked; start unticked
+        let agreeClicks = 0; env.S.agreements.agreeButton().addEventListener("click", () => { agreeClicks += 1; });
+        const state = liveState(project);
+        const ctx = Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+        let err = null, result = null;
+        try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
+        ok(result === null && err && err.name === "BlockedError" && /^extra consent required, not supported \(/.test(err.message) && /Advanced AI Safety Addendum/.test(err.message) && agreeClicks === 0 && !state.queue[0].agreeClicked && !env.D.isCheckboxChecked(terms),
+          `${label}: the job fails as extra consent, the terms box is not ticked, Agree is never clicked`, err ? `${err.name}: ${err.message.slice(0, 140)} agree=${agreeClicks}` : JSON.stringify(result));
+        env.win.close();
+      }
+      // The same banner in an overlay pane on the recorded Fable model page: the model handler stops at once.
+      const env = E.makeEnv({ html: fableSnap.html, url: fableSnap.url });
+      env.K.TIMEOUTS.MODEL_READY = 1500; env.K.URL_POLL_MS = 20;
+      const banner = env.D.q(".addendum-banner-container");
+      env.document.body.insertAdjacentHTML("beforeend", '<div class="cdk-overlay-container"><div class="cdk-overlay-pane" id="pane"></div></div>');
+      env.document.getElementById("pane").appendChild(banner);
+      const input = env.D.q('#pane input[type="checkbox"]');
+      let enableClicks = 0; const en = env.S.model.enableButton(); if (en) en.addEventListener("click", () => { enableClicks += 1; });
+      let err = null;
+      try { await env.A.handleModelPage({ runId: "r", jobIndex: 0, job: { projectId: new URL(fableSnap.url).searchParams.get("project"), modelSlug: "claude-fable-5-1" }, settings: {}, log: () => {}, mark: () => {}, step: () => {}, setPhase: async () => {}, updateJob: async () => ({ ok: true }), assertMayAct: async () => {}, refresh: async () => ({}) }); } catch (e) { err = e; }
+      ok(err && err.name === "BlockedError" && /Advanced AI Safety Addendum/.test(err.message) && !input.checked && enableClicks === 0, "the Fable banner in an overlay pane on the recorded model page: blocked at once, nothing ticked or clicked", err ? `${err.name}: ${err.message.slice(0, 120)}` : "no error");
+      env.win.close();
+    }
+  }
+
+  // (0.8.0) the Agreements handler's re-entry check reads purchaseObserved as well as agreeClicked.
+  {
+    const agr5 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+    if (!agr5) skip("re-entry with purchaseObserved", "recon dump not present");
+    else {
+      const env = E.makeEnv({ html: agr5.html, url: agr5.url }); E.rehydrate(env.document, agr5.forms);
+      const state = liveState(new URL(agr5.url).searchParams.get("project"), { job: { purchaseObserved: true } });
+      let agreeClicks = 0; env.S.agreements.agreeButton().addEventListener("click", () => { agreeClicks += 1; });
+      const ctx = Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+      const r = await env.A.handleAgreements(ctx);
+      ok(r && r.status === "unverified" && /the console already reported a purchase for this job/.test(r.message) && agreeClicks === 0, "a job with purchaseObserved (no agreeClicked) re-entering the Agreements handler: unverified at once, no tick, no click", JSON.stringify(r));
+      env.win.close();
+    }
+  }
+
+  // (0.8.0) Foreign checkbox controls injected into the terms mat-checkbox: a bare input in its label (V1), a
+  // role="checkbox" element in its label (V2), a bare input as the host's first child (V4). On the recorded
+  // unticked (04) and ticked (05) Agreements pages, full run: the job fails, nothing extra is ticked, Agree is
+  // never clicked.
+  {
+    const s04 = E.readSnapshot(E.findRun("A") || "", "04-agreements");
+    const s05 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+    if (!s04 || !s05) skip("foreign controls inside the terms mat-checkbox", "recon dump not present");
+    else {
+      console.log("--- (0.8.0) foreign checkbox controls inside the terms mat-checkbox: the job fails, nothing extra ticked, Agree never clicked");
+      const inLabel = (html) => (host) => { (host.querySelector("label") || host).insertAdjacentHTML("beforeend", html); };
+      const inject = {
+        V1: inLabel('<input type="checkbox" id="foreign" aria-label="Also accept the marketing terms">'),
+        V2: inLabel('<span role="checkbox" id="foreign" aria-checked="false" aria-label="Also accept the marketing terms" tabindex="0"></span>'),
+        V4: (host) => { host.insertAdjacentHTML("afterbegin", '<input type="checkbox" id="foreign" aria-label="Also accept the marketing terms">'); }
+      };
+      // Every spelling Chrome still exposes as a checkbox, and every other checkable control.
+      for (const role of ["Checkbox", "CHECKBOX", " checkbox ", "checkbox switch", "foo checkbox"]) inject[`role="${role}"`] = inLabel(`<span role="${role}" id="foreign" tabindex="0">Also accept</span>`);
+      inject["an [aria-checked] element"] = inLabel('<span id="foreign" aria-checked="false" tabindex="0">Also accept</span>');
+      inject['role="switch"'] = inLabel('<button role="switch" id="foreign">Also accept</button>');
+      inject['role="menuitemcheckbox"'] = inLabel('<span role="menuitemcheckbox" id="foreign" tabindex="0">Also accept</span>');
+      inject["a radio input"] = inLabel('<input type="radio" id="foreign">');
+      inject["a mat-slide-toggle"] = inLabel('<mat-slide-toggle id="foreign"></mat-slide-toggle>');
+      inject["a mat-radio-button"] = inLabel('<mat-radio-button id="foreign"></mat-radio-button>');
+      // setCheckbox itself refuses an ambiguous host and clicks nothing.
+      {
+        const env = E.makeEnv({ html: s04.html, url: s04.url }); E.rehydrate(env.document, s04.forms);
+        const host = env.D.q("mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox");
+        const real = env.D.ownCheckboxInput(host);
+        inject.V1(host, env.document);
+        let clicks = 0; for (const i of env.D.qa('input[type="checkbox"]', host)) i.addEventListener("click", () => { clicks += 1; });
+        let thrown = null;
+        try { await env.D.setCheckbox(host, true); } catch (e) { thrown = e; }
+        ok(thrown && /more than one checkbox-like element; nothing is clicked/.test(thrown.message) && clicks === 0 && !real.checked, "await D.setCheckbox(ambiguousHost, true) throws, with 0 clicks and the real box unticked", thrown ? `${thrown.message} clicks=${clicks}` : "no throw");
+        env.win.close();
+      }
+      // One window per recorded page (a 4 MB page per variant would exhaust the heap): each variant is injected,
+      // judged and removed again, and the real box is checked unchanged after each.
+      for (const [start, snap] of [["unticked start (04)", s04], ["ticked start (05)", s05]]) {
+        const env = E.makeEnv({ html: snap.html, url: snap.url }); E.rehydrate(env.document, snap.forms);
+        env.K.TIMEOUTS.AGREEMENTS_READY = 1200; env.K.TIMEOUTS.CONFIRM = 300; env.K.URL_POLL_MS = 20;
+        const host = env.D.q("mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox");
+        const realInput = env.D.ownCheckboxInput(host);
+        const realBefore = realInput.checked;
+        let agreeClicks = 0; env.S.agreements.agreeButton().addEventListener("click", () => { agreeClicks += 1; });
+        for (const [name, fn] of Object.entries(inject)) {
+          fn(host, env.document);
+          const foreign = env.document.getElementById("foreign");
+          let foreignClicks = 0; foreign.addEventListener("click", () => { foreignClicks += 1; });
+          const agreeBefore = agreeClicks;
+          const state = liveState(new URL(snap.url).searchParams.get("project"));
+          const ctx = Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+          let err = null, result = null;
+          try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
+          const foreignTicked = foreign.tagName === "INPUT" ? foreign.checked : foreign.getAttribute("aria-checked") === "true" || foreign.classList.contains("mat-mdc-slide-toggle-checked");
+          ok(env.S.agreements.termsCheckbox() === null && result === null && err && env.D.isFatal(err) && /the terms checkbox holds 2 checkbox controls/.test(err.message) && foreignClicks === 0 && !foreignTicked && realInput.checked === realBefore && agreeClicks === agreeBefore && !state.queue[0].agreeClicked,
+            `${name}, ${start}: termsCheckbox() is null, the job fails naming "the terms checkbox holds 2 checkbox controls", nothing extra ticked, the real box unchanged, Agree never clicked`, err ? `${err.name}: ${err.message.slice(0, 140)} agree=${agreeClicks - agreeBefore} foreign=${foreignClicks}` : JSON.stringify(result));
+          foreign.remove();
+          await new Promise((r) => setTimeout(r, 300)); // past the blocker check's 250 ms throttle before the next variant
+        }
+        ok(env.S.agreements.termsCheckbox() === host && realInput.checked === realBefore && agreeClicks === 0, `${start}: control: with every injected control removed the terms box resolves again, unchanged, and Agree was never clicked`);
+        env.win.close();
+      }
+    }
+  }
   // (N6) the dry-run handler runs the same identity checks as the guard before it touches the checkbox.
   const snap04 = E.readSnapshot(E.findRun("A") || "", "04-agreements");
   if (!snap04) skip("handleAgreements dry run identity on 04-agreements", "recon dump not present");
@@ -356,8 +569,8 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     // (T6) the page rendered (its shell is there) but a control's every locator is missing: fatal at once after the
     // wait, naming the page and the locators; nothing is ticked. A body without the shell stays a plain timeout.
     r = await run("shell without the checkbox", NO_BOX, null, 0);
-    ok(!r.result && r.fatal && r.ms >= 600 && !r.ticked && /^the Agreements page rendered \(billing-integrated-ai-agreements-body or mp-agreements-tos is present\) but the terms checkbox \(mat-checkbox\.p6ntest-mp-agreements-body-tos-checkbox, mp-agreements-tos, or the one mat-checkbox inside billing-integrated-ai-agreements-body\) was not found within 1 s; the console changed the page: see docs\/MAINTENANCE\.md$/.test(r.err.message),
-      "(T6) the agreements shell rendered without any checkbox locator matching: fatal after the wait, naming the page and the three locators", r.err ? `${r.err.message} ${r.ms} ms` : JSON.stringify(r.result));
+    ok(!r.result && r.fatal && r.ms >= 600 && !r.ticked && /^the Agreements page rendered \(billing-integrated-ai-agreements-body or mp-agreements-tos is present\) but the terms checkbox \(mat-checkbox\.p6ntest-mp-agreements-body-tos-checkbox or mp-agreements-tos\) was not found within 1 s; the console changed the page: see docs\/MAINTENANCE\.md$/.test(r.err.message),
+      "(T6) the agreements shell rendered without any checkbox locator matching: fatal after the wait, naming the page and the two locators", r.err ? `${r.err.message} ${r.ms} ms` : JSON.stringify(r.result));
     r = await run("shell without the Agree button", NO_AGREE, null, 0);
     ok(!r.result && r.fatal && r.ms >= 600 && !r.ticked && /but the Agree button \(button\[data-prober="cloud-marketplace-request-product"\] or button\[aria-label\^="Agree to the terms"\]\) was not found within 1 s/.test(r.err.message),
       "(T6) the agreements shell rendered without either Agree locator matching: fatal after the wait, naming both hooks, box untouched", r.err ? `${r.err.message} ${r.ms} ms` : JSON.stringify(r.result));
@@ -388,18 +601,18 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
       const state = liveState(project, { state: { run: { runId: rid, live: true } } });
       const ctx = Object.assign(mk(state, null, rid), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
       const logs = []; ctx.log = (m) => logs.push(m);
-      let clicks = 0;
-      env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; if (afterHtml) env.document.body.insertAdjacentHTML("beforeend", afterHtml); });
+      let clicks = 0, clickAt = null;
+      env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; clickAt = Date.now(); if (afterHtml) env.document.body.insertAdjacentHTML("beforeend", afterHtml); });
       if (beforeHtml) env.document.body.insertAdjacentHTML("beforeend", beforeHtml);
-      const t0 = Date.now();
       let result = null, err = null;
       try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
-      const out = { result, err, clicks, logs, ms: Date.now() - t0, recorded: state.queue[0].agreeClicked === true };
+      // ms counts from the click (as in T1): the readiness checks on the 4 MB page before it vary with machine load.
+      const out = { result, err, clicks, logs, ms: clickAt === null ? -1 : Date.now() - clickAt, recorded: state.queue[0].agreeClicked === true };
       env.win.close();
       return out;
     };
     let r = await live("control", "", success("Claude Haiku 4.5", false));
-    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms < 300, "control: no dialog before, the success dialog naming the model appears after the click: one click, done", r.err ? r.err.message : `${JSON.stringify(r.result)} clicks=${r.clicks}`);
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms >= 0 && r.ms < 300, "control: no dialog before, the success dialog naming the model appears after the click: one click, done within 300 ms of the click", r.err ? r.err.message : `${JSON.stringify(r.result)} clicks=${r.clicks} ${r.ms} ms`);
     r = await live("error open", ERROR_OPEN, null);
     ok(r.clicks === 0 && !r.recorded && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Something went wrong: Could not load billing accounts\. Try again\. \(element mat-dialog-container\)/.test(r.err.message),
       "an unrelated error dialog open before the click: refused with the dialog's text and the element it was matched by, nothing recorded, no click", r.err ? r.err.message : JSON.stringify(r.result));
@@ -443,7 +656,8 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     const SUCCESS_OK = '<div class="cdk-overlay-container" id="suc"><mat-dialog-container role="dialog"><mp-consent-complete-dialog><h1 matdialogtitle>Successfully purchased Claude Haiku 4.5</h1></mp-consent-complete-dialog></mat-dialog-container></div>';
     const REFUSAL_WORDED = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"><h1 matdialogtitle>Action Required: Choose Different Billing Account</h1><div matdialogcontent>This product cannot be purchased using a billing account currently associated with a free trial.</div></mat-dialog-container></div>';
     const REFUSAL_SHAPED = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"><behavior-failure-dialog><h1 matdialogtitle>Action Required: Choose Different Billing Account</h1><div matdialogcontent>This billing account cannot buy.</div></behavior-failure-dialog></mat-dialog-container></div>';
-    const GRACE = 400, CONFIRM = 1500;
+    // The grace is long enough that the "at once" checks (g)-(i), bounded by it, never race machine load.
+    const GRACE = 2000, CONFIRM = 3000;
     let n = 0;
     /** The live handler on the real ticked page; `afterClick(env)` schedules what the console does after the click. */
     const timed = async (afterClick) => {
@@ -466,7 +680,7 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     const add = (env, html, ms) => setTimeout(() => env.document.body.insertAdjacentHTML("beforeend", html), ms);
     const remove = (env, id, ms) => setTimeout(() => { const el = env.document.getElementById(id); if (el) el.remove(); }, ms);
     const says = (r) => (r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms | ${r.logs.filter((m) => /dialog/.test(m)).join(" | ")}`);
-    const genericLogged = (r) => r.logs.some((m) => /an error dialog that is not the console's refusal opened after Agree: "Something went wrong: Could not load billing accounts. Try again."; waiting up to 0.4 s more/.test(m));
+    const genericLogged = (r) => r.logs.some((m) => /an error dialog that is not the console's refusal opened after Agree: "Something went wrong: Could not load billing accounts. Try again."; waiting up to 2 s more/.test(m));
     const superseded = (r) => r.logs.some((m) => /the confirmation arrived after the error dialog "Something went wrong: Could not load billing accounts. Try again.": that dialog was not the click's outcome/.test(m));
 
     let r = await timed((env) => { add(env, GENERIC, 100); add(env, SUCCESS_OK, 250); });
@@ -483,19 +697,19 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
       "(d) the success dialog and the generic container in the same instant: done (the success dialog is checked first in a poll)", says(r));
     r = await timed((env) => { add(env, GENERIC, 100); });
     ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.ms >= 100 + GRACE && r.ms < CONFIRM && genericLogged(r)
-      && /Agree clicked but the console shows an error dialog that is not its refusal \("Something went wrong: Could not load billing accounts. Try again."\) and no confirmation appeared within 0.4 s of it; check manually/.test(r.result.message),
+      && /Agree clicked but the console shows an error dialog that is not its refusal \("Something went wrong: Could not load billing accounts. Try again."\) and no confirmation appeared within 2 s of it; check manually/.test(r.result.message),
       "(e) the generic container persists and no confirmation follows: unverified with the dialog's text once the grace period ends, before confirm_ms, never failed", says(r));
     r = await timed((env) => { add(env, GENERIC, 100); remove(env, "gen", 180); });
-    ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.ms >= CONFIRM && /no confirmation observed within 1.5 s; an error dialog that is not the console's refusal was seen meanwhile: "Something went wrong: Could not load billing accounts. Try again."; check manually/.test(r.result.message),
+    ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.ms >= CONFIRM && /no confirmation observed within 3 s; an error dialog that is not the console's refusal was seen meanwhile: "Something went wrong: Could not load billing accounts. Try again."; check manually/.test(r.result.message),
       "(f) the generic container closes by itself and nothing else appears: unverified after confirm_ms, naming the dialog that was seen", says(r));
-    r = await timed((env) => { add(env, REFUSAL_WORDED, 100); add(env, SUCCESS_OK, 900); });
-    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < 600 && /Agree refused by the console: Action Required: Choose Different Billing Account: This product cannot be purchased using a billing account currently associated with a free trial\./.test(r.result.message),
+    r = await timed((env) => { add(env, REFUSAL_WORDED, 100); add(env, SUCCESS_OK, GRACE + 500); });
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < GRACE && /Agree refused by the console: Action Required: Choose Different Billing Account: This product cannot be purchased using a billing account currently associated with a free trial\./.test(r.result.message),
       "(g) a bare Error dialog container whose text carries the console's recorded refusal wording: failed at once with the console's text (no grace period)", says(r));
     r = await timed((env) => { add(env, REFUSAL_SHAPED, 100); });
-    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < 600 && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(r.result.message) && !genericLogged(r),
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < GRACE && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(r.result.message) && !genericLogged(r),
       "(h) the behavior-failure-dialog shape: failed at once, never logged as a generic dialog", says(r));
     r = await timed((env) => { add(env, GENERIC, 100); add(env, REFUSAL_SHAPED, 250); });
-    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < 600 && genericLogged(r) && /Agree refused by the console: Action Required/.test(r.result.message),
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < GRACE && genericLogged(r) && /Agree refused by the console: Action Required/.test(r.result.message),
       "(i) a generic container first, then the refusal within the grace period: the refusal is the outcome, failed with its text", says(r));
   }
 

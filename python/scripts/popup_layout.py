@@ -85,13 +85,20 @@ return { rows, models: box('#models'), scroll: box('.scroll'), inputs: box('.inp
   docScrollH: document.documentElement.scrollHeight, docScrollW: document.documentElement.scrollWidth, innerW: window.innerWidth, innerH: window.innerHeight,
   bodyW: document.body.getBoundingClientRect().width, start: rect(document.getElementById('start')), status: rect(document.getElementById('status')),
   snail: display('icon-snail'), warning: display('icon-warning'), label: document.getElementById('step-toggle-label').textContent,
+  stop: rect(document.getElementById('stop')), pause: rect(document.getElementById('pause')), pauseShown: display('pause') !== 'none' && !document.getElementById('pause').hidden,
+  pauseText: document.getElementById('pause').textContent,
   lineH: parseFloat(getComputedStyle(document.querySelector('#models label')).lineHeight), modelCount: JSON.parse(arguments[0]).length };
 """
 OPTIONS_JS = """
 const form = document.getElementById('form');
 return { name: form.elements.business_name.value, industry: form.elements.industry_choice ? form.elements.industry_choice.tagName : null,
   dry: form.elements.dry_run.checked, timing: form.elements.timing_json.value.length, keys: document.getElementById('timing-keys').textContent,
-  runsKeep: form.elements.runs_keep ? form.elements.runs_keep.value : null, purge: !!document.getElementById('purge-runs') };
+  runsKeep: form.elements.runs_keep ? form.elements.runs_keep.value : null, purge: !!document.getElementById('purge-runs'),
+  lastControl: (() => { const c = Array.from(document.querySelectorAll('input, button, select, textarea')); const l = c[c.length - 1]; return l ? l.name || l.id : null; })(),
+  joke: (() => { const el = form.elements.inside_joke; if (!el) return null; const b = el.closest('label').getBoundingClientRect(); return { checked: el.checked, text: el.closest('label').textContent.trim(), w: b.width, h: b.height, right: b.right }; })(),
+  offNames: Array.from(document.querySelectorAll('.step-off-name')).map((e) => e.textContent),
+  configExport: !!document.getElementById('config-export'), configImport: (document.getElementById('config-import') || {}).type || null,
+  innerW: window.innerWidth, docScrollW: document.documentElement.scrollWidth };
 """
 RUNS_JS = """
 const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && getComputedStyle(el).display !== 'none'; };
@@ -196,9 +203,18 @@ def probe(state: str) -> bool:
         (f"results/log region below the inputs, at least {SCROLL_FLOOR} px, with its own scroll", s["top"] >= inp["bottom"] - 0.5 and s["h"] >= SCROLL_FLOOR - 0.5 and s["bottom"] <= r["innerH"] + 0.5),
         (f"page does not overflow {POPUP_W} x {POPUP_H}", r["docScrollH"] <= POPUP_H and r["docScrollW"] <= POPUP_W),
         ("exactly one step-by-step icon displayed", (r["snail"] == "none") != (r["warning"] == "none")),
-        ("the icon matches the setting (snail for slow mode, warning sign for kubardy mode)",
-         (r["label"] == "slow mode" and r["snail"] != "none") or (r["label"] == "kubardy mode" and r["warning"] != "none")),
+        ("the icon matches the setting (snail for slow mode, warning sign for fast mode / kubardy mode)",
+         (r["label"] == "slow mode" and r["snail"] != "none") or (r["label"] in ("fast mode", "kubardy mode") and r["warning"] != "none")),
+        ("the label reads \"fast mode\" while the inside joke box is off (the default)" if state != "running" else "the label reads \"slow mode\" (step-by-step on in this state)",
+         r["label"] == ("slow mode" if state == "running" else "fast mode")),
     ]
+    if state == "running":
+        p, st = r["pause"], r["stop"]
+        checks.append(("the Pause button is shown next to Stop while a run is active: same row, to its right, no overlap, inside the viewport",
+                       r["pauseShown"] and r["pauseText"] == "Pause" and abs(p["top"] - st["top"]) < 2 and p["left"] >= st["right"] - 0.5
+                       and p["right"] <= r["innerW"] + 0.5 and p["bottom"] <= r["innerH"] + 0.5))
+    else:
+        checks.append(("the Pause button is hidden while no run is active", not r["pauseShown"]))
     print(f"state {state}: {len(rows)} rows in {columns} columns, line height {r['lineH']:.1f} px, row heights {sorted(set(round(x['h'], 1) for x in rows))}; "
           f"checklist {m['h']:.0f} px (scroll {m['scrollH']}/{m['clientH']}), inputs {inp['h']:.0f} px (bottom {inp['bottom']:.0f}), Start bottom {r['start']['bottom']:.0f}, "
           f"results/log {s['h']:.0f} px (top {s['top']:.0f}), document {r['docScrollW']} x {r['docScrollH']} in a {r['innerW']} x {r['innerH']} viewport; "
@@ -229,8 +245,13 @@ def probe_options() -> bool:
         ("the industry dropdown was built from option-lists.js", r["industry"] == "SELECT"),
         ("the DRY RUN box is ticked and the timing JSON is prefilled with its keys listed", r["dry"] is True and r["timing"] > 20 and "watchdog_min" in r["keys"]),
         ("the Logs section shows Runs to keep (default 50) and its Purge all button", r["runsKeep"] == "50" and r["purge"] is True),
+        ("the \"inside joke\" checkbox is the last control on the page, unticked, rendered with its label", r["lastControl"] == "inside_joke" and r["joke"] is not None
+         and r["joke"]["checked"] is False and r["joke"]["text"] == "inside joke" and r["joke"]["w"] > 0 and r["joke"]["h"] > 0),
+        ("every step-by-step-off name on the page reads \"fast mode\"", len(r["offNames"]) == 2 and all(n == "fast mode" for n in r["offNames"])),
+        ("Export settings and Import settings (a file input) are in the Advanced section", r["configExport"] is True and r["configImport"] == "file"),
+        ("the page does not overflow its width", r["docScrollW"] <= r["innerW"]),
     ]
-    print(f"state options: name={r['name']!r} industry control={r['industry']} dry_run={r['dry']} timing chars={r['timing']} runs_keep={r['runsKeep']!r}")
+    print(f"state options: name={r['name']!r} industry control={r['industry']} dry_run={r['dry']} timing chars={r['timing']} runs_keep={r['runsKeep']!r} last control={r['lastControl']!r} inside joke={r['joke']}")
     ok = console_ok
     for label, good in checks:
         print(f"  {'PASS' if good else 'FAIL'} {label}")

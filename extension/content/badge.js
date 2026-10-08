@@ -87,7 +87,8 @@
     const live = info.mode === "FULL RUN";
     const job = `job ${info.jobIndex + 1}/${info.total} · ${info.projectId} · ${info.modelSlug}`;
     const elapsed = info.jobStartedAt ? ` · ${mmss(Date.now() - info.jobStartedAt)}` : "";
-    const line1 = `MG Clicker [${info.mode || "?"}] ${job}${elapsed}`;
+    // PAUSED (the popup's Pause): the job in progress finishes, the next waits for Resume.
+    const line1 = `MG Clicker [${info.mode || "?"}]${info.paused ? " PAUSED" : ""} ${job}${elapsed}`;
     const line2 = `step: ${stepLine()}`;
     const next = info.nextJob ? `next job: ${info.nextJob.projectId} · ${info.nextJob.modelSlug}` : "next job: none (last job)";
     const line3 = `then: ${info.plan || "-"} · ${next}`;

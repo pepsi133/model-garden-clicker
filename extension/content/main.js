@@ -55,7 +55,7 @@
   }
 
   async function readState() {
-    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUN, KEYS.RUNNING, KEYS.STOP_REQUESTED, KEYS.TIMING]);
+    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUN, KEYS.RUNNING, KEYS.STOP_REQUESTED, KEYS.TIMING, KEYS.SUMMARY_ACK]);
     // Advanced timing settings override the constants; absent = constants.
     if (o[KEYS.TIMING] && typeof o[KEYS.TIMING] === "object") K.applyTiming(o[KEYS.TIMING]);
     return {
@@ -64,8 +64,38 @@
       current: o[KEYS.CURRENT] || null,
       run: o[KEYS.RUN] || null,
       running: o[KEYS.RUNNING] === true,
-      stopRequested: o[KEYS.STOP_REQUESTED] === true
+      stopRequested: o[KEYS.STOP_REQUESTED] === true,
+      summary: o[KEYS.SUMMARY_ACK] || null
     };
+  }
+
+  /* ---------------------------------------------------------- end-of-run summary */
+
+  // After a run ends (any reason) the tab the run used shows a summary in
+  // its badge until OK is pressed: the record in storage (KEYS.SUMMARY_ACK,
+  // keyed by run id) outlives a reload or a route change of this tab, so
+  // the summary is shown again on the next tick; OK or the next Start
+  // clears it. Nothing here focuses the tab.
+  let summaryShownFor = null; // run id of the summary this document shows
+  async function showSummaryIfPending(st) {
+    if (!K.summaryPending(st.summary, st.run)) { summaryShownFor = null; B.hide(); return; }
+    const who = await send({ type: MSG.WHOAMI });
+    if (!who || !who.showsSummary) { summaryShownFor = null; B.hide(); return; }
+    const runId = st.run.runId;
+    if (summaryShownFor === runId && B.summaryOpen()) return;
+    const s = K.runSummary(st.queue);
+    summaryShownFor = runId;
+    B.summary({
+      title: `MG Clicker: run ${st.run.reason || "finished"} · ${s.total} job(s)`,
+      counts: K.summaryCountsText(s.counts),
+      lines: s.lines.map((l) => l.text),
+      more: s.more,
+      onOk: () => {
+        B.closeSummary();
+        summaryShownFor = null;
+        send({ type: MSG.SUMMARY_ACK, runId });
+      }
+    });
   }
 
   /** Report a job's result; stopAfter asks the worker to stop the run after recording it. */
@@ -77,6 +107,15 @@
     const msg = { type: MSG.JOB_RESULT, runId, jobIndex, status, message };
     if (stopAfter === true) msg.stopAfter = true;
     await send(msg);
+  }
+
+  /** True when this document's script already reported another job of `runId`. */
+  function reportedOtherJob(runId, jobIndex) {
+    for (const key of reported) {
+      const [r, i] = key.split("|");
+      if (r === runId && Number(i) !== jobIndex) return true;
+    }
+    return false;
   }
 
   /* ---------------------------------------------------------- step mirror */
@@ -164,7 +203,12 @@
 
   async function tickInner() {
     const st = await readState();
-    if (!st.running || !st.current || !st.run) { active = false; stepTarget = null; B.hide(); return; }
+    if (!st.running || !st.current || !st.run) {
+      active = false;
+      stepTarget = null;
+      if (!st.running) await showSummaryIfPending(st); else B.hide();
+      return;
+    }
 
     // Only the tab the worker opened may act; every other console tab stays idle.
     const who = await send({ type: MSG.WHOAMI });
@@ -179,6 +223,20 @@
     if (st.stopRequested) { B.update(badgeInfo(st, jobIndex, mode, null, "stopping")); return; }
     if (reported.has(`${runId}|${jobIndex}`) || st.current.phase === PHASE.FINISHED) {
       B.update(badgeInfo(st, jobIndex, mode, null, "finished, waiting for next job"));
+      return;
+    }
+
+    // One document, one job. The worker records the next job (phase
+    // navigate) a few ms before its tabs.update lands, and storage.onChanged
+    // wakes this script at once: a document that already reported a job of
+    // this run is the finished job's page, still waiting to be navigated
+    // away, whatever its URL says (inside a project the next job's page
+    // has the same ?project=, and an enabled or ticked page would be
+    // judged for the wrong job). It only shows the badge; the worker's
+    // navigation always brings a fresh document, whose script judges the
+    // new URL, and if the navigation never lands the watchdog ends the job.
+    if (reportedOtherJob(runId, jobIndex)) {
+      B.update(badgeInfo(st, jobIndex, mode, null, "finished, waiting for the next job's page"));
       return;
     }
 
@@ -289,7 +347,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes[KEYS.CURRENT] || changes[KEYS.RUNNING] || changes[KEYS.STOP_REQUESTED]) tick();
+    if (changes[KEYS.CURRENT] || changes[KEYS.RUNNING] || changes[KEYS.STOP_REQUESTED] || changes[KEYS.SUMMARY_ACK]) tick();
   });
 
   tick();

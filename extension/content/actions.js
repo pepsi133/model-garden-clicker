@@ -25,12 +25,19 @@
  * Agreements page, awaitConfirmation() turns the badge into a panel with
  * Continue and Stop and waits. Only a click or keyboard activation the
  * browser marks as trusted (event.isTrusted) on Continue counts; it is
- * recorded per job and step, and the Agree guard requires a fresh one.
- * The user's own Next is seen as the route leaving the questionnaire; the
- * user's own Agree is seen by a capture-phase listener on the Agree node
- * (S.agreements.onAgreeActivation), never inferred from a dialog. While a
- * console dialog is open the wait disables Continue and names the dialog
- * in the panel; the "Enable APIs" dialog is cleared from the wait.
+ * recorded per job and step, the Agree guard requires a fresh one, and
+ * the record is forgotten once its click was made or the step is asked
+ * again. The user's own Next is seen as the route leaving the
+ * questionnaire; the user's own Agree is seen by a capture-phase listener
+ * on the Agree node (S.agreements.onAgreeActivation: a trusted click,
+ * which is also what the browser fires for Enter or Space on the focused
+ * button), never inferred from a dialog or from key events alone, and once
+ * seen the guard refuses the extension's own click so the user's is the
+ * only one. While a console dialog is open the wait disables
+ * Continue and names the dialog in the panel; the "Enable APIs" dialog is
+ * cleared from the wait (a Stop during its close wait ends it at the next
+ * poll); a dialog that opens inside the guard, before or during the click
+ * record, makes the panel ask again, with the record undone.
  *
  * clickAgreeGuarded() is the only function in the extension that clicks the
  * Agree button. It re-reads storage and the page immediately before the
@@ -67,6 +74,11 @@
   A.continueAge = function (runId, jobIndex, step) {
     const t = confirmations.get(`${runId}|${jobIndex}|${step}`);
     return typeof t === "number" ? Date.now() - t : null;
+  };
+
+  /** Forget the trusted Continue of a job's step (after its click, or when the step is asked again). */
+  A.clearContinue = function (runId, jobIndex, step) {
+    return confirmations.delete(`${runId}|${jobIndex}|${step}`);
   };
 
   /** Title and text of a visible dialog, for logs and the panel note. */
@@ -236,9 +248,18 @@
     apiDialogSeen.add(key);
     D.click(btn);
     ctx.log('"Enable APIs" dialog: clicked Enable, waiting for it to close');
-    await D.waitFor(() => {
+    // The close wait can last api_dialog_close_ms (120 s by default); a Stop
+    // or a replaced run is read from storage on every poll so it ends the
+    // wait at the next poll, not after the full budget.
+    await D.waitFor(async () => {
       const again = S.dialogs.findApiEnableDialog();
-      return !again || !again.dialog || !D.isVisible(again.dialog);
+      if (!again || !again.dialog || !D.isVisible(again.dialog)) return true;
+      if (typeof ctx.refresh === "function") {
+        const f = await ctx.refresh();
+        if (!f.running || f.stopRequested) throw new D.StoppedError();
+        if (!f.run || f.run.runId !== ctx.runId) throw new D.StoppedError("the run this job belongs to is no longer the current run");
+      }
+      return false;
     }, { timeout: T.API_DIALOG_CLOSE, what: '"Enable APIs" dialog to close' });
     ctx.log('"Enable APIs" dialog closed');
     return "cleared";
@@ -255,13 +276,33 @@
    * step, instead of waiting out model_ready_ms three times. When the click
    * does not lead away from the model page within nav_ms the job fails at
    * once with a clear message instead of retrying.
+   *
+   * The "already enabled" state (the Agent Studio link with no Enable
+   * wrapper) must hold across polls for K.enabledConfirmMs() (two poll
+   * intervals, at least 500 ms) before the job is skipped: during the
+   * shell's render the Studio link can appear a poll before the
+   * request-access button does, and a single sighting would skip a job
+   * that needed its Enable click.
+   *
+   * Before any of that the URL's model slug must be the job's: a document
+   * that is still on another model's page (the finished job's, before the
+   * worker's navigation lands) is never judged or clicked for this job.
    */
   A.handleModelPage = async function (ctx) {
+    const urlSlug = S.urlModelSlug();
+    if (!urlSlug || urlSlug !== ctx.job.modelSlug) {
+      throw new D.FatalError(`model page is for "${urlSlug || "no model"}", not the job's "${ctx.job.modelSlug}"`);
+    }
     await ctx.setPhase(PHASE.MODEL);
     let found = null;
+    let enabledSince = null; // time of the first poll that saw the enabled state, reset when it goes away
     for (let pass = 0; pass < 2 && !found; pass++) {
       const seen = await D.waitFor(() => {
-        if (S.model.isAlreadyEnabled()) return { enabled: true };
+        if (S.model.isAlreadyEnabled()) {
+          if (enabledSince === null) { enabledSince = Date.now(); return null; }
+          return Date.now() - enabledSince >= K.enabledConfirmMs() ? { enabled: true } : null;
+        }
+        enabledSince = null;
         const btn = S.model.enableButton();
         if (!btn) return null;
         if (D.isDisabled(btn)) {
@@ -566,21 +607,33 @@
           ctx.step("clicking Agree");
           ctx.mark("action started: click Agree");
           try {
-            await A.clickAgreeGuarded(ctx);
+            // The guard asks `refuse` at every check and right before the
+            // click: once the user's own Agree activation was seen, the
+            // extension's click is refused (one click total, the user's).
+            await A.clickAgreeGuarded(ctx, { refuse: () => (userAgree !== null ? "you activated the console's Agree yourself" : null) });
             ctx.mark("action done: Agree clicked");
             break;
           } catch (err) {
             if (userAgree !== null && err instanceof D.ForbiddenClickError) {
               // Continue and the console's Agree within the same seconds: the
-              // user's activation was seen, the guard found the button gone or
-              // a dialog opening; that click's outcome is judged, not failed.
+              // user's activation was seen (by the guard's own check, or the
+              // guard found the button gone or a dialog opening); that
+              // click's outcome is judged, not failed.
               ctx.log(`the guard refused (${err.message}) after you activated the console's Agree yourself; judging that click's outcome`);
               byUser = true;
               break;
             }
             const current = await ctx.refresh();
             const rec = current.queue && current.queue[ctx.jobIndex];
-            if (err instanceof D.ForbiddenClickError && /a console dialog is open/.test(err.message) && !(rec && rec.agreeClicked) && ask < 4) {
+            const recordClean = !(rec && rec.agreeClicked);
+            if (err instanceof D.ForbiddenClickError && recordClean && (err.dialogOpen === true || err.recordCleared === true) && ask < 4) {
+              // No click was made and nothing is on record: a dialog opened
+              // before the click (before the record, or during the record
+              // round trip, which the guard undid), or the page changed
+              // under the guard during that round trip (the button hidden
+              // or disabled by a re-render; the record undone as well). The
+              // Continue is spent, ask again.
+              A.clearContinue(ctx.runId, ctx.jobIndex, K.CONFIRM_STEP.AGREE);
               ctx.log(`${err.message}; asking for your confirmation again`);
               continue;
             }
@@ -669,14 +722,38 @@
    * never click twice. Recording is a round trip to the worker; every
    * check is run again after it, immediately before the click, and the
    * button must be the very node that passed the first check.
+   *
+   * opts.refuse, when given, is asked at every check and once more right
+   * before the click; a string it returns is a reason to refuse (the
+   * handler passes the user's own Agree activation, so the extension never
+   * adds a second click to the user's). Every refusal raised by the second
+   * check, after the record and before the click, undoes the record: the
+   * click comes after that check, so the guard can prove none was made
+   * (the user's activation, a dialog that opened during the round trip, a
+   * button hidden or disabled by a re-render, a changed page). The record
+   * is cleared in storage and in this tab's memory and the error carries
+   * `recordCleared` (true when the worker accepted the undo; false when
+   * the run or tab is no longer current, which the log line says). A
+   * refusal before the record needs no undo. StoppedError is not a
+   * refusal: the run is over and the worker marks the job itself.
    */
-  A.clickAgreeGuarded = async function (ctx) {
+  A.clickAgreeGuarded = async function (ctx, opts) {
     const key = `${ctx.runId}|${ctx.jobIndex}`;
     if (agreed.has(key)) throw new D.ForbiddenClickError("Agree was already clicked for this job in this tab");
+    const refuse = opts && typeof opts.refuse === "function" ? opts.refuse : () => null;
+    const refusal = () => {
+      const why = refuse();
+      if (!why) return;
+      const err = new D.ForbiddenClickError(String(why));
+      err.byUser = true;
+      throw err;
+    };
 
     /** Every storage and page condition; returns the Agree button node. */
     const verify = async (recorded) => {
+      refusal();
       const fresh = await ctx.refresh();
+      refusal();
       if (!fresh.running) throw new D.ForbiddenClickError("no run is in progress");
       if (fresh.stopRequested) throw new D.StoppedError();
       if (!fresh.run || !ctx.runId || fresh.run.runId !== ctx.runId) {
@@ -714,7 +791,9 @@
       const open = S.dialogs.visible();
       if (open.length) {
         const d = open[0];
-        throw new D.ForbiddenClickError(`a console dialog is open: ${[d.title, d.text].filter(Boolean).join(": ") || "dialog without text"}`);
+        const err = new D.ForbiddenClickError(`a console dialog is open: ${[d.title, d.text].filter(Boolean).join(": ") || "dialog without text"}`);
+        err.dialogOpen = true;
+        throw err;
       }
 
       const checkbox = S.agreements.termsCheckbox();
@@ -740,12 +819,29 @@
     // The record was a round trip; the run may have been stopped or
     // replaced and the SPA may have re-rendered the route for another
     // product meanwhile. Check everything again and require the same node.
-    const again = await verify(true);
+    let again;
+    try {
+      again = await verify(true);
+      refusal();
+    } catch (err) {
+      if (err instanceof D.ForbiddenClickError) {
+        // No click was made on this path (the click comes after this
+        // check): undo the record so the job is not locked as clicked (the
+        // handler judges the user's click, or asks again).
+        agreed.delete(key);
+        const undo = await ctx.updateJob({ agreeClicked: false });
+        err.recordCleared = !!(undo && undo.ok);
+        ctx.log(`${err.message}; the Agree click record was ${err.recordCleared ? "cleared: no click was made" : "NOT cleared (stale run or tab); no click was made"}`);
+      }
+      throw err;
+    }
     if (again !== btn || !btn.isConnected) {
       throw new D.ForbiddenClickError("Agree button changed between the check and the click");
     }
     ctx.log("LIVE: clicking Agree");
     D.unguardedClick(btn);
+    // The trusted Continue served its one click.
+    A.clearContinue(ctx.runId, ctx.jobIndex, K.CONFIRM_STEP.AGREE);
   };
 
   globalThis.MGC_ACTIONS = A;

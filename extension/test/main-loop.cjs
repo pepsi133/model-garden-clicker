@@ -61,15 +61,16 @@ function boot(opts) {
   const live = opts.live === true;
   const state = {
     settings: { business_name: "b", business_website: "https://b.example", contact_email: "a@b.example", headquarters: "x", industry: "x", intended_users: "x", use_cases: "x", aup_additional_requirements: "no", aup_details: "", live_mode: live, step_by_step: opts.stepByStep === true },
-    queue: [Object.assign({ projectId: "proj-one", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5", status: "running", phase: "navigate", productId: null, agreeClicked: false }, opts.job)].concat(opts.moreJobs || []),
-    current: { jobIndex: 0, phase: "navigate" },
-    run: { runId: "r1", live },
+    queue: opts.queue || [Object.assign({ projectId: "proj-one", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5", status: "running", phase: "navigate", productId: null, agreeClicked: false }, opts.job)].concat(opts.moreJobs || []),
+    current: opts.current === null ? null : (opts.current || { jobIndex: 0, phase: "navigate" }),
+    run: opts.run || { runId: "r1", live },
     running: true,
     stop_requested: false,
-    timing: opts.timing || null
+    timing: opts.timing || null,
+    summary_ack: opts.summary || null
   };
   if (opts.running === false) state.running = false;
-  const results = [], logs = [], phases = [], updates = [], listeners = [];
+  const results = [], logs = [], phases = [], updates = [], listeners = [], acks = [];
   let gets = 0;
   let isWorkerTab = opts.workerTab !== false;
   env.win.chrome = {
@@ -81,7 +82,8 @@ function boot(opts) {
       lastError: undefined,
       sendMessage: (m, cb) => {
         let reply = { ok: true };
-        if (m.type === env.K.MSG.WHOAMI) reply = { isWorkerTab };
+        if (m.type === env.K.MSG.WHOAMI) reply = { isWorkerTab, showsSummary: isWorkerTab && !!state.summary_ack && state.summary_ack.ack !== true };
+        else if (m.type === env.K.MSG.SUMMARY_ACK) { acks.push(m); if (state.summary_ack && state.summary_ack.runId === m.runId) state.summary_ack.ack = true; }
         else if (m.type === env.K.MSG.SET_PHASE) { phases.push(m.awaiting ? `${m.phase}(${m.awaiting})` : m.phase); state.current.phase = m.phase; state.current.awaiting = m.awaiting || null; state.queue[0].phase = m.phase; }
         else if (m.type === env.K.MSG.JOB_UPDATE) { updates.push(m.fields); Object.assign(state.queue[0], m.fields); }
         else if (m.type === env.K.MSG.JOB_RESULT) { results.push(m); state.current.phase = "finished"; if (m.stopAfter === true) state.stop_requested = true; }
@@ -92,14 +94,16 @@ function boot(opts) {
     }
   };
   env.K.URL_POLL_MS = 20;
-  env.K.TIMEOUTS.CONFIRM = 300; env.K.TIMEOUTS.AGREEMENTS_READY = 300; env.K.TIMEOUTS.MODEL_READY = 300; env.K.TIMEOUTS.NAV = 300;
+  env.K.TIMEOUTS.CONFIRM = 300; env.K.TIMEOUTS.AGREEMENTS_READY = 300; env.K.TIMEOUTS.MODEL_READY = opts.modelReady || 300; env.K.TIMEOUTS.NAV = 300;
   if (opts.handler) env.A.handleModelPage = opts.handler;
   const ctx = env.dom.getInternalVMContext();
   for (const f of ["content/badge.js", "content/main.js"]) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   return {
-    env, state, results, logs, phases, updates, gets: () => gets,
+    env, state, results, logs, phases, updates, acks, gets: () => gets,
     fire: (changes) => { for (const fn of listeners) fn(changes, "local"); },
     badge: () => { const b = env.document.getElementById("mgc-badge"); return b ? b.textContent : null; },
+    badgeVisible: () => { const b = env.document.getElementById("mgc-badge"); return !!b && b.style.display !== "none"; },
+    summary: () => env.document.getElementById("mgc-summary"),
     stop: () => env.win.close()
   };
 }
@@ -137,7 +141,86 @@ function boot(opts) {
     const t = boot({ url: MODEL_URL.replace("proj-one", "someone-else"), handler: async () => { calls += 1; return null; } });
     await until(() => t.results.length > 0, 2000);
     const r = t.results[0];
-    ok(calls === 0 && r && r.status === "failed" && /instead of the job's project/.test(r.message), "tab at another project: failed before any handler ran", JSON.stringify(r));
+    ok(calls === 0 && r && r.status === "failed" && /instead of the job's project/.test(r.message), "tab at another project (a fresh document, phase navigate): failed before any handler ran", JSON.stringify(r));
+    t.stop();
+  }
+
+  console.log("--- (H1) one document, one job: a document that reported a job never acts for another, whatever its URL says");
+  const STUDIO_HTML = '<!doctype html><html><head></head><body><vai-model-garden-call-to-action-button-stack><vertex-ai-open-generation-ai-studio-button><a> Open in Agent Studio </a></vertex-ai-open-generation-ai-studio-button></vai-model-garden-call-to-action-button-stack></body></html>';
+  const pending = (projectId, modelSlug) => ({ projectId, modelSlug, status: "pending", phase: null, productId: null, agreeClicked: false });
+  /** The worker's advance: job 1 becomes current in phase navigate while the tab is still on job 0's page. */
+  const advance = (t) => {
+    t.state.queue[1] = Object.assign({}, t.state.queue[1], { status: "running", phase: "navigate", startedAt: Date.now() });
+    t.state.current = { jobIndex: 1, phase: "navigate" };
+    t.fire({ current: { newValue: t.state.current } });
+  };
+  {
+    // (i) the stale ENABLED model page (job 0 skipped) ticks against job 1 of the SAME project, another model:
+    // the real handler must not report job 1 skipped from this page.
+    const t = boot({ html: STUDIO_HTML, moreJobs: [pending("proj-one", "claude-sonnet-4-6")], modelReady: 2000 });
+    await until(() => t.results.length === 1, 3000);
+    ok(t.results[0] && t.results[0].jobIndex === 0 && t.results[0].status === "skipped", "job 0 (enabled page): skipped, reported from this document", JSON.stringify(t.results[0]));
+    const phasesBefore = t.phases.length;
+    advance(t);
+    await sleep(1000);
+    ok(t.results.length === 1 && t.phases.length === phasesBefore, "job 1 (same project, other model) in phase navigate: no second result within 1 s, no phase set (the stale page is not judged for it)", JSON.stringify(t.results));
+    ok(/job 2\/2 · proj-one · claude-sonnet-4-6/.test(t.badge() || "") && /finished, waiting for the next job's page/.test(t.badge() || ""), "the badge names job 2 and says it waits for the next job's page", t.badge());
+    // Even a phase past navigate on this document (which the worker never sets without a navigation) does not make it act.
+    t.state.current = { jobIndex: 1, phase: "model" };
+    t.fire({ current: { newValue: t.state.current } });
+    await sleep(500);
+    ok(t.results.length === 1 && t.phases.length === phasesBefore, "still nothing after the phase moved on: one document, one job", JSON.stringify(t.results));
+    t.stop();
+  }
+  {
+    // (ii) the stale model page where job 0 FAILED after its Enable click (the questionnaire never opened):
+    // the handler must not click Enable on this page for job 1.
+    const t = boot({ moreJobs: [pending("proj-one", "claude-sonnet-4-6")] });
+    let clicks = 0; t.env.S.model.enableButton().addEventListener("click", () => { clicks += 1; });
+    await until(() => t.results.length === 1, 3000);
+    ok(clicks === 1 && t.results[0].status === "failed" && /Enable was clicked but the questionnaire did not open/.test(t.results[0].message), "job 0: Enable clicked once, failed (no page change in jsdom)", JSON.stringify(t.results[0]) + " clicks=" + clicks);
+    advance(t);
+    await sleep(1000);
+    ok(clicks === 1 && t.results.length === 1, "job 1 (same project) in phase navigate: Enable is not clicked again for it, no result", `clicks=${clicks} ${JSON.stringify(t.results)}`);
+    t.stop();
+  }
+  {
+    // (iii) the real ticked Agreements page (run A) after job 0 ended dry-run: job 1 of the same project gets neither
+    // a result ("no Marketplace product id") nor a phase from this document.
+    const snapA = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+    if (!snapA) skip("(H1) stale Agreements page against the next job", "recon dump not present");
+    else {
+      const project = new URL(snapA.url).searchParams.get("project");
+      const t = boot({ html: snapA.html, forms: snapA.forms, url: snapA.url, job: { projectId: project, productId: "anthropic/anthropic-867.cloudpartnerservices.goog" }, moreJobs: [pending(project, "claude-sonnet-4-6")] });
+      await until(() => t.results.length === 1, 4000);
+      ok(t.results[0] && t.results[0].status === "dry-run", "job 0: dry-run on the ticked Agreements page", JSON.stringify(t.results[0]));
+      const phasesBefore = t.phases.length;
+      advance(t);
+      await sleep(1000);
+      ok(t.results.length === 1 && t.phases.length === phasesBefore, "job 1 (same project) in phase navigate: no result and no SET_PHASE from the stale Agreements page", JSON.stringify(t.results));
+      ok(!t.logs.some((m) => /no Marketplace product id/.test(m)), "the stale page never judged the Agreements page for job 1", t.logs.filter((m) => /job 1/.test(m)).join(" | "));
+      t.stop();
+    }
+  }
+  {
+    // (iv) control: a FRESH document (the navigation landed) for job 1 acts at once, with nothing reported before.
+    let calls = 0;
+    const t = boot({
+      url: MODEL_URL.replace("claude-haiku-4-5", "claude-sonnet-4-6"),
+      queue: [Object.assign(pending("proj-one", "claude-haiku-4-5"), { status: "skipped", phase: "finished", message: "skipped: already enabled" }), Object.assign(pending("proj-one", "claude-sonnet-4-6"), { status: "running", phase: "navigate", startedAt: Date.now() })],
+      current: { jobIndex: 1, phase: "navigate" },
+      handler: async () => { calls += 1; return { status: "dry-run", message: "x" }; }
+    });
+    await until(() => t.results.length === 1, 2000);
+    ok(calls === 1 && t.results[0] && t.results[0].jobIndex === 1 && t.results[0].status === "dry-run", "control: the fresh document runs the handler for job 1 and reports it", JSON.stringify(t.results));
+    t.stop();
+  }
+  {
+    // (v) control: a fresh document at ANOTHER project than the job's (phase navigate, nothing reported) still fails the job.
+    let calls = 0;
+    const t = boot({ url: MODEL_URL.replace("proj-one", "proj-two"), moreJobs: [pending("proj-two", "claude-haiku-4-5")], handler: async () => { calls += 1; return null; } });
+    await until(() => t.results.length === 1, 2000);
+    ok(calls === 0 && t.results[0] && t.results[0].jobIndex === 0 && /tab shows project "proj-two" instead of the job's project/.test(t.results[0].message), "control: a fresh document on the wrong project fails the job as before", JSON.stringify(t.results));
     t.stop();
   }
   {
@@ -172,6 +255,58 @@ function boot(opts) {
     const t = boot({ workerTab: false, handler: async () => null });
     await sleep(300);
     ok(t.gets() === 1, "a run in another tab: this tab reads storage once (WHOAMI says no) and does not poll", `gets=${t.gets()}`);
+    t.stop();
+  }
+
+  console.log("--- the end-of-run summary in the badge: shown after a finished run until OK, keyed by the run id");
+  {
+    const jobs = (n) => Array.from({ length: n }, (_, i) => ({ projectId: `proj-${i + 1}`, modelSlug: "claude-haiku-4-5", status: i === 0 ? "dry-run" : i === 1 ? "skipped" : "failed", message: i === 0 ? "dry run: stopped on the Agreements page" : i === 1 ? "skipped: already enabled" : "boom" }));
+    const finished = (n, ack) => ({ running: false, current: null, queue: jobs(n), run: { runId: "r1", live: false, finishedAt: 1, reason: "all jobs processed" }, summary: { runId: "r1", tabId: 100, reason: "all jobs processed", ack }, handler: async () => null });
+    // (a) a finished run with 14 jobs: the summary panel renders in the badge with counts, 12 lines, "and 2 more" and OK.
+    let t = boot(finished(14, false));
+    t.fire({ running: { oldValue: true, newValue: false } });
+    await until(() => t.summary() !== null, 2000);
+    const badge = t.badge() || "";
+    ok(t.summary() !== null && t.badgeVisible(), "the summary panel is in the badge after a finished run (no run active)");
+    ok(/^MG Clicker: run all jobs processed · 14 job\(s\)\ndone 0 · dry-run 1 · skipped 1 · failed 12 · unverified 0 · stopped 0/.test(badge), "the badge text carries the reason, the job count and the six counts", badge);
+    const lines = Array.from(t.env.document.querySelectorAll("#mgc-summary .mgc-summary-line")).map((l) => l.textContent);
+    ok(lines.length === 12 && t.env.document.querySelector("#mgc-summary .mgc-summary-more").textContent === "and 2 more", "twelve per-job lines, then \"and 2 more\"", `${lines.length}`);
+    ok(lines[0] === "proj-1 · claude-haiku-4-5 · dry-run · dry run: stopped on the Agreements page" && lines[1] === "proj-2 · claude-haiku-4-5 · skipped · skipped: already enabled", "each line: project, model, status, message", lines.slice(0, 2).join(" | "));
+    const okBtn = t.env.document.querySelector('#mgc-summary button[data-action="ok"]');
+    ok(okBtn && okBtn.textContent === "OK" && t.env.document.getElementById("mgc-summary").style.pointerEvents === "auto", "an OK button; the summary takes pointer events");
+    // (b) a storage change that keeps the record pending (a route change's tick) re-renders without duplicating or hiding it.
+    t.fire({ current: { newValue: null } });
+    await sleep(100);
+    ok(t.env.document.querySelectorAll("#mgc-summary").length === 1 && t.summary() !== null, "another tick keeps one summary panel (idempotent)");
+    // (c) OK: the content script sends mgc:summary-ack with the run id; once storage says ack, the badge hides.
+    okBtn.click();
+    await until(() => t.acks.length === 1, 1000);
+    ok(t.acks.length === 1 && t.acks[0].runId === "r1" && t.summary() === null, "OK sends mgc:summary-ack { runId } and closes the panel", JSON.stringify(t.acks));
+    t.fire({ summary_ack: { newValue: t.state.summary_ack } });
+    await sleep(100);
+    ok(t.summary() === null && !t.badgeVisible(), "with ack true in storage the badge is hidden and stays hidden");
+    t.stop();
+    // (d) the flag survives a reload: a fresh document (this script loaded again) with the record still pending shows it at its first tick.
+    t = boot(finished(2, false));
+    await until(() => t.summary() !== null, 2000);
+    ok(t.summary() !== null && /2 job\(s\)/.test(t.badge() || "") && t.env.document.querySelectorAll("#mgc-summary .mgc-summary-line").length === 2 && !t.env.document.querySelector("#mgc-summary .mgc-summary-more"), "a fresh document with the record pending shows the summary at load (two lines, no \"more\")", t.badge());
+    // (e) Start: the worker clears the record and a new run begins; the summary is gone, the running badge replaces it.
+    t.state.summary_ack = null;
+    t.state.running = true; t.state.run = { runId: "r2", live: false }; t.state.current = { jobIndex: 0, phase: "navigate" };
+    t.state.queue = [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "running", phase: "navigate" }];
+    t.fire({ running: { newValue: true } });
+    await until(() => t.summary() === null && /job 1\/1/.test(t.badge() || ""), 2000);
+    ok(t.summary() === null && /MG Clicker \[DRY RUN\] job 1\/1/.test(t.badge() || ""), "Start cleared the record: the summary is gone and the running badge shows", t.badge());
+    t.stop();
+    // (f) controls: an acknowledged record, a record for another run, or a tab that is not the one the run used: no summary.
+    t = boot(finished(2, true)); await sleep(250);
+    ok(t.summary() === null && !t.badgeVisible(), "control: an acknowledged record shows nothing");
+    t.stop();
+    t = boot(Object.assign(finished(2, false), { summary: { runId: "other", tabId: 100, ack: false } })); await sleep(250);
+    ok(t.summary() === null, "control: a record for another run id shows nothing");
+    t.stop();
+    t = boot(Object.assign(finished(2, false), { workerTab: false })); await sleep(250);
+    ok(t.summary() === null && !t.badgeVisible(), "control: a tab the worker does not name shows nothing");
     t.stop();
   }
 

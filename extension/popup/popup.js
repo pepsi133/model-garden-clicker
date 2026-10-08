@@ -7,6 +7,18 @@
   const K = globalThis.MGC;
   const { KEYS, MSG, STATUS, PHASE } = K;
   const $ = (id) => document.getElementById(id);
+  /** Add a listener to the element with `id`; a missing element is warned about, never thrown on. */
+  function on(id, event, fn) {
+    const el = $(id);
+    if (!el) { try { console.warn(`[MG Clicker] popup: no element #${id} to wire ${event} to`); } catch (e) { /* ignore */ } return; }
+    el.addEventListener(event, fn);
+  }
+  /** Set a property on an optional element; a missing one is skipped so a render never aborts on it. */
+  function setIf(id, fn) {
+    const el = $(id);
+    if (el) fn(el);
+    return el;
+  }
 
   function send(msg) {
     return new Promise((resolve) => {
@@ -68,16 +80,18 @@
 
   function renderStepToggle(on, running) {
     const btn = $("step-toggle");
+    if (!btn) return;
     btn.setAttribute("aria-pressed", on ? "true" : "false");
-    $("step-toggle-label").textContent = on ? "slow mode" : "kubardy mode";
-    // One icon at a time. The hidden attribute does not apply to inline
-    // SVG (it is an HTML attribute), so the display style is set directly.
-    $("icon-snail").style.display = on ? "" : "none";
-    $("icon-dog").style.display = on ? "none" : "";
+    setIf("step-toggle-label", (el) => { el.textContent = on ? "slow mode" : "kubardy mode"; });
+    // One icon at a time: the snail for slow mode, the warning sign for
+    // kubardy mode. The hidden attribute does not apply to inline SVG (it
+    // is an HTML attribute), so the display style is set directly.
+    setIf("icon-snail", (el) => { el.style.display = on ? "" : "none"; });
+    setIf("icon-warning", (el) => { el.style.display = on ? "none" : ""; });
     const lock = running ? " A run is in progress: stop it before changing this." : "";
     btn.title = on
       ? `slow mode: step-by-step confirmation is on. The extension fills each page and waits for your Continue before Next and before Agree. Click for kubardy mode (no pauses).${lock}`
-      : `kubardy mode: step-by-step confirmation is off. The extension runs each job through without pausing. Click for slow mode (a Continue before Next and before Agree).${lock}`;
+      : `kubardy mode: step-by-step confirmation is off. The extension runs each job through without pausing: no Continue before Next, and in a full run no Continue before Agree. Click for slow mode (a Continue before Next and before Agree).${lock}`;
   }
 
   /* ---------------------------------------------------------- models.json */
@@ -141,12 +155,12 @@
 
   function selectedModels() {
     const ticked = Array.from(document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
-    const extra = $("extra-models").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    const extra = ($("extra-models") ? $("extra-models").value : "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
     return [...new Set([...ticked, ...extra])];
   }
 
   function projectIds() {
-    return $("projects").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return ($("projects") ? $("projects").value : "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   }
 
   /* ---------------------------------------------------------- state */
@@ -154,17 +168,51 @@
   function savePopupState() {
     chrome.storage.local.set({
       [KEYS.POPUP_STATE]: {
-        projects: $("projects").value,
+        projects: $("projects") ? $("projects").value : "",
         models: Array.from(document.querySelectorAll("#models input:checked")).map((cb) => cb.value),
-        extra: $("extra-models").value
+        extra: $("extra-models") ? $("extra-models").value : ""
       }
     });
   }
 
   function showError(text) {
     const el = $("error");
+    if (!el) { if (text) { try { console.warn("[MG Clicker] popup:", text); } catch (e) { /* ignore */ } } return; }
     el.hidden = !text;
     el.textContent = text || "";
+  }
+
+  /**
+   * The end-of-run summary block above the results: shown while the
+   * finished run's summary is unacknowledged (the same record the worker
+   * tab's badge shows), with its own OK that acknowledges it through the
+   * worker. Hidden while a run is active or once acknowledged.
+   */
+  function renderSummary(o, running) {
+    const box = $("summary");
+    if (!box) return;
+    const run = o[KEYS.RUN];
+    const pending = !running && K.summaryPending(o[KEYS.SUMMARY_ACK], run);
+    box.hidden = !pending;
+    box.textContent = "";
+    if (!pending) return;
+    const s = K.runSummary(o[KEYS.QUEUE] || []);
+    const add = (cls, textContent) => { const d = document.createElement("div"); d.className = cls; d.textContent = textContent; box.appendChild(d); return d; };
+    add("title", `Run ${run.reason || "finished"}: ${s.total} job(s)`);
+    add("counts", K.summaryCountsText(s.counts));
+    for (const l of s.lines) add("line", l.text);
+    if (s.more > 0) add("more", `and ${s.more} more`);
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.id = "summary-ok";
+    ok.textContent = "OK";
+    ok.addEventListener("click", async () => {
+      ok.disabled = true;
+      const r = await send({ type: MSG.SUMMARY_ACK, runId: run.runId });
+      if (!r || !r.ok) showError((r && r.error) || "could not acknowledge the summary");
+      render();
+    });
+    box.appendChild(ok);
   }
 
   function fmtTime(t) {
@@ -178,21 +226,22 @@
   let lastRunning = null; // the log opens itself when a run becomes active
 
   async function render() {
-    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUNNING, KEYS.RUN, KEYS.LOG, KEYS.STOP_REQUESTED]);
+    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.QUEUE, KEYS.CURRENT, KEYS.RUNNING, KEYS.RUN, KEYS.LOG, KEYS.STOP_REQUESTED, KEYS.SUMMARY_ACK]);
     const settings = Object.assign({}, K.DEFAULT_SETTINGS, o[KEYS.SETTINGS] || {});
     const running = o[KEYS.RUNNING] === true;
     // While a run is active the banner shows the mode the run was started
     // with; the setting cannot change under a run, but the snapshot is the
     // authoritative value.
     const live = running && o[KEYS.RUN] ? o[KEYS.RUN].live === true && settings.live_mode === true : settings.live_mode === true;
-    const mode = $("mode");
-    mode.textContent = live ? "MODE: FULL RUN" : "MODE: DRY RUN";
-    mode.className = "mode " + (live ? "live" : "dry");
-    mode.setAttribute("aria-pressed", live ? "true" : "false");
     const lock = running ? " A run is in progress: stop it before changing the mode." : "";
-    mode.title = live
-      ? `Full run: the extension clicks Agree and makes purchases that bill the project. Click to switch to DRY RUN.${lock}`
-      : `Dry run: fills the forms, stops on the Agreements page, never clicks Agree. Click to switch to FULL RUN (asks for confirmation).${lock}`;
+    setIf("mode", (mode) => {
+      mode.textContent = live ? "MODE: FULL RUN" : "MODE: DRY RUN";
+      mode.className = "mode " + (live ? "live" : "dry");
+      mode.setAttribute("aria-pressed", live ? "true" : "false");
+      mode.title = live
+        ? `Full run: the extension clicks Agree and makes purchases that bill the project. Click to switch to DRY RUN.${lock}`
+        : `Dry run: fills the forms, stops on the Agreements page, never clicks Agree. Click to switch to FULL RUN (asks for confirmation).${lock}`;
+    });
     renderStepToggle(settings.step_by_step === true, running);
 
     const queue = o[KEYS.QUEUE] || [];
@@ -202,12 +251,15 @@
     // Start is disabled with that reason. The Options button in the header
     // is the way to the options page.
     const missing = K.missingSettings(settings);
-    const missingBox = $("missing");
-    missingBox.hidden = missing.length === 0;
-    missingBox.textContent = missing.length ? `Missing options: ${labels(missing)}. Fill them in on the Options page.` : "";
-    $("start").disabled = running || missing.length > 0;
-    $("start").title = running ? "a run is in progress" : (missing.length ? `fill these options first: ${labels(missing)}` : "");
-    $("stop").disabled = !running;
+    setIf("missing", (missingBox) => {
+      missingBox.hidden = missing.length === 0;
+      missingBox.textContent = missing.length ? `Missing options: ${labels(missing)}. Fill them in on the Options page.` : "";
+    });
+    setIf("start", (start) => {
+      start.disabled = running || missing.length > 0;
+      start.title = running ? "a run is in progress" : (missing.length ? `fill these options first: ${labels(missing)}` : "");
+    });
+    setIf("stop", (stop) => { stop.disabled = !running; });
 
     let status;
     let step = "";
@@ -232,13 +284,14 @@
     const counts = {};
     for (const j of queue) counts[j.status] = (counts[j.status] || 0) + 1;
     const summary = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(", ");
-    $("status").textContent = summary ? `${status} | ${summary}` : status;
-    $("step").hidden = !step;
-    $("step").textContent = step;
+    setIf("status", (el) => { el.textContent = summary ? `${status} | ${summary}` : status; });
+    setIf("step", (el) => { el.hidden = !step; el.textContent = step; });
+    renderSummary(o, running);
 
-    const tbody = $("results").querySelector("tbody");
-    tbody.textContent = "";
-    queue.forEach((j) => {
+    const results = $("results");
+    const tbody = results ? results.querySelector("tbody") : null;
+    if (tbody) tbody.textContent = "";
+    if (tbody) queue.forEach((j) => {
       const tr = document.createElement("tr");
       tr.className = j.status;
       for (const [cls, val] of [["", j.projectId], ["", j.modelSlug], ["st", j.status], ["msg", j.message || (j.status === STATUS.RUNNING ? j.phase || "" : "")]]) {
@@ -251,10 +304,10 @@
     });
 
     const log = o[KEYS.LOG] || [];
-    $("log").textContent = log.slice(-50).map((l) => `${fmtTime(l.t)} [${l.level}] ${l.src}: ${l.msg}`).join("\n");
+    setIf("log", (el) => { el.textContent = log.slice(-50).map((l) => `${fmtTime(l.t)} [${l.level}] ${l.src}: ${l.msg}`).join("\n"); });
     // The log opens when a run is active (at load, or the moment one starts);
     // the user may fold it again, which is kept until the next run starts.
-    if (running && lastRunning !== true) $("log-details").open = true;
+    if (running && lastRunning !== true) setIf("log-details", (el) => { el.open = true; });
     lastRunning = running;
   }
 
@@ -264,28 +317,30 @@
     detectLayout();
     const o = await chrome.storage.local.get(KEYS.POPUP_STATE);
     const ps = o[KEYS.POPUP_STATE] || {};
-    $("projects").value = ps.projects || "";
-    $("extra-models").value = ps.extra || "";
+    setIf("projects", (el) => { el.value = ps.projects || ""; });
+    setIf("extra-models", (el) => { el.value = ps.extra || ""; });
     const models = await loadModels();
-    renderModels(models, Array.isArray(ps.models) ? ps.models : null);
+    if ($("models")) renderModels(models, Array.isArray(ps.models) ? ps.models : null);
 
-    $("projects").addEventListener("input", savePopupState);
-    $("extra-models").addEventListener("input", savePopupState);
-    $("models-all").addEventListener("click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = true; }); savePopupState(); });
-    $("models-none").addEventListener("click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = false; }); savePopupState(); });
-    $("options").addEventListener("click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
-    $("open-tab").addEventListener("click", openInTab);
-    $("mode").addEventListener("click", toggleMode);
-    $("step-toggle").addEventListener("click", toggleStepByStep);
-    $("clear-results").addEventListener("click", async (e) => {
+    // Every listener goes through on(): a missing element is warned about
+    // in the console and skipped, so the rest of the page still works.
+    on("projects", "input", savePopupState);
+    on("extra-models", "input", savePopupState);
+    on("models-all", "click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = true; }); savePopupState(); });
+    on("models-none", "click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = false; }); savePopupState(); });
+    on("options", "click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
+    on("open-tab", "click", openInTab);
+    on("mode", "click", toggleMode);
+    on("step-toggle", "click", toggleStepByStep);
+    on("clear-results", "click", async (e) => {
       e.preventDefault();
       const st = await chrome.storage.local.get(KEYS.RUNNING);
       if (st[KEYS.RUNNING]) { showError("stop the run before clearing results"); return; }
-      await chrome.storage.local.set({ [KEYS.QUEUE]: [], [KEYS.RUN]: null, [KEYS.LOG]: [] });
+      await chrome.storage.local.set({ [KEYS.QUEUE]: [], [KEYS.RUN]: null, [KEYS.LOG]: [], [KEYS.SUMMARY_ACK]: null });
       render();
     });
 
-    $("start").addEventListener("click", async () => {
+    on("start", "click", async () => {
       showError("");
       const projects = projectIds();
       const models = selectedModels();
@@ -304,16 +359,16 @@
         const ok = confirm(`FULL RUN: this will click Agree and make purchases that bill the project for ${projects.length * models.length} project/model pair(s). Continue?`);
         if (!ok) return;
       }
-      $("start").disabled = true;
+      setIf("start", (el) => { el.disabled = true; });
       // The mode shown (and, for a full run, confirmed) travels with the
       // request; the worker refuses to start if the setting changed in between.
       const reply = await send({ type: MSG.START, projects, models, live });
-      if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); $("start").disabled = false; }
+      if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); setIf("start", (el) => { el.disabled = false; }); }
       render();
     });
 
-    $("stop").addEventListener("click", async () => {
-      $("stop").disabled = true;
+    on("stop", "click", async () => {
+      setIf("stop", (el) => { el.disabled = true; });
       await send({ type: MSG.STOP });
       render();
     });

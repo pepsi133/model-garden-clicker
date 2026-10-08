@@ -53,3 +53,17 @@ checkbox in the page's main content fails the job at once with a message
 that names the manual step, and an Enable click that does not open the
 questionnaire within `nav_ms` fails it with a message that points at a
 manual step on the model page.
+
+## Parked after the 0.4.0 review (low items)
+
+One line each; none is scheduled.
+
+- Agree guard: a refused undo of the click record (the run or tab no longer current when the guard undoes it) leaves `agreeClicked: true` with no click made; reachable only once the run is gone, and the log line says it was not cleared.
+- Agree handler: after a guard refusal with the user's own activation seen, the set of dialogs open before the click is not taken again, so an unrelated dialog already open could be judged as that click's outcome; needs a click behind the console's modal backdrop.
+- Console checks: `ext_dryrun.py` and `popup_layout.py` fail on SEVERE entries only; they do not see the service worker nor errors the extension catches (tick and handler failures are `console.warn` with the `[MG Clicker]` prefix). Fail on those warnings too, or log tick errors with `console.error`.
+- Hidden worker tab: a browser run that leaves the worker tab in the background for more than five minutes across two jobs (`ext_dryrun.py --hidden-worker`), asserting the results and the per-phase timings against Chrome's timer throttling; today the behaviour is documented from Chrome's rules, not measured.
+- Four copies of the walkthrough (root `README.md`, `extension/README.md`, `store/LISTING.md`, `options.html`): keep one and link to it.
+- `content/main.js` writes a `console.debug` line per log entry; drop it or gate it.
+- `.gitignore` carries the docs tooling entries (`.agents/`, `.claude/skills/`, `skills-lock.json`) that are not part of the extension.
+- `test/ui-pages.cjs` requires the manifest description to equal one literal string next to the store-limit check; the limit check is the one that matters.
+- `store/LISTING.md` opens with a re-paste note for the dashboard draft; drop it after the paste.

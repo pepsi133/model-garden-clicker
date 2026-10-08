@@ -15,7 +15,7 @@ globalThis.chrome = {
   } },
   tabs: {
     create: async ({ url }) => { const id = nextTabId++; tabs.set(id, url); events.push(["tabs.create", id, url]); return { id }; },
-    update: async (id, { url }) => { if (!tabs.has(id)) throw new Error("no tab"); tabs.set(id, url); events.push(["tabs.update", id, url]); return { id }; },
+    update: async (id, props) => { if (!tabs.has(id)) throw new Error("no tab"); tabs.set(id, props.url); events.push(["tabs.update", id, props.url, props]); return { id }; },
     get: async (id) => { if (!tabs.has(id)) throw new Error("no tab"); return { id }; },
     onRemoved: { addListener: (f) => listeners.removed.push(f) },
   },
@@ -30,7 +30,8 @@ globalThis.chrome = {
     onInstalled: { addListener: (f) => listeners.installed.push(f) },
     onStartup: { addListener: (f) => listeners.startup.push(f) },
     getManifest: () => ({ version: "0.0.0-test" }),
-    // no getURL: modelNames() must cope without models.json
+    // getURL names an origin fetch() cannot load here: modelNames() must cope without models.json
+    getURL: (p) => "chrome-extension://x/" + p,
   },
 };
 await import(path.join(EXT, "common/constants.js"));
@@ -39,9 +40,13 @@ K.RECOVER_DELAY_MS = 0;
 const SETTLE_MS = K.JOB_SETTLE_MS;
 K.JOB_SETTLE_MS = 0; // instant advance for the checks below; check 13 restores it
 await import(path.join(EXT, "background/service-worker.js"));
-function msg(m, tabId) {
-  return new Promise((res) => listeners.message[listeners.message.length - 1](m, tabId ? { tab: { id: tabId } } : {}, res));
+/** Deliver a message; tabId makes it a content script's (sender.tab), `sender` overrides the whole sender. */
+function msg(m, tabId, sender) {
+  const s = sender || (tabId ? { tab: { id: tabId }, url: "https://console.cloud.google.com/agent-platform/model-garden" } : {});
+  return new Promise((res) => listeners.message[listeners.message.length - 1](m, s, res));
 }
+/** The popup opened in a tab: an extension page with sender.tab set, under the extension's origin. */
+const TAB_PAGE = (id) => ({ tab: { id }, url: "chrome-extension://x/popup/popup.html?tab=1" });
 const settle = () => new Promise((r) => setTimeout(r, 10));
 let n = 0;
 function assert(c, m) { if (!c) { console.error("FAIL:", m, JSON.stringify(store, null, 1)); process.exit(1); } n++; console.log("ok  ", m); }
@@ -352,5 +357,48 @@ assert(tabs.get(t12) === K.modelUrl("proj-one", "claude-haiku-4-5"), "the tab wa
 r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
 r = await msg({ type: K.MSG.JOB_RESULT, runId: runId(), jobIndex: 0, status: "dry-run", message: "x", stopAfter: "yes" }, store.tab_id); await settle();
 assert(store.running === false && store.run.reason === "all jobs processed", "control: stopAfter that is not exactly true is ignored; the run advanced to its end");
+
+// 21. (N4) a late stopAfter result for a job that is no longer current is ignored together with its stop request
+r = await msg(START(["proj-one", "proj-two", "proj-three"], ["claude-haiku-4-5"])); await settle();
+const t13 = store.tab_id; const R13 = runId();
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R13, jobIndex: 0, status: "dry-run", message: "x" }, t13); await settle();
+assert(store.current.jobIndex === 1 && store.stop_requested === false, "job 0 done normally, job 1 current, no stop requested");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R13, jobIndex: 0, status: "dry-run", message: "late panel stop", stopAfter: true }, t13); await settle();
+assert(store.stop_requested === false && store.running === true && store.current.jobIndex === 1 && store.queue[1].status === "running" && store.queue[0].message === "x", "a late stopAfter result for job 0 while job 1 runs: ignored, the stop flag stays false (N4)");
+assert(store.log.some((l) => /ignored result for job 0 \(current is 1\); its stop request is ignored with it/.test(l.msg)), "the ignored stop request was logged (N4)");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R13, jobIndex: 1, status: "dry-run", message: "y" }, t13); await settle();
+assert(store.running === true && store.current.jobIndex === 2 && store.queue[2].status === "running", "job 1's plain result advanced to job 2 instead of stopping the run (N4)");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R13, jobIndex: 2, status: "dry-run", message: "z", stopAfter: true }, t13); await settle();
+assert(store.running === false && store.run.reason === "stopped by user" && store.queue[2].status === "dry-run" && store.log.some((l) => /job 2: dry-run - z \(the run stops after this job\)/.test(l.msg)), "control: stopAfter on the current job still stops the run after it, and says so in the job's log line (N4)");
+
+// 22. the end-of-run summary record: written when a run ends with the run id and the tab, acknowledged by OK, cleared by Start;
+//     the worker tab is navigated without activating it
+assert(store.summary_ack && store.summary_ack.runId === R13 && store.summary_ack.tabId === t13 && store.summary_ack.ack === false && store.summary_ack.reason === "stopped by user", "run end writes summary_ack { runId, tabId, reason, ack: false }: " + JSON.stringify(store.summary_ack));
+r = await msg({ type: K.MSG.WHOAMI }, t13); assert(r.showsSummary === true && r.isWorkerTab === false, "WHOAMI from the tab the run used: showsSummary true (not the worker tab any more)");
+r = await msg({ type: K.MSG.WHOAMI }, 999); assert(r.showsSummary === false, "WHOAMI from another tab: showsSummary false");
+r = await msg({ type: K.MSG.SUMMARY_ACK, runId: "other" }); assert(r.ok === false && store.summary_ack.ack === false, "OK with another run id is refused");
+r = await msg({ type: K.MSG.SUMMARY_ACK, runId: R13 }, 999); assert(r.ok === false && /not the tab the run used/.test(r.error) && store.summary_ack.ack === false, "OK from a content script of another console tab is refused");
+// (M1) the popup opened in a tab is an extension page in a normal tab: Chrome sets sender.tab, its url is the extension's own origin. It is UI, not a worker tab.
+r = await msg({ type: K.MSG.SET_PHASE, runId: R13, jobIndex: 0, phase: "model" }, null, TAB_PAGE(t13)); assert(r.ok === false && /not the worker tab/.test(r.error), "(M1) a job message from an extension page whose tab id is the worker tab's is refused like any UI message");
+r = await msg({ type: K.MSG.LOG, level: "info", msg: "from the tab page" }, null, TAB_PAGE(555)); assert(r.ok === true && store.log[store.log.length - 1].src === "ui", "(M1) MSG.LOG from the popup in a tab is labelled ui: " + store.log[store.log.length - 1].src);
+r = await msg({ type: K.MSG.LOG, level: "info", msg: "from a content script" }, 555); assert(store.log[store.log.length - 1].src === "content", "control: MSG.LOG from a content script is labelled content");
+r = await msg({ type: K.MSG.SUMMARY_ACK, runId: R13 }, null, TAB_PAGE(555)); assert(r.ok === true && store.summary_ack.ack === true && store.summary_ack.runId === R13, "(M1) OK from popup.html?tab=1 (sender.tab 555, extension url) is accepted: ack true (the record stays, keyed by the run id)");
+r = await msg({ type: K.MSG.WHOAMI }, t13); assert(r.showsSummary === false, "after OK the tab the run used no longer shows the summary");
+assert(store.log.some((l) => /end-of-run summary acknowledged/.test(l.msg)), "the OK was logged");
+assert(!("at" in store.summary_ack) && !("ackAt" in store.summary_ack) && Object.keys(store.summary_ack).sort().join() === "ack,reason,runId,tabId", "the summary record carries runId, tabId, reason and ack only: " + Object.keys(store.summary_ack).sort().join());
+r = await msg({ type: K.MSG.WHOAMI }, t13); assert(Object.keys(r).sort().join() === "isWorkerTab,showsSummary", "WHOAMI answers isWorkerTab and showsSummary only: " + Object.keys(r).sort().join());
+r = await msg(START(["proj-one", "proj-two"], ["claude-haiku-4-5"])); await settle();
+assert(store.summary_ack === null, "Start clears summary_ack");
+const t14 = store.tab_id;
+r = await msg({ type: K.MSG.JOB_RESULT, runId: runId(), jobIndex: 0, status: "dry-run", message: "x" }, t14); await settle();
+const navs = events.filter((e) => e[0] === "tabs.update" && e[1] === t14);
+assert(navs.length >= 1 && navs.every((e) => !("active" in e[3]) && Object.keys(e[3]).join() === "url"), "a later job's navigation is tabs.update({ url }) with no active flag: " + JSON.stringify(navs[navs.length - 1][3]));
+r = await msg({ type: K.MSG.JOB_RESULT, runId: runId(), jobIndex: 1, status: "skipped", message: "y" }, t14); await settle();
+assert(store.running === false && store.summary_ack && store.summary_ack.runId === runId() && store.summary_ack.reason === "all jobs processed" && store.summary_ack.tabId === t14 && store.summary_ack.ack === false, "all jobs processed writes the summary record too");
+r = await msg({ type: K.MSG.SUMMARY_ACK, runId: runId() }, t14); assert(r.ok === true && store.summary_ack.ack === true, "OK from the content script of the tab the run used acknowledges it");
+r = await msg({ type: K.MSG.SUMMARY_ACK, runId: runId() }); assert(r.ok === true && r.note === "already acknowledged", "a second OK is a no-op");
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+r = await msg({ type: K.MSG.JOB_RESULT, runId: runId(), jobIndex: 0, status: "skipped", message: "z" }, store.tab_id); await settle();
+r = await msg({ type: K.MSG.SUMMARY_ACK, runId: runId() }); assert(r.ok === true && store.summary_ack.ack === true, "OK from the action popup (no sender.tab) acknowledges it");
 
 console.log(`ALL WORKER CHECKS PASSED (${n} passed)`);

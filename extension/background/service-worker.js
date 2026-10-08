@@ -51,12 +51,17 @@ async function tabExists(tabId) {
   }
 }
 
-/** Navigate the run's tab to `url`, creating the tab on first use. */
+/**
+ * Navigate the run's tab to `url`, creating the tab on first use. Only the
+ * creation (the instant after Start) brings the tab to the front; later
+ * navigations never activate it, so a user who switched away is not
+ * pulled back (nothing in the extension focuses a tab or a window).
+ */
 async function navigateTo(url) {
   const o = await get(KEYS.TAB_ID);
   const tabId = o[KEYS.TAB_ID];
   if (await tabExists(tabId)) {
-    await chrome.tabs.update(tabId, { url, active: true });
+    await chrome.tabs.update(tabId, { url });
     return tabId;
   }
   const tab = await chrome.tabs.create({ url, active: true });
@@ -142,19 +147,48 @@ async function startRunUnsafe({ projects, models, live }) {
     [KEYS.STOP_REQUESTED]: false,
     [KEYS.CURRENT]: null,
     [KEYS.TAB_ID]: null,
-    [KEYS.RUN]: run
+    [KEYS.RUN]: run,
+    [KEYS.SUMMARY_ACK]: null // the previous run's summary, acknowledged or not, is gone with the new Start
   });
   await appendLogUnsafe("info", `run ${run.runId} started: ${projectIds.length} project(s) x ${modelSlugs.length} model(s) = ${queue.length} job(s), mode ${live ? "FULL RUN" : "DRY RUN"}${settings.step_by_step === true ? ", step-by-step confirmation on" : ""}`);
   await advanceUnsafe();
   return { ok: true, jobs: queue.length, runId: run.runId };
 }
 
+/**
+ * End the run (every reason: all jobs processed, Stop, a lost tab, a
+ * reload). The end-of-run summary record is written with the run id and
+ * the worker tab's id: the badge in that tab and the popup show the
+ * summary until OK (MSG.SUMMARY_ACK) or the next Start. The tab is never
+ * activated for it and no notification is raised.
+ */
 async function finishRunUnsafe(reason) {
-  const o = await get(KEYS.RUN);
+  const o = await get([KEYS.RUN, KEYS.TAB_ID]);
   const run = Object.assign({}, o[KEYS.RUN] || {}, { finishedAt: Date.now(), reason });
   await chrome.alarms.clear(K.WATCHDOG_ALARM);
-  await set({ [KEYS.RUNNING]: false, [KEYS.CURRENT]: null, [KEYS.STOP_REQUESTED]: false, [KEYS.TAB_ID]: null, [KEYS.RUN]: run });
+  const updates = { [KEYS.RUNNING]: false, [KEYS.CURRENT]: null, [KEYS.STOP_REQUESTED]: false, [KEYS.TAB_ID]: null, [KEYS.RUN]: run };
+  if (typeof run.runId === "string") {
+    updates[KEYS.SUMMARY_ACK] = { runId: run.runId, tabId: typeof o[KEYS.TAB_ID] === "number" ? o[KEYS.TAB_ID] : null, reason, ack: false };
+  }
+  await set(updates);
   await appendLogUnsafe("info", `run finished: ${reason}`);
+}
+
+/**
+ * OK on the end-of-run summary: from the extension's own UI (the action
+ * popup, or the popup opened in a tab; fromTab is null for both), or from
+ * the content script of the tab the run used. A content script of any
+ * other tab is refused.
+ */
+async function ackSummaryUnsafe(runId, fromTab) {
+  const o = await get(KEYS.SUMMARY_ACK);
+  const s = o[KEYS.SUMMARY_ACK];
+  if (!s || typeof runId !== "string" || s.runId !== runId) return { ok: false, error: "no summary for that run" };
+  if (fromTab !== null && fromTab !== s.tabId) return { ok: false, error: "not the tab the run used" };
+  if (s.ack === true) return { ok: true, note: "already acknowledged" };
+  await set({ [KEYS.SUMMARY_ACK]: Object.assign({}, s, { ack: true }) });
+  await appendLogUnsafe("info", "end-of-run summary acknowledged");
+  return { ok: true };
 }
 
 async function armWatchdog() {
@@ -185,21 +219,29 @@ async function advanceUnsafe() {
   }
 }
 
-/** Record a result for the current job and move on. */
-async function finishJobUnsafe(jobIndex, status, message) {
+/**
+ * Record a result for the current job and move on. stopAfter (the dry-run
+ * panel's Stop) asks the run to stop instead of advancing; it is honoured
+ * only once the result itself is accepted (the job must be the current,
+ * unfinished one), so a late result for an earlier job cannot stop the
+ * run after a job nobody pressed Stop for.
+ */
+async function finishJobUnsafe(jobIndex, status, message, stopAfter) {
   const o = await get([KEYS.QUEUE, KEYS.RUNNING, KEYS.CURRENT]);
   if (o[KEYS.RUNNING] !== true) return;
   const current = o[KEYS.CURRENT];
   if (!current || current.jobIndex !== jobIndex) {
-    await appendLogUnsafe("warn", `ignored result for job ${jobIndex} (current is ${current ? current.jobIndex : "none"})`);
+    await appendLogUnsafe("warn", `ignored result for job ${jobIndex} (current is ${current ? current.jobIndex : "none"})${stopAfter === true ? "; its stop request is ignored with it" : ""}`);
     return;
   }
   if (current.phase === PHASE.FINISHED) return;
   const queue = o[KEYS.QUEUE] || [];
   queue[jobIndex] = Object.assign({}, queue[jobIndex], { status, message: String(message || ""), finishedAt: Date.now(), phase: PHASE.FINISHED });
-  await set({ [KEYS.QUEUE]: queue, [KEYS.CURRENT]: Object.assign({}, current, { phase: PHASE.FINISHED, updatedAt: Date.now() }) });
+  const updates = { [KEYS.QUEUE]: queue, [KEYS.CURRENT]: Object.assign({}, current, { phase: PHASE.FINISHED, updatedAt: Date.now() }) };
+  if (stopAfter === true) updates[KEYS.STOP_REQUESTED] = true;
+  await set(updates);
   await chrome.alarms.clear(K.WATCHDOG_ALARM);
-  await appendLogUnsafe("info", `job ${jobIndex}: ${status} - ${message}`);
+  await appendLogUnsafe("info", `job ${jobIndex}: ${status} - ${message}${stopAfter === true ? " (the run stops after this job)" : ""}`);
 
   // Optional pause (settle_ms, default 0) that leaves the finished job's page
   // on screen before the next job's navigation. If the worker dies during
@@ -331,9 +373,29 @@ async function recoverUnsafe() {
 
 /* ---------------------------------------------------------------- events */
 
+/**
+ * True when the message comes from one of the extension's own pages (the
+ * action popup, the popup opened in a tab, the options page): its URL is
+ * under the extension's origin. Chrome sets sender.tab for an extension
+ * page shown in a normal tab as it does for a content script, so the tab
+ * id alone cannot tell the two apart.
+ */
+function fromExtensionPage(sender) {
+  try {
+    const base = chrome.runtime.getURL ? chrome.runtime.getURL("") : null;
+    return !!(base && sender && typeof sender.url === "string" && sender.url.startsWith(base));
+  } catch (e) {
+    return false;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return false;
-  const fromTab = sender && sender.tab ? sender.tab.id : null;
+  // fromTab: the tab of a content script; null for the extension's own UI,
+  // wherever it is shown, so a job message from the popup-in-a-tab is
+  // refused like any UI message and its summary OK is accepted like the
+  // action popup's.
+  const fromTab = sender && sender.tab && !fromExtensionPage(sender) ? sender.tab.id : null;
 
   const handle = async () => {
     switch (msg.type) {
@@ -342,9 +404,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case MSG.STOP:
         return serialized(() => stopRunUnsafe("stopped by user"));
       case MSG.WHOAMI: {
-        const o = await get(KEYS.TAB_ID);
-        return { tabId: fromTab, workerTabId: o[KEYS.TAB_ID], isWorkerTab: fromTab !== null && fromTab === o[KEYS.TAB_ID] };
+        // isWorkerTab: the tab of the run in progress. showsSummary: the tab
+        // the finished run used, while its summary is unacknowledged.
+        const o = await get([KEYS.TAB_ID, KEYS.SUMMARY_ACK]);
+        const s = o[KEYS.SUMMARY_ACK];
+        return {
+          isWorkerTab: fromTab !== null && fromTab === o[KEYS.TAB_ID],
+          showsSummary: fromTab !== null && !!s && s.ack !== true && s.tabId === fromTab
+        };
       }
+      case MSG.SUMMARY_ACK:
+        return serialized(() => ackSummaryUnsafe(msg.runId, fromTab));
       // The tab and run-id checks run inside the serialized chain, in the
       // same turn as the write they gate: a message checked under one run
       // can never be applied after a STOP and START replaced it.
@@ -364,9 +434,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (refused) return refused;
           if (!Object.values(STATUS).includes(msg.status)) return { ok: false, error: "unknown status" };
           // stopAfter: the job ends with this result and the run stops
-          // instead of advancing (the dry-run panel's Stop button).
-          if (msg.stopAfter === true) await set({ [KEYS.STOP_REQUESTED]: true });
-          await finishJobUnsafe(msg.jobIndex, msg.status, msg.message);
+          // instead of advancing (the dry-run panel's Stop button); the
+          // flag is set by finishJobUnsafe, after its job index check.
+          await finishJobUnsafe(msg.jobIndex, msg.status, msg.message, msg.stopAfter === true);
           return { ok: true };
         });
       case MSG.LOG:

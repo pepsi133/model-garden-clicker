@@ -22,10 +22,15 @@ in the Developer Dashboard.
 
 `screenshots/01-popup-dry-run.png` to `screenshots/05-popup-in-tab.png`, 1280x800
 PNG, RGB, no alpha, no metadata. Upload them in numeric order. Each one is a
-capture of the running extension centred on the theme background with a
-one-line caption. Project IDs, the account avatar, the questionnaire values
-(website, email, country, industry, intended users, use case) and the billing
-currency are covered with the local background colour.
+capture of the extension centred on the theme background with a one-line
+caption. The two popup captures (01 and 05) come from the headless layout
+probe's fake storage (`python/scripts/popup_layout.py`) and show no real
+value. In the console captures (03 and 04) and the options capture (02) the
+project IDs (the console's project picker, the badge lines and the panel),
+the account avatar with its counter badge and the free-trial day ring, every
+questionnaire value (business name, website, email, country, industry,
+intended users, use case) and the billing currency, price and exchange-rate
+lines are covered with the local background colour.
 
 ## Source
 

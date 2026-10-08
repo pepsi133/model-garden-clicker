@@ -62,7 +62,7 @@ DEFAULT_MODELS = ("claude-haiku-4-5",)
 TERMINAL = {"done", "unverified", "dry-run", "skipped", "failed", "stopped"}
 STORAGE_KEYS = ["settings", "queue", "current", "running", "stop_requested", "tab_id", "log", "run"]
 WINDOW = (1400, 1000)
-POPUP_SHOTS = ((400, 600), (560, 660))  # window sizes for the popup page screenshots
+POPUP_SHOTS = ((800, 600),)  # viewport sizes for the popup page screenshots (Chrome's maximum popup size)
 
 # Message fragment that must accompany each acceptable status.
 EXPECTED_MESSAGE = {"dry-run": "checkbox ticked", "skipped": "already enabled"}
@@ -489,15 +489,28 @@ def check_step_log(lines: list[str], run_id: str | None) -> bool:
     return ok
 
 
+def set_viewport(driver, width: int, height: int) -> tuple[int, int]:
+    """Size the window so the page's viewport (not the outer window) is width x height; returns what it got."""
+    driver.set_window_rect(x=0, y=0, width=width, height=height)
+    time.sleep(0.3)
+    inner_w, inner_h = driver.execute_script("return [window.innerWidth, window.innerHeight]")
+    if (inner_w, inner_h) != (width, height):
+        driver.set_window_rect(x=0, y=0, width=width + (width - inner_w), height=height + (height - inner_h))
+        time.sleep(0.3)
+        inner_w, inner_h = driver.execute_script("return [window.innerWidth, window.innerHeight]")
+    return inner_w, inner_h
+
+
 def screenshot_pages(driver, ext_id: str, out_dir: Path) -> list[Path]:
-    """The popup page as a tab at a few window sizes, and the options page, for the theme and layout."""
+    """The popup page at the popup's viewport size, in a tab, and the options page, for the theme and layout."""
     shots = []
     for w, h in POPUP_SHOTS:
-        driver.set_window_rect(x=0, y=0, width=w, height=h)
         driver.get(f"chrome-extension://{ext_id}/popup/popup.html")
+        got = set_viewport(driver, w, h)
         time.sleep(1.2)
         f = out_dir / f"popup-{w}x{h}.png"
         driver.save_screenshot(str(f))
+        log(f"popup screenshot at a {got[0]} x {got[1]} viewport (wanted {w} x {h}): {f}")
         shots.append(f)
     driver.get(f"chrome-extension://{ext_id}/popup/popup.html?tab=1")
     driver.set_window_rect(x=0, y=0, width=900, height=800)
@@ -511,6 +524,48 @@ def screenshot_pages(driver, ext_id: str, out_dir: Path) -> list[Path]:
     driver.save_screenshot(str(f))
     shots.append(f)
     return shots
+
+
+def collect_console(driver, ext_id: str, out_dir: Path) -> bool:
+    """Drain the browser console log of every open page (worker tab, popup page, options page).
+
+    SEVERE entries whose source is one of the extension's own scripts or
+    pages (a chrome-extension://<id>/ URL in the entry's message, which
+    chromedriver prefixes with the source URL) fail the run and are
+    printed; SEVERE entries from console.cloud.google.com itself (the
+    console's own CSP reports, failed requests and the like) are reported
+    but do not fail. The log is per session, not per window, so the window
+    an entry is drained from says nothing about where it came from: only
+    the message attributes it. Every entry lands in console-log.txt.
+    """
+    control_marker = "mgc-dryrun-console-control"
+    entries: list[dict] = []
+    for h in list(driver.window_handles):
+        try:
+            driver.switch_to.window(h)
+            # A zero must be a live zero: a console.error marker written into
+            # the page must come back as a SEVERE entry, or the channel is dead.
+            driver.execute_script("console.error(arguments[0])", control_marker)
+            entries.extend(dict(e) for e in driver.get_log("browser"))
+        except WebDriverException as exc:
+            log(f"console log of a window could not be read: {str(exc)[:120]}")
+    control = [e for e in entries if control_marker in str(e.get("message")) and e.get("level") == "SEVERE"]
+    entries = [e for e in entries if control_marker not in str(e.get("message"))]
+    marker = f"chrome-extension://{ext_id}/"
+    lines = [f"{e.get('level')}\t{e.get('source')}\t{e.get('message')}" for e in entries]
+    (out_dir / "console-log.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    severe = [e for e in entries if e.get("level") == "SEVERE"]
+    ours = [e for e in severe if marker in str(e.get("message", ""))]
+    theirs = [e for e in severe if e not in ours]
+    print()
+    print(f"browser console: {len(entries)} entries, {len(severe)} SEVERE ({len(ours)} from the extension's own scripts or pages, {len(theirs)} from the console pages)")
+    for e in ours:
+        print(f"FAIL SEVERE from the extension: [{e.get('source')}] {e.get('message')}")
+    for e in theirs:
+        print(f"note SEVERE from the console page (not a failure): [{e.get('source')}] {str(e.get('message'))[:200]}")
+    print(f"{'PASS' if control else 'FAIL'} the console log channel is live (the control console.error came back as SEVERE from {len(control)} page(s))")
+    print(f"{'PASS' if not ours else 'FAIL'} no SEVERE console entry from the extension's own scripts (details in console-log.txt)")
+    return bool(control) and not ours
 
 
 def parse_expectations(items: list[str], projects: list[str]) -> dict[str, str]:
@@ -606,6 +661,9 @@ def main() -> int:
         driver.switch_to.window(popup)
         for shot in screenshot_pages(driver, ext_id, out_dir):
             log(f"screenshot {shot}")
+        # After the popup and options pages were loaded too: the console log
+        # of every open page, failing on SEVERE entries from the extension.
+        ok = collect_console(driver, ext_id, out_dir) and ok
         print()
         print(f"evidence: {out_dir}")
         for p in sorted(out_dir.iterdir()):

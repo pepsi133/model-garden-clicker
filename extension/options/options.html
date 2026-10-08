@@ -11,6 +11,25 @@
     <img class="photo" src="../icons/avatar96.png" alt="">
     <h1>Model Garden Clicker options</h1>
   </header>
+
+  <section class="how" aria-labelledby="how-title">
+    <h2 id="how-title">How it works</h2>
+    <p>The extension does what you would do by hand for each project and model: open the model's Model Garden page, click Enable, fill the questionnaire, click Next, tick the terms checkbox. One run, start to finish:</p>
+    <ol>
+      <li><strong>Save the values once.</strong> Fill the Questionnaire below and click Save. The values stay in this browser's local extension storage.</li>
+      <li><strong>Pick projects and models.</strong> Click the toolbar icon, paste project IDs one per line, tick the models. Each pair is one job.</li>
+      <li><strong>Start.</strong> One console tab opens and the jobs run in order. Leave that tab alone while a run is active.</li>
+      <li><strong>DRY RUN</strong> (ticked, the default): Enable, fill, Next, tick the checkbox, stop. Agree is never clicked and nothing is purchased or enabled. Result <code>dry-run</code>.</li>
+      <li><strong>Full run</strong> (DRY RUN unticked): Start asks once more. Agree is clicked once per job, only on the Agreements page of the job's own project, product and exact model version. That is a Marketplace purchase billed to the project. Result <code>done</code> when the console reports "Successfully purchased".</li>
+      <li><strong>Step-by-step confirmation</strong> (either mode): a panel in the console tab waits for your Continue or Stop before Next and, in a full run, before Agree; in a dry run it ends with Next job or Stop. The popup header shows it as slow mode (snail icon) or kubardy mode (warning-sign icon).</li>
+      <li><strong>The badge</strong>, bottom-right in the console tab, updated every second:
+        <pre class="badge-sketch">MG Clicker [DRY RUN] job 2/4 · my-project · claude-haiku-4-5 · 00:37
+step: waiting for Enable button · 12 s / 60 s
+then: click Enable, then the questionnaire · next job: my-project · claude-sonnet-4-6</pre></li>
+      <li><strong>Results.</strong> One row per job in the popup: <code>dry-run</code>, <code>done</code>, <code>unverified</code> (Agree clicked, no confirmation seen), <code>skipped</code> (already enabled), <code>failed</code> (with the reason) or <code>stopped</code>. The log keeps the last 50 lines.</li>
+    </ol>
+  </section>
+
   <p class="note">These values are typed into the Model Garden questionnaire for every project. They are stored only in this browser's local extension storage (chrome.storage.local) and are never synced or sent anywhere by the extension.</p>
 
   <form id="form" novalidate>

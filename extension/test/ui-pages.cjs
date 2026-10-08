@@ -49,15 +49,15 @@ function fakeChrome(store, extra) {
     },
     /** Fire storage.onChanged the way Chrome does after a set: { key: { newValue } }. */
     __fire: (changes) => { for (const fn of listeners) fn(changes, "local"); },
-    runtime: { openOptionsPage: () => { store.__opened = (store.__opened || 0) + 1; }, sendMessage: (m, cb) => cb({ ok: true }), getURL: (p) => "chrome-extension://x/" + p, lastError: undefined },
+    runtime: { openOptionsPage: () => { store.__opened = (store.__opened || 0) + 1; }, sendMessage: (m, cb) => { (store.__messages = store.__messages || []).push(m); cb(store.__reply ? store.__reply(m) : { ok: true }); }, getURL: (p) => "chrome-extension://x/" + p, lastError: undefined },
     tabs: { create: ({ url }) => { store.__tab = url; } }
   }, extra);
 }
 
 /** Load an extension page (html + its scripts) into jsdom with `store` behind chrome.storage.local. */
-async function loadPage(rel, store, scripts) {
+async function loadPage(rel, store, scripts, query) {
   const html = fs.readFileSync(path.join(E.EXT, rel), "utf8");
-  const dom = new JSDOM(html, { url: "chrome-extension://x/" + rel, runScripts: "outside-only", pretendToBeVisual: true });
+  const dom = new JSDOM(html, { url: "chrome-extension://x/" + rel + (query || ""), runScripts: "outside-only", pretendToBeVisual: true });
   const win = dom.window;
   win.chrome = fakeChrome(store);
   win.confirm = () => true;
@@ -327,11 +327,17 @@ function setSelect(p, name, value) {
     await tick();
     ok(dom.window.document.documentElement.className === "tab", "?tab=1 switches <html> to the tab layout", dom.window.document.documentElement.className);
     const css = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
-    ok(/html\.popup body\s*\{[^}]*height:\s*600px/.test(css) && /html\.tab body\s*\{[^}]*height:\s*100vh/.test(css) && /\.scroll\s*\{[^}]*overflow:\s*auto/.test(css) && /body\s*\{[^}]*flex-direction:\s*column/.test(css),
-      "popup.css: a 600 px flex column in the popup, 100vh in a tab, with the results and the log in the .scroll region", "");
-    ok(/\.scroll\s*\{[^}]*min-height:\s*160px/.test(css) && /\.models\s*\{[^}]*min-height:\s*120px/.test(css) && /\.models\s*\{[^}]*overflow-y:\s*auto/.test(css) && /\.models label\s*\{[^}]*flex:\s*0 0 50%/.test(css),
-      "popup.css: the results/log region keeps at least 160 px, the checklist shrinks to 120 px with its own scroll and rows that never shrink (layout verified in headless Chrome, see python/README.md)", "");
-    ok(dom.window.document.querySelector(".scroll #results") && dom.window.document.querySelector(".scroll #log") && !dom.window.document.querySelector(".scroll #projects"), "the results table and the log are inside .scroll; the inputs are above it");
+    ok(/html\.popup body\s*\{[^}]*width:\s*800px/.test(css) && /html\.popup body\s*\{[^}]*height:\s*600px/.test(css) && /html\.tab body\s*\{[^}]*height:\s*100vh/.test(css) && /\.scroll\s*\{[^}]*overflow:\s*auto/.test(css) && /body\s*\{[^}]*flex-direction:\s*column/.test(css),
+      "popup.css: an 800 x 600 px flex column in the popup (Chrome's maximum popup size), 100vh in a tab, with the results and the log in the .scroll region", "");
+    ok(/html\.tab body\s*\{[^}]*width:\s*auto/.test(css) && /html\.tab body\s*\{[^}]*min-width:\s*360px/.test(css) && /html\.tab body\s*\{[^}]*max-width:\s*900px/.test(css) && /html\.tab \.models\s*\{[^}]*repeat\(auto-fill, minmax\(190px, 1fr\)\)/.test(css),
+      "popup.css: the tab layout stays fluid (auto width between 360 and 900 px, as many checklist columns as fit)", "");
+    const inputsRule = /\.inputs\s*\{([^}]*)\}/.exec(css);
+    ok(inputsRule && /flex:\s*none/.test(inputsRule[1]) && !/overflow:\s*auto|overflow:\s*scroll|overflow-y:\s*auto/.test(inputsRule[1]), "popup.css: the inputs column never shrinks and is not a scroll region", inputsRule && inputsRule[1]);
+    ok(/\.models\s*\{[^}]*display:\s*grid/.test(css) && /\.models\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/.test(css) && /\.models\s*\{[^}]*max-height:\s*170px/.test(css) && /\.models\s*\{[^}]*overflow-y:\s*auto/.test(css) && !/\.models\s*\{[^}]*min-height/.test(css),
+      "popup.css: the checklist is a four-column grid at its natural height (twelve models fit without a scrollbar; a longer list scrolls inside the 170 px box; geometry verified by python/scripts/popup_layout.py at 800 x 600)", "");
+    ok(/\.scroll\s*\{[^}]*min-height:\s*120px/.test(css) && /\.scroll\s*\{[^}]*flex:\s*1 1 auto/.test(css), "popup.css: the results/log region takes the remaining height with its own scroll", "");
+    ok(/<textarea id="projects"[^>]*rows="3"/.test(html), "the project text area is three rows", "");
+    ok(dom.window.document.querySelector(".scroll #results") && dom.window.document.querySelector(".scroll #log") && !dom.window.document.querySelector(".scroll #projects") && !dom.window.document.querySelector(".scroll #models") && !dom.window.document.querySelector(".scroll #start"), "the results table and the log are inside .scroll; the inputs, the checklist and Start are above it");
     dom.window.close();
     const dom3 = new JSDOM(html, { url: "chrome-extension://x/popup/popup.html", runScripts: "outside-only", pretendToBeVisual: true });
     dom3.window.chrome = fakeChrome(store);
@@ -348,6 +354,133 @@ function setSelect(p, name, value) {
     ok(!/getCurrent|window\.open/.test(popupJs), "popup.js has no tabs.getCurrent or window.open fallback left");
   }
 
+  console.log("--- every element id popup.js and options.js reference exists in its HTML; a render survives a missing optional element");
+  {
+    const pairs = [["popup/popup.js", "popup/popup.html"], ["options/options.js", "options/options.html"]];
+    for (const [js, htmlFile] of pairs) {
+      const src = fs.readFileSync(path.join(E.EXT, js), "utf8");
+      const page = new JSDOM(fs.readFileSync(path.join(E.EXT, htmlFile), "utf8")).window.document;
+      const ids = [...new Set([...src.matchAll(/\$\("([a-zA-Z0-9_-]+)"\)|getElementById\("([a-zA-Z0-9_-]+)"\)/g)].map((m) => m[1] || m[2]))].sort();
+      const missing = ids.filter((id) => !page.getElementById(id));
+      ok(ids.length >= 7 && missing.length === 0, `${js}: every id it references (${ids.length}) exists in ${htmlFile}`, `missing: ${missing.join(", ") || "none"}; referenced: ${ids.join(", ")}`);
+    }
+    // Robustness: popup.html without the optional #step, #icon-warning and #log-details elements still renders
+    // the banner, the status, the results and wires Start (no TypeError aborts the render or init).
+    const store = { settings: Object.assign({}, FULL), running: false, run: { runId: "r", live: false, finishedAt: 1, reason: "all jobs processed" },
+      queue: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "dry-run", message: "dry run: stopped" }], log: [{ t: 1, level: "info", src: "worker", msg: "hello" }] };
+    let html = fs.readFileSync(path.join(E.EXT, "popup/popup.html"), "utf8");
+    for (const re of [/<div id="step"[^>]*><\/div>\s*/, /<svg id="icon-warning"[\s\S]*?<\/svg>\s*/, /<details id="log-details">[\s\S]*?<\/details>\s*/]) {
+      ok(re.test(html), `the fixture removes an element that exists: ${re.source.slice(0, 24)}`);
+      html = html.replace(re, "");
+    }
+    const dom = new JSDOM(html, { url: "chrome-extension://x/popup/popup.html", runScripts: "outside-only", pretendToBeVisual: true });
+    const errors = [];
+    dom.window.addEventListener("unhandledrejection", (e) => errors.push(String(e.reason)));
+    dom.window.chrome = fakeChrome(store);
+    dom.window.fetch = async () => ({ json: async () => JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")) });
+    const ctx = dom.getInternalVMContext();
+    for (const f of POPUP_SCRIPTS) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
+    await tick(); await tick();
+    const d = dom.window.document;
+    ok(!d.getElementById("step") && !d.getElementById("icon-warning") && !d.getElementById("log-details"), "fixture: the three optional elements are absent");
+    ok(d.getElementById("mode").textContent === "MODE: DRY RUN" && /idle; last run all jobs processed/.test(d.getElementById("status").textContent), "the banner and the status rendered", d.getElementById("status").textContent);
+    ok(d.querySelectorAll("#results tbody tr").length === 1 && d.querySelector("#results tbody td.st").textContent === "dry-run", "the results table rendered after the missing elements (the render did not abort)");
+    ok(d.getElementById("step-toggle-label").textContent === "kubardy mode" && d.getElementById("start").disabled === false, "the step toggle label and Start were set");
+    d.getElementById("start").click(); await tick();
+    ok(d.getElementById("error").hidden === false && /enter at least one project ID/.test(d.getElementById("error").textContent), "Start is wired (its validation error shows)", d.getElementById("error").textContent);
+    ok(errors.length === 0, "no unhandled rejection from the render or init", errors.join(" | "));
+    dom.window.close();
+  }
+
+  console.log("--- the real popup.js and options.js against the real HTML: init and first render throw nothing, in the idle and the finished-run states");
+  {
+    const { VirtualConsole } = require("jsdom");
+    const finishedRun = { running: false, run: { runId: "r-fin", live: false, startedAt: 1, finishedAt: 2, reason: "all jobs processed" },
+      queue: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "dry-run", message: "dry run: stopped" }, { projectId: "proj-two", modelSlug: "claude-haiku-4-5", status: "skipped", message: "skipped: already enabled" }],
+      summary_ack: { runId: "r-fin", tabId: 7, reason: "all jobs processed", ack: false }, log: [{ t: 1, level: "info", src: "worker", msg: "run finished: all jobs processed" }], current: null, stop_requested: false, timing: null };
+    const states = { idle: { settings: Object.assign({}, FULL) }, "finished run": Object.assign({ settings: Object.assign({}, FULL) }, finishedRun) };
+    for (const [stateName, base] of Object.entries(states)) {
+      for (const [rel, scripts] of [["popup/popup.html", POPUP_SCRIPTS], ["options/options.html", OPTIONS_SCRIPTS]]) {
+        const store = JSON.parse(JSON.stringify(base));
+        const errors = [];
+        const onRejection = (reason) => errors.push(`unhandled rejection: ${reason && reason.stack ? reason.stack.split("\n").slice(0, 2).join(" ") : reason}`);
+        process.on("unhandledRejection", onRejection);
+        const vc = new VirtualConsole();
+        vc.on("jsdomError", (e) => errors.push(`jsdomError: ${e && e.message}`));
+        const dom = new JSDOM(fs.readFileSync(path.join(E.EXT, rel), "utf8"), { url: "chrome-extension://x/" + rel, runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
+        dom.window.addEventListener("error", (e) => errors.push(`window error: ${e.message}`));
+        dom.window.chrome = fakeChrome(store);
+        dom.window.confirm = () => true;
+        dom.window.fetch = async () => ({ json: async () => JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")) });
+        const ctx = dom.getInternalVMContext();
+        try {
+          for (const f of scripts) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
+        } catch (e) { errors.push(`thrown while loading: ${e.message}`); }
+        await tick(); await tick(); await tick();
+        process.off("unhandledRejection", onRejection);
+        const d = dom.window.document;
+        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === 12 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
+          : d.getElementById("form").elements.business_name.value === "b" && d.getElementById("form").elements.industry_choice && d.getElementById("form").elements.industry_choice.value === "Education";
+        ok(errors.length === 0 && rendered, `${rel} in the ${stateName} state: loaded, initialised and rendered with no thrown error and no unhandled rejection`, errors.join(" | ") || (rendered ? "" : "render check failed"));
+        dom.window.close();
+      }
+    }
+  }
+
+  console.log("--- popup: the end-of-run summary block (shown until OK, mirrored from the worker tab), in the tab layout");
+  {
+    const jobs = (n) => Array.from({ length: n }, (_, i) => ({ projectId: `proj-${i + 1}`, modelSlug: "claude-haiku-4-5", status: i === 1 ? "failed" : "dry-run", message: i === 1 ? "tab shows project x" : "dry run: stopped on the Agreements page with the checkbox ticked; Agree was not clicked and this message is long enough to be cut" }));
+    const store = { settings: Object.assign({}, FULL), running: false, run: { runId: "run-9", live: false, finishedAt: 1, reason: "all jobs processed" }, queue: jobs(14), summary_ack: { runId: "run-9", tabId: 5, reason: "all jobs processed", ack: false } };
+    // (M1) the page opened with "Open in a tab": its OK goes to the worker the same way and is accepted there
+    // (the worker treats a sender under the extension's origin as UI; worker-harness check 22); a refusal is shown.
+    const p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS, "?tab=1");
+    const doc = p.document;
+    ok(doc.documentElement.className === "tab", "the summary block test runs in the tab layout (popup.html?tab=1)");
+    const box = doc.getElementById("summary");
+    ok(box && box.hidden === false && box.closest(".scroll") && box.compareDocumentPosition(doc.getElementById("results")) & 4, "the summary block is visible, at the top of the results region, above the table");
+    ok(/^Run all jobs processed: 14 job\(s\)$/.test(doc.querySelector("#summary .title").textContent) && doc.querySelector("#summary .counts").textContent === "done 0 · dry-run 13 · skipped 0 · failed 1 · unverified 0 · stopped 0", "title with the reason and the job count; the six counts", doc.querySelector("#summary .counts").textContent);
+    const lines = Array.from(doc.querySelectorAll("#summary .line")).map((l) => l.textContent);
+    ok(lines.length === 12 && doc.querySelector("#summary .more").textContent === "and 2 more", "twelve per-job lines, then \"and 2 more\"", `${lines.length} ${doc.querySelector("#summary .more") && doc.querySelector("#summary .more").textContent}`);
+    const cut = lines[0].split(" · ").slice(3).join(" · ");
+    ok(/^proj-2 · claude-haiku-4-5 · failed · tab shows project x$/.test(lines[1]) && /^proj-1 · claude-haiku-4-5 · dry-run · dry run: stopped on the Agreements page with the checkbox ticked; Agree was no/.test(lines[0]) && cut.endsWith("…") && cut.length === p.K.SUMMARY_MESSAGE_CHARS, `each line: project, model, status, message cut to ${p.K.SUMMARY_MESSAGE_CHARS} characters`, `${lines[0]} (${cut.length})`);
+    let okBtn = doc.getElementById("summary-ok");
+    ok(okBtn && okBtn.tagName === "BUTTON" && okBtn.textContent === "OK", "an OK button");
+    store.__reply = (m) => (m.type === p.K.MSG.SUMMARY_ACK ? { ok: false, error: "not the tab the run used" } : { ok: true });
+    okBtn.click(); await tick();
+    ok((store.__messages || []).filter((m) => m.type === p.K.MSG.SUMMARY_ACK).length === 1 && doc.getElementById("error").hidden === false && /not the tab the run used/.test(doc.getElementById("error").textContent) && box.hidden === false && doc.getElementById("summary-ok"), "a refusal by the worker is shown in the error line and the block stays (with a fresh OK)", doc.getElementById("error").textContent);
+    store.__reply = null;
+    okBtn = doc.getElementById("summary-ok");
+    okBtn.click(); await tick();
+    const acks = (store.__messages || []).filter((m) => m.type === p.K.MSG.SUMMARY_ACK);
+    ok(acks.length === 2 && acks.every((m) => m.runId === "run-9"), "OK sends mgc:summary-ack with the run id to the worker (the one write path), from the tab layout", JSON.stringify(acks));
+    // The worker flips the flag; the popup follows storage.
+    store.summary_ack.ack = true;
+    p.win.chrome.__fire({ summary_ack: { newValue: store.summary_ack } }); await tick();
+    ok(box.hidden === true && box.textContent === "", "acknowledged: the block is hidden and empty");
+    store.summary_ack = { runId: "run-9", tabId: 5, ack: false };
+    p.win.chrome.__fire({ summary_ack: { newValue: store.summary_ack } }); await tick();
+    ok(box.hidden === false && doc.getElementById("summary-ok"), "the unacknowledged record (a reload) shows it again");
+    store.running = true; store.run = { runId: "run-10", live: false }; store.summary_ack = null; store.queue = [{ projectId: "p", modelSlug: "m", status: "running", phase: "navigate" }];
+    p.win.chrome.__fire({ running: { newValue: true } }); await tick();
+    ok(box.hidden === true, "a new run (Start cleared the record): hidden");
+    p.win.close();
+    const p2 = await loadPage("popup/popup.html", { settings: Object.assign({}, FULL), running: false, run: { runId: "run-9", live: false, finishedAt: 1, reason: "stopped by user" }, queue: jobs(2), summary_ack: { runId: "other", ack: false } }, POPUP_SCRIPTS);
+    ok(p2.document.getElementById("summary").hidden === true, "a record for another run id does not show for this run");
+    p2.win.close();
+  }
+
+  console.log("--- no code focuses a tab or a window, opens the popup, or raises a notification");
+  {
+    const shipped = ["background/service-worker.js", "popup/popup.js", "options/options.js", "content/main.js", "content/actions.js", "content/badge.js", "content/selectors.js", "content/dom.js", "common/constants.js"].map((f) => fs.readFileSync(path.join(E.EXT, f), "utf8")).join("\n");
+    const updates = Array.from(shipped.matchAll(/chrome\.tabs\.update\(([^;]*)\)/g)).map((m) => m[0]);
+    ok(updates.length >= 1 && updates.every((u) => !/active\s*:\s*true/.test(u) && !/highlighted|selected/.test(u)), "no chrome.tabs.update carries active: true (a later job's navigation never pulls the tab to the front)", updates.join(" | "));
+    ok(!/chrome\.windows\./.test(shipped) && !/windows\.update/.test(shipped), "no chrome.windows call at all (nothing focuses a window)");
+    ok(!/chrome\.notifications/.test(shipped) && !/action\.openPopup/.test(shipped), "no chrome.notifications and no action.openPopup (the popup is never opened by the extension)");
+    ok(!/"notifications"/.test(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8")), "the manifest asks for no notifications permission");
+    const creates = Array.from(shipped.matchAll(/chrome\.tabs\.create\([^;]*\)/g)).map((m) => m[0]);
+    ok(creates.length === 2 && creates.filter((c) => /active:\s*true/.test(c)).length === 1, "tabs.create: the worker tab (opened in front right after Start) and the Open-in-a-tab page only", creates.join(" | "));
+  }
+
   console.log("--- manifest: permissions are storage and alarms only, host access is the console origin only");
   {
     const manifest = JSON.parse(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8"));
@@ -359,7 +492,12 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.3.0", "the manifest version stays 0.3.0", manifest.version);
+    ok(manifest.version === "0.4.0", "the manifest version is 0.4.0", manifest.version);
+    // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
+    ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
+    ok(manifest.description === "Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.", "the description is the 131-character store text", manifest.description);
+    ok(typeof manifest.name === "string" && manifest.name.length <= 75 && manifest.name.length > 0, `the manifest name is at most 75 characters (store limit): ${manifest.name.length}`);
+    ok(typeof manifest.short_name === "string" && manifest.short_name.length <= 12 && manifest.short_name.length > 0, `the short_name is at most 12 characters (store limit): ${manifest.short_name.length}`);
   }
 
   console.log("--- theme: palette variables shared by the popup and the options page, with WCAG contrast");
@@ -452,9 +590,16 @@ function setSelect(p, name, value) {
     let confirms = []; p.win.confirm = (msg) => { confirms.push(msg); return true; };
     ok(mode.tagName === "BUTTON" && mode.type === "button" && mode.getAttribute("aria-pressed") === "false" && /Click to switch to FULL RUN/.test(mode.title), "the MODE banner is a button with aria-pressed false and a title that explains the switch", mode.title);
     ok(stepBtn && stepBtn.tagName === "BUTTON" && stepBtn.closest("header") && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "kubardy mode", 'the step-by-step button sits in the header, aria-pressed false, labelled "kubardy mode" while step-by-step is off', stepBtn && stepBtn.textContent.trim());
-    ok(shown("icon-dog") && !shown("icon-snail") && doc.querySelector("#icon-dog path") && doc.getElementById("icon-dog").getAttribute("aria-hidden") === "true", "the running-dog SVG is displayed and the snail SVG is not (display style, not the hidden attribute: it does not apply to inline SVG)");
-    ok(/kubardy mode: step-by-step confirmation is off/.test(stepBtn.title) && /Click for slow mode/.test(stepBtn.title), "its title explains the state and the switch", stepBtn.title);
-    ok(!doc.querySelector('header img[src*="icon-master"]') && doc.querySelectorAll("header svg").length === 2 && !/<img[^>]*icon-(snail|dog)/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.html"), "utf8")), "both icons are inline SVG, no external assets");
+    ok(shown("icon-warning") && !shown("icon-snail") && doc.querySelector("#icon-warning path") && doc.getElementById("icon-warning").getAttribute("aria-hidden") === "true", "the warning-sign SVG is displayed and the snail SVG is not (display style, not the hidden attribute: it does not apply to inline SVG)");
+    const warningSvg = doc.getElementById("icon-warning");
+    const triangle = warningSvg.querySelector("path");
+    ok(!doc.getElementById("icon-dog") && /^M12 2\.5L22\.5 20\.5H1\.5z$/.test(triangle.getAttribute("d")) && triangle.getAttribute("stroke") === "currentColor" && warningSvg.querySelectorAll("path").length === 2 && warningSvg.querySelector("circle"),
+      "the kubardy icon is a warning sign (a triangle outline with an exclamation mark: a bar and a dot), the running dog is gone", triangle.getAttribute("d"));
+    const popupCssText = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
+    ok(/header \.step-toggle \.icon\s*\{[^}]*color:\s*var\(--mgc-accent-dark\)/.test(popupCssText) && warningSvg.classList.contains("icon") && doc.getElementById("icon-snail").classList.contains("icon"),
+      "both icons take the same colour (currentColor from the .icon rule: the dark accent), as the dog did");
+    ok(/kubardy mode: step-by-step confirmation is off/.test(stepBtn.title) && /runs each job through without pausing: no Continue before Next, and in a full run no Continue before Agree/.test(stepBtn.title) && /Click for slow mode/.test(stepBtn.title), "its title explains that kubardy mode runs without pauses, and the switch", stepBtn.title);
+    ok(!doc.querySelector('header img[src*="icon-master"]') && doc.querySelectorAll("header svg").length === 2 && !/<img[^>]*icon-(snail|warning|dog)/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.html"), "utf8")), "both icons are inline SVG, no external assets");
 
     mode.click(); await tick();
     ok(confirms.length === 1 && /Switch to FULL RUN\?/.test(confirms[0]) && /clicks Agree and makes Marketplace purchases that bill the project/.test(confirms[0]), "clicking the banner in DRY RUN asks for a confirmation that names the purchases", confirms[0]);
@@ -467,9 +612,9 @@ function setSelect(p, name, value) {
     ok(confirms.length === 2 && store.settings.live_mode === false && mode.textContent === "MODE: DRY RUN", "a declined confirm leaves DRY RUN", mode.textContent);
 
     stepBtn.click(); await tick();
-    ok(store.settings.step_by_step === true && stepBtn.getAttribute("aria-pressed") === "true" && doc.getElementById("step-toggle-label").textContent === "slow mode" && shown("icon-snail") && !shown("icon-dog") && /slow mode: step-by-step confirmation is on/.test(stepBtn.title), 'clicking the step button writes step_by_step=true: "slow mode" with the snail only, aria-pressed true, title updated', stepBtn.textContent.trim());
+    ok(store.settings.step_by_step === true && stepBtn.getAttribute("aria-pressed") === "true" && doc.getElementById("step-toggle-label").textContent === "slow mode" && shown("icon-snail") && !shown("icon-warning") && /slow mode: step-by-step confirmation is on/.test(stepBtn.title), 'clicking the step button writes step_by_step=true: "slow mode" with the snail only, aria-pressed true, title updated', stepBtn.textContent.trim());
     stepBtn.click(); await tick();
-    ok(store.settings.step_by_step === false && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "kubardy mode" && shown("icon-dog") && !shown("icon-snail"), 'clicking again writes false: "kubardy mode" with the dog only', stepBtn.textContent.trim());
+    ok(store.settings.step_by_step === false && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "kubardy mode" && shown("icon-warning") && !shown("icon-snail"), 'clicking again writes false: "kubardy mode" with the warning sign only', stepBtn.textContent.trim());
     ok(doc.getElementById("error").hidden === true, "no error shown for an accepted toggle");
     p.win.close();
     const p2 = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);

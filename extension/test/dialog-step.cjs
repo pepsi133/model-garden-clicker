@@ -36,7 +36,8 @@ const { ok, skip } = E;
   arm(container);
 
   const logs = [];
-  const mk = (jobIndex) => ({ runId: "run-1", jobIndex: jobIndex || 0, log: (m) => logs.push(m), assertMayAct: async () => {} });
+  const flags = { running: true, stopRequested: false, run: { runId: "run-1", live: false } };
+  const mk = (jobIndex) => ({ runId: "run-1", jobIndex: jobIndex || 0, log: (m) => logs.push(m), assertMayAct: async () => {}, refresh: async () => Object.assign({}, flags) });
 
   let r = await A.clearBlockingDialog(mk());
   ok(r === "cleared", "appearance 1 -> cleared", r);
@@ -70,6 +71,38 @@ const { ok, skip } = E;
   try { await A.clearBlockingDialog(mk(2)); ok(false, "did not throw for a non-Enable button"); }
   catch (e) { ok(/exactly "Enable"/.test(e.message), `button text "Agree" refused -> ${e.message.slice(0, 70)}`, e.message); }
   ok(badClicks === 0, "the refused button received no click");
+
+  // (N5) a Stop (or a replaced run) during the close wait ends it at the next poll, not after api_dialog_close_ms.
+  console.log("--- (N5) Stop during the dialog's close wait");
+  env.K.TIMEOUTS.API_DIALOG_CLOSE = 5000; env.K.URL_POLL_MS = 20;
+  const stays = keep.cloneNode(true); // its Enable does nothing: the dialog never closes
+  parent.appendChild(stays);
+  const stayBtn = D.qa("button", stays).find((b) => D.text(b) === "Enable");
+  S.dialogs.findApiEnableDialog = () => ({ dialog: stays, enableButton: stayBtn });
+  const closedLines = () => logs.filter((m) => /dialog closed/.test(m)).length;
+  const closedBefore = closedLines();
+  let t0 = Date.now();
+  let p = A.clearBlockingDialog(mk(3));
+  setTimeout(() => { flags.stopRequested = true; }, 100);
+  let err = null;
+  try { await p; } catch (e) { err = e; }
+  let ms = Date.now() - t0;
+  ok(err && err.name === "StoppedError" && ms >= 100 && ms < 1000, `stop requested 100 ms into the close wait: StoppedError after ${ms} ms (not 5000)`, err ? `${err.name} ${ms} ms` : "resolved");
+  ok(closedLines() === closedBefore, "no 'dialog closed' line was logged for the stopped wait");
+  flags.stopRequested = false;
+  t0 = Date.now();
+  p = A.clearBlockingDialog(mk(4));
+  setTimeout(() => { flags.run = { runId: "run-2", live: false }; }, 100);
+  err = null;
+  try { await p; } catch (e) { err = e; }
+  ms = Date.now() - t0;
+  ok(err && err.name === "StoppedError" && /no longer the current run/.test(err.message) && ms < 1000, `a replaced run during the close wait: StoppedError after ${ms} ms`, err ? `${err.name}: ${err.message} ${ms} ms` : "resolved");
+  flags.run = { runId: "run-1", live: false };
+  // control: with the flags untouched the wait still runs to its timeout
+  env.K.TIMEOUTS.API_DIALOG_CLOSE = 150;
+  err = null;
+  try { await A.clearBlockingDialog(mk(5)); } catch (e) { err = e; }
+  ok(err && err.name === "TimeoutError" && /dialog to close/.test(err.message), "control: no stop, the close wait times out as before", err && err.message);
 
   env.win.close();
   E.finish("dialog step");

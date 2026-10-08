@@ -9,8 +9,8 @@ field is in `store/LISTING.md`; the image files are in `store/` and
 - [ ] Push `main` so
       `https://github.com/pepsi133/model-garden-clicker/blob/main/PRIVACY.md`
       resolves publicly (`PRIVACY.md` is committed at the repository root).
-- [ ] Bump `"version"` in `extension/manifest.json` if 0.3.0 was already
-      uploaded once; the store refuses a version it has seen.
+- [ ] Bump `"version"` in `extension/manifest.json` if the previous version
+      was already uploaded once; the store refuses a version it has seen.
 - [ ] Build the package: `sh scripts/build-extension-zip.sh` writes
       `dist/model-garden-clicker-<version>.zip`.
 - [ ] Pay the one-time developer registration fee if the account is new.

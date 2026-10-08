@@ -23,8 +23,10 @@
             <circle cx="8.8" cy="9" r="1.1" fill="currentColor"/>
             <path d="M9 19.5h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           </svg>
-          <svg id="icon-dog" class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-            <path d="M17.2 2.6l1.1 3.4 2-1.2 1-2.6.5 4.2 2.1 2-0.5 1.2-2.3.5-1.2 1.5-2.2.9-1.9 1.3 2.8 2.6 2.7 2.4-1.6 1-3.4-2.9-2.3-2.1-3.5-.2-3.2-.3-2.9 3.2-2.5 2.1-1.2-1.1 3.5-3.8 1.7-3.6-2.3 1.5-2.7 3.1-.9-.9 2.6-3.4 3-2.1 3.8-.7 3.8.2 2.9-1.1 1.9-1.8z" fill="currentColor"/>
+          <svg id="icon-warning" class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M12 2.5L22.5 20.5H1.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+            <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+            <circle cx="12" cy="17" r="1.3" fill="currentColor"/>
           </svg>
           <span id="step-toggle-label">kubardy mode</span>
         </button>
@@ -70,6 +72,7 @@
         <label>Results</label>
         <span class="links"><a href="#" id="clear-results">clear</a></span>
       </div>
+      <div id="summary" class="summary" hidden></div>
       <table id="results">
         <thead><tr><th>Project</th><th>Model</th><th>Status</th><th>Message</th></tr></thead>
         <tbody></tbody>

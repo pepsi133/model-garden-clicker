@@ -10,6 +10,11 @@ The harness drives the flow up to the final confirmation page: it fills the
 questionnaire, clicks Next, ticks the terms checkbox, and stops. **It never
 clicks Agree** unless `--i-approve-agree` is given explicitly.
 
+This file is the reference for each script. The ordered procedure for a
+console change (record the pages, compare them with `docs/dom-map.md`,
+update `extension/content/selectors.js`, run the offline suite, run one
+browser dry run, bump the version and tag) is `docs/MAINTENANCE.md`.
+
 ## Setup
 
 1. Run `python/setup.sh`. It creates `python/.venv` and installs Selenium.
@@ -36,10 +41,8 @@ current page is dumped as `99-failure`. The dumps hold the filled form, so
 `python/recon/` is gitignored.
 
 The selectors in `mgclick/form.py` were validated against live runs on
-2026-10-07; the DOM they rely on is written up in `docs/dom-map.md`. If the
-console changes, compare `02-after-enable/forms.json` and `page.html` from a
-fresh run with that document, update the document, then
-`extension/content/selectors.js`, then the tests.
+2026-10-07; the DOM they rely on is written up in `docs/dom-map.md`. When
+the console changes, follow `docs/MAINTENANCE.md`.
 
 ### Reaching the model page through the gallery
 
@@ -118,48 +121,51 @@ text as the message.
 
 | File | What it covers |
 |---|---|
-| `test/worker-harness.mjs` | The service worker against a fake `chrome` API: queue, worker tab, run id and live-mode snapshot, Start refused when the mode the popup sent differs from the setting, stale-run messages dropped (also when Stop and Start interleave a message already being checked), watchdog re-armed per phase and `unverified` after a recorded Agree click, stop, recovery after a worker restart between jobs, a restart without the watchdog alarm (extension disabled and re-enabled) stopping the run, the `awaiting_confirmation` phase pausing the watchdog, a waiting job whose tab is gone stopped with a clear result, and a result with `stopAfter` ending the run instead of advancing. |
+| `test/worker-harness.mjs` | The service worker against a fake `chrome` API: queue, worker tab, run id and live-mode snapshot, the popup opened in a tab treated as UI (its summary OK accepted, its job messages refused), Start refused when the mode the popup sent differs from the setting, stale-run messages dropped (also when Stop and Start interleave a message already being checked), watchdog re-armed per phase and `unverified` after a recorded Agree click, stop, recovery after a worker restart between jobs, a restart without the watchdog alarm (extension disabled and re-enabled) stopping the run, the `awaiting_confirmation` phase pausing the watchdog, a waiting job whose tab is gone stopped with a clear result, and a result with `stopAfter` ending the run instead of advancing. |
 | `test/content-guard.cjs` | Every refusal of `clickAgreeGuarded()`: dry run, stop, wrong job or phase, the real Agreements page served under another project, another vendor's path or another product id, a page that does not name the model (exact version: Claude Sonnet 5 is not Claude Sonnet 5.5 and the reverse), a run started in dry-run mode, a stale run id, a second click for the same job, anything that changes while the click is being recorded, a console dialog open at click time; that live mode with every condition met clicks Agree exactly once (in jsdom only); that a dry run on a page that is not the job's fails instead of reporting `dry-run`; that the model name is judged on the rendered Purchase summary (a body that renders late is waited for, stale questionnaire text is not trusted); and that the post-Agree wait accepts only a dialog that appeared after the click and names the job's model. |
-| `test/main-loop.cjs` | The page loop in `content/main.js` with a fake `chrome`: `assertMayAct()` refusing after Stop, after a replaced run and on another project's page; the tick-level project check; an idle tab reading storage once and polling only while a run is active; `handled` reset after a cleared "Enable APIs" dialog; attempts exhausted and fatal-error routing; one result per job; the badge and the mirrored step line; on the real ticked Agreements dump, one live Agree click reported `unverified` and no click without `?project=`; and with step-by-step on, the "Enable APIs" dialog cleared during the wait followed by a trusted Continue (one click, not a failed job), an error dialog disabling Continue and a Stop ending the loop, and the dry-run Next job / Stop panel. |
+| `test/main-loop.cjs` | The page loop in `content/main.js` with a fake `chrome`: `assertMayAct()` refusing after Stop, after a replaced run and on another project's page; the tick-level project check; one document, one job (a page that reported a job never acts for the next one, in the same project or another, whether it shows the enabled state, an Enable button or the ticked Agreements page, while a fresh document does); an idle tab reading storage once and polling only while a run is active; `handled` reset after a cleared "Enable APIs" dialog; attempts exhausted and fatal-error routing; one result per job; the badge and the mirrored step line; on the real ticked Agreements dump, one live Agree click reported `unverified` and no click without `?project=`; and with step-by-step on, the "Enable APIs" dialog cleared during the wait followed by a trusted Continue (one click, not a failed job), an error dialog disabling Continue and a Stop ending the loop, and the dry-run Next job / Stop panel. |
 | `test/dialog-step.cjs` | `clearBlockingDialog()` on the real "Enable APIs" dialog: one Enable click per job, a second appearance fails the job, a non-Enable button is refused. |
-| `test/model-step.cjs` | `handleModelPage()`: Enable clicked once on the plain page, skipped on the enabled page, a disabled Enable never clicked, the "Enable APIs" dialog cleared first, a click that does not leave the model page fails at once; a disabled Enable next to an unchecked consent checkbox (synthetic and run E) fails at once with the manual-step message, while run F's radio-card page is clicked as usual. |
+| `test/model-step.cjs` | `handleModelPage()`: a URL naming another model than the job's fatal before any decision; Enable clicked once on the plain page, skipped on the enabled page only once the enabled state held for two polls and 500 ms (an Enable button one poll after the Studio link is still clicked), a disabled Enable never clicked, the "Enable APIs" dialog cleared first, a click that does not leave the model page fails at once; a disabled Enable next to an unchecked consent checkbox (synthetic and run E) fails at once with the manual-step message, while run F's radio-card page is clicked as usual. |
 | `test/questionnaire-step.cjs` | `handleQuestionnaire()` on the real filled form: product id recorded, another model refused, a URL without a parsable `model=` refused before anything is recorded, Next clicked once when valid, Next not clicked and the job failed with the field's name when a field is `ng-invalid` (class injected by the test), hidden hosts ignored, a dropdown value the console does not offer fatal on the first attempt with the offered names, AUP details filled only for Yes. |
-| `test/step-by-step.cjs` | The confirmation panel: untrusted clicks ignored, a trusted Continue (jsdom's own event dispatch; the helper in `lib/env.cjs` fails the file when jsdom's internals move) recorded for the guard, a console dialog disabling Continue and naming the dialog, the "Enable APIs" dialog cleared from the wait, Stop ending the wait; `handleQuestionnaire` and `handleAgreements` with step-by-step on: the user's own Next seen through the route, the user's own Agree seen through a capture-phase listener (trusted click or Enter), a success dialog without a user activation ending the job `unverified` with nothing recorded, an error dialog keeping the wait going, a Continue after the user's Agree ignored, a dialog refusal by the guard re-asking instead of failing, the dry-run Next job / Stop panel, a full run clicking Agree once after a trusted Continue. |
+| `test/step-by-step.cjs` | The confirmation panel: untrusted clicks ignored, a trusted Continue (jsdom's own event dispatch; the helper in `lib/env.cjs` fails the file when jsdom's internals move) recorded for the guard, a console dialog disabling Continue and naming the dialog, the "Enable APIs" dialog cleared from the wait, Stop ending the wait; `handleQuestionnaire` and `handleAgreements` with step-by-step on: the user's own Next seen through the route, the user's own Agree seen through a capture-phase listener (a trusted click; key events alone never count), a success dialog without a user activation ending the job `unverified` with nothing recorded, an error dialog keeping the wait going, a Continue after the user's Agree ignored, a dialog refusal by the guard re-asking instead of failing, the dry-run Next job / Stop panel, a full run clicking Agree once after a trusted Continue. |
 | `test/selectors.cjs` | Every locator and URL check against the saved console pages plus `dom.js` helpers on synthetic markup. |
 | `test/ui-pages.cjs` | Options page: dropdowns from `option-lists.js` with "Other" (typing never hides the field), AUP details for Yes/No, advanced timing JSON validation (bounds, unknown and prototype-named keys, the per-phase watchdog rule) with the error shown under the field and the questionnaire edits kept, reset, the DRY RUN box stored inverted, the step-by-step box, neither changed during a run, both following a change made in the popup; popup: missing-options notice, Options button, header with the avatar, the MODE banner and the slow mode / kubardy mode button toggling their settings (with the confirm for FULL RUN and the refusal during a run), popup and tab layouts, the mirrored step line, the log opening during a run; theme contrast (text pairs incl. links, info and ok at 4.5:1, the focus ring at 3:1); the manifest's permissions (`storage`, `alarms`) and host permission. |
 
 The page tests read `python/recon/<run>/<step>/page.html` through a relative
 path (`forms.json` next to it restores the live `value`/`checked` state that
 `page_source` does not serialise). Run directories are found by shape, newest
-first (`extension/test/lib/env.cjs`, `findRun`):
-
-| letter | shape | how to record it |
-|---|---|---|
-| A | `05-agreements-checked` present, no `06-after-agree`, no `00-gallery` | `recon.py` on a project where the model is not enabled |
-| B | `01-model-page-api-dialog` present | `recon.py` on a project without the Agent Platform API |
-| C | `01-model-page` only, `timing.json` says `"state": "enabled"` | `recon.py` on a project where the model is enabled |
-| D | `07-post-agree-settled` holds `behavior-failure-dialog` | `recon.py --i-approve-agree` on a project whose billing account cannot buy |
-| E | `01-model-page` only, no `02-after-enable`, the page holds a `mat-checkbox` | a model-page-only dump of a model whose page renders a consent checkbox next to a disabled Enable |
-| F | `00-gallery` present with `03-model-page` | `recon.py` through the gallery on a model whose page shows radio cards |
-
-An environment variable `MGC_RUN_A` .. `MGC_RUN_F` names a run directory
-explicitly. A missing dump is reported as `skip` with its letter, never as a
-pass.
+first (`extension/test/lib/env.cjs`, `findRun`); the six run letters A to F,
+the shape of each and how to record it are in `docs/MAINTENANCE.md`, section
+"Run letters". A missing dump is reported as `skip` with its letter, never
+as a pass.
 
 ### Popup layout in a real browser
 
-jsdom does not lay pages out, so the popup's geometry (the checklist rows
-keeping their height and never overlapping, the checklist box at least
-120 px, the results/log region at least 160 px, nothing overflowing the
-600 px popup, exactly one step-by-step icon displayed) is checked in
-headless Chrome for Testing:
+jsdom does not lay pages out, so the popup's geometry at Chrome's maximum
+popup size, 800 x 600 (the checklist rows keeping their height and never
+overlapping, every model of `models.json` shown in at least three columns
+with no scrollbar and no truncated name, the inputs outside any scroll
+region and inside the viewport, Start and the status line visible without
+scrolling, the results/log region below the inputs with at least 120 px
+and its own scroll, nothing overflowing 800 x 600, exactly one
+step-by-step icon displayed and matching the setting) is checked in
+headless Chrome for Testing, in the idle, running and error states:
 
     python/.venv/bin/python python/scripts/popup_layout.py [idle|running|error|all]
 
 It injects a fake `chrome.*` before the page scripts run, loads
-`extension/popup/popup.html` at 520 x 600 and measures the bounding boxes;
-screenshots land in `python/recon/popup-layout-<state>.png`. Run it after
-changing `popup.css` or `popup.html`.
+`extension/popup/popup.html`, resizes the window so the viewport (not the
+outer window) is exactly 800 x 600, and measures the bounding boxes;
+screenshots land in `python/recon/popup-layout-<state>.png`. It also loads
+`extension/options/options.html` (`options` state) and checks that the
+form rendered from storage. For every page it collects the browser console
+log (Selenium `goog:loggingPrefs`, browser `ALL`) and fails on any SEVERE
+entry, printing them, so an uncaught script error during init or the first
+render fails the probe (for example `options.js` referencing an element id
+the HTML no longer has; `popup.js` guards its ids and only warns, so for
+the popup it is the offline id-existence check in `test/ui-pages.cjs` that
+catches a missing id). Run it after changing anything under `popup/` or
+`options/`.
 
 ## End-to-end dry run of the extension
 
@@ -182,9 +188,21 @@ still painting, so slow poll iterations are logged), the extension log
 (`extension-log.txt`) and `results.json` land in
 `python/recon/ext-<timestamp>/`. Every job must end `dry-run` (the terms
 checkbox ticked, Agree not clicked) or `skipped` (already enabled);
-`--expect PROJECT=STATUS` pins the status for a project. Exit code 0 means
-every expectation held; 1 a job ended differently; 3 the profile is signed
-out or no browser could load the extension.
+`--expect PROJECT=STATUS` pins the status for a project. At the end the
+script drains the session's browser console log, which covers the worker
+tab, the popup page and the options page (`console-log.txt` in the
+evidence directory; a `console.error` control is written first and the
+check fails if it does not come back, so a zero is a live zero), and fails
+on any SEVERE entry whose message names the extension's own scripts or
+pages (a `chrome-extension://` URL), while SEVERE noise from the console
+page itself is printed as a note only. Exit code 0 means every
+expectation held and no SEVERE entry came from the extension's own scripts
+or pages; 1 a job ended differently or such an entry was seen; 3 the
+profile is signed out or no browser could load the extension. The check
+does not see the service worker (its console is not part of the session
+log; the offline harness covers it) nor errors the extension catches
+itself (a failed tick or handler is logged at warning level with the
+`[MG Clicker]` prefix and can be read in `console-log.txt`).
 
 Browser attempts, in order: (a) `/usr/bin/google-chrome` with
 `--load-extension`, which branded Chrome 137+ ignores, so the script checks

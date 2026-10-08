@@ -13,7 +13,13 @@
  *     "Enable APIs" dialog is cleared from the wait and the panel re-shown;
  *   - the user's own console Next is seen through the caller's URL check,
  *     the user's own Agree through a capture-phase listener on the Agree
- *     node (trusted click or Enter/Space), never inferred from a dialog;
+ *     node (a trusted click only, which is also what the browser fires for
+ *     Enter or Space on the focused button; key events alone never count,
+ *     so a keydown with its keyup and no click locks nothing), never
+ *     inferred from a dialog;
+ *   - (L2) a refusal during the guard's record round trip that is neither
+ *     the user's click nor a dialog (the button hidden by a re-render)
+ *     undoes the record and the panel asks again;
  *   - handleQuestionnaire on the real filled form (run A, 03-form-filled)
  *     sets awaiting_confirmation(next) before Next, does not click Next
  *     when the user did, clicks it once after a trusted Continue;
@@ -27,7 +33,7 @@
  */
 "use strict";
 const E = require("./lib/env.cjs");
-const { ok, skip, trustedClick, trustedKeydown } = E;
+const { ok, skip, trustedClick, trustedKeydown, trustedKeyup } = E;
 
 const RUN_ID = "run-s";
 const PRODUCT = "anthropic/anthropic-867.cloudpartnerservices.goog";
@@ -372,17 +378,49 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     ok(out.done && !out.done.e && out.done.r.status === "done" && /enabled: Agree clicked by you and confirmation observed/.test(out.done.r.message) && clicks() === 1, "then the success dialog: done, worded as the user's click; the extension clicked nothing itself", says(out) + " clicks=" + clicks());
     env.win.close();
 
-    // (S1) keyboard activation (Enter on the focused Agree button) counts too.
+    // (S1/N3/L1) keyboard activation is seen through the click the browser fires for Enter or Space on the
+    // focused button; key events alone (a keydown, or a keydown with its keyup and no click, as when a page
+    // prevented the key's default) never count, so they never lock the job as clicked.
     env = serve(RENDERED);
     clicks = arm(env);
     out = start(env, stateFor({ live: true }));
     await sleep(300);
+    ok(env.S.agreements.KEY_ACTIVATION_MS === undefined, "(L1) no key window is left in the listener: only a trusted click counts");
     trustedKeydown(agreeNode(env), "Enter");
     await sleep(80);
-    ok(out.done === null && out.ctx.rec.marks.some((m) => /Agree activated by you \(keyboard\)/.test(m)), "a trusted Enter keydown on the Agree node counts as the user's activation", out.ctx.rec.marks.join(" | "));
+    ok(out.done === null && !out.ctx.rec.marks.some((m) => /Agree activated by you/.test(m)) && !out.ctx.rec.updates.some((u) => u.agreeClickedByUser) && panelOf(env) !== null, "(N3) a trusted Enter keydown alone is not an activation: the wait goes on, nothing recorded", out.ctx.rec.marks.join(" | "));
+    trustedKeyup(agreeNode(env), "Enter");
+    await sleep(80);
+    ok(out.done === null && !out.ctx.rec.marks.some((m) => /Agree activated by you/.test(m)) && !out.ctx.rec.updates.some((u) => u.agreeClicked || u.agreeClickedByUser) && panelOf(env) !== null && clicks() === 0, "(L1) its keyup with no click (the page prevented the key's default) is not one either: nothing recorded, the job is not locked, still waiting", JSON.stringify(out.ctx.rec.updates));
+    trustedClick(agreeNode(env).querySelector("span")); // the click the browser fires for the key
+    await sleep(80);
+    ok(out.done === null && out.ctx.rec.marks.some((m) => /Agree activated by you \(click\)/.test(m)) && clicks() === 1, "the browser's click for the key is the activation: seen as the user's click", out.ctx.rec.marks.join(" | "));
     env.document.body.insertAdjacentHTML("beforeend", ERROR_DIALOG.replace('id="err"', 'id="err2"'));
     await out.p;
-    ok(out.done && !out.done.e && out.done.r.status === "failed" && /Agree refused by the console: Something went wrong: Could not load billing accounts/.test(out.done.r.message) && clicks() === 0, "an error dialog after the user's activation is that click's outcome: failed with the console's text", says(out));
+    ok(out.done && !out.done.e && out.done.r.status === "failed" && /Agree refused by the console: Something went wrong: Could not load billing accounts/.test(out.done.r.message) && clicks() === 1, "an error dialog after the user's activation is that click's outcome: failed with the console's text", says(out));
+    env.win.close();
+
+    // (N3/L1) Space: a keydown with no keyup (focus moved), a keyup of another key, a keydown with its keyup
+    // and no click: all ignored; a keydown completed by the browser's click counts, as a click.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    out = start(env, stateFor({ live: true }));
+    await sleep(300);
+    trustedKeydown(agreeNode(env), " ");
+    trustedKeyup(agreeNode(env), "Enter"); // another key's keyup
+    await sleep(80);
+    ok(out.done === null && !out.ctx.rec.marks.some((m) => /Agree activated by you/.test(m)), "(N3) a Space keydown followed by an Enter keyup is ignored", out.ctx.rec.marks.join(" | "));
+    trustedKeydown(agreeNode(env), " ");
+    trustedKeyup(agreeNode(env), " ");
+    await sleep(80);
+    ok(out.done === null && !out.ctx.rec.marks.some((m) => /Agree activated by you/.test(m)) && !out.ctx.rec.updates.some((u) => u.agreeClicked || u.agreeClickedByUser) && clicks() === 0, "(L1) a Space keydown and keyup on Agree with no click: nothing recorded, the job is not locked, no click", JSON.stringify(out.ctx.rec.updates));
+    trustedKeydown(agreeNode(env), " ");
+    trustedClick(agreeNode(env).querySelector("span")); // the click the browser fires for Space on keyup
+    await sleep(80);
+    ok(out.done === null && out.ctx.rec.marks.some((m) => /Agree activated by you \(click\)/.test(m)) && clicks() === 1, "(N3) control: a keydown completed by the trusted click the browser fires counts, as a click", out.ctx.rec.marks.join(" | "));
+    env.document.body.insertAdjacentHTML("beforeend", SUCCESS);
+    await out.p;
+    ok(out.done && !out.done.e && out.done.r.status === "done" && /Agree clicked by you/.test(out.done.r.message) && clicks() === 1, "then the success dialog: done through the user's click", says(out));
     env.win.close();
 
     // (S10) the user clicks Agree and then Continue: the Continue is ignored, the click's outcome is judged.
@@ -420,7 +458,154 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
       trustedClick(contOf(env));
       await out.p;
       ok(out.done && !out.done.e && out.done.r.status === "done" && /Agree clicked by you/.test(out.done.r.message) && clicks() === 1, "(S10) Continue, then the user's Agree before the guard ran: the guard's refusal is not a failure, done through the user's click", says(out) + " clicks=" + clicks());
-      ok(out.ctx.rec.logs.some((m) => /the guard refused \(refused to click: Agree button not visible\) after you activated the console's Agree yourself/.test(m)) && out.ctx.rec.updates.some((u) => u.agreeClickedByUser === true), "the refusal was logged with its reason and the user's click recorded", out.ctx.rec.logs.join(" | "));
+      ok(out.ctx.rec.logs.some((m) => /the guard refused \(refused to click: you activated the console's Agree yourself\) after you activated the console's Agree yourself/.test(m)) && out.ctx.rec.updates.some((u) => u.agreeClickedByUser === true) && !out.ctx.rec.updates.some((u) => u.agreeClicked === true && !u.agreeClickedByUser), "the refusal was logged with its reason (the guard's own check of the user's activation, before any record) and the user's click recorded", out.ctx.rec.logs.join(" | "));
+    }
+    env.win.close();
+
+    // (N1) Continue, then the user's Agree during the guard's record round trip while the button stays
+    // visible: the guard refuses (one click total, the user's), undoes its record, the click is judged.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      let records = 0;
+      ctx.updateJob = async (f) => {
+        ctx.rec.updates.push(f); Object.assign(state.queue[0], f);
+        // The guard's own record (agreeClicked alone) is in flight: the user clicks the console's Agree.
+        if (f.agreeClicked === true && !f.agreeClickedByUser && ++records === 1) trustedClick(agreeNode(env).querySelector("span"));
+        return { ok: true };
+      };
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      trustedClick(contOf(env));
+      await sleep(150);
+      env.document.body.insertAdjacentHTML("beforeend", SUCCESS);
+      await out.p;
+      ok(out.done && !out.done.e && out.done.r.status === "done" && /enabled: Agree clicked by you and confirmation observed/.test(out.done.r.message) && clicks() === 1, "(N1) Continue, then the user's Agree while the record was in flight and the button still visible: the extension did not click (one click total, the user's), done on the user's click", says(out) + " clicks=" + clicks());
+      ok(out.ctx.rec.logs.some((m) => /the guard refused \(refused to click: you activated the console's Agree yourself\) after you activated the console's Agree yourself/.test(m)), "the guard's refusal names the user's activation", out.ctx.rec.logs.join(" | "));
+      const u = out.ctx.rec.updates;
+      ok(JSON.stringify(u) === JSON.stringify([{ agreeClicked: true }, { agreeClicked: false }, { agreeClicked: true, agreeClickedByUser: true }]), "the guard's record was undone (no click was made) and the user's activation recorded instead", JSON.stringify(u));
+      ok(out.ctx.rec.logs.some((m) => /the Agree click record was cleared: no click was made/.test(m)), "the undo was logged", out.ctx.rec.logs.join(" | "));
+    }
+    env.win.close();
+
+    // (N2) a dialog that opens during the guard's record round trip (after agreeClicked was recorded,
+    // before the second check): the guard undoes the record and the panel asks again instead of failing.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      let records = 0;
+      ctx.updateJob = async (f) => {
+        ctx.rec.updates.push(f); Object.assign(state.queue[0], f);
+        if (f.agreeClicked === true && ++records === 1) env.document.body.insertAdjacentHTML("beforeend", ERROR_DIALOG);
+        return { ok: true };
+      };
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      trustedClick(contOf(env));
+      await sleep(300);
+      ok(out.done === null && panelOf(env) !== null && contOf(env).disabled === true && /Something went wrong/.test(noteOf(env)), "(N2) a dialog during the record round trip: the panel is up again with the dialog named, the job did not fail", `${says(out)} note=${noteOf(env)}`);
+      ok(state.queue[0].agreeClicked === false && JSON.stringify(out.ctx.rec.updates) === JSON.stringify([{ agreeClicked: true }, { agreeClicked: false }]) && clicks() === 0, "(N2) agreeClicked is unset again in storage (recorded, then cleared), no click", JSON.stringify(out.ctx.rec.updates));
+      ok(out.ctx.rec.logs.some((m) => /refused to click: a console dialog is open: Something went wrong.*; the Agree click record was cleared: no click was made/.test(m)) && out.ctx.rec.logs.some((m) => /a console dialog is open: Something went wrong.*; asking for your confirmation again/.test(m)), "logged: the record cleared, then the re-ask", out.ctx.rec.logs.join(" | "));
+      ok(env.A.continueAge(RUN_ID, 0, "agree") === null, "(N2) the spent Continue record was cleared on the re-ask (a fresh trusted Continue is needed)");
+      ok(out.ctx.rec.phases.join() === "agreements,awaiting_confirmation(agree),agreements,awaiting_confirmation(agree)", "the awaiting phase was set again", out.ctx.rec.phases.join());
+      env.document.getElementById("err").remove();
+      await sleep(80);
+      agreeNode(env).addEventListener("click", () => { env.document.body.insertAdjacentHTML("beforeend", SUCCESS); });
+      trustedClick(contOf(env));
+      await out.p;
+      ok(out.done && !out.done.e && out.done.r.status === "done" && out.done.r.message === "enabled: Agree clicked and confirmation observed" && clicks() === 1 && state.queue[0].agreeClicked === true, "after the dialog closed a trusted Continue clicks Agree once: done, recorded", says(out) + " clicks=" + clicks());
+    }
+    env.win.close();
+
+    // (L2) the Agree button hidden by a console re-render during the record round trip (no user click, no
+    // dialog): the guard refuses, the record is undone, the panel asks again; once the button is back a fresh
+    // Continue clicks once.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      let records = 0;
+      ctx.updateJob = async (f) => {
+        ctx.rec.updates.push(f); Object.assign(state.queue[0], f);
+        if (f.agreeClicked === true && ++records === 1) agreeNode(env).style.display = "none";
+        return { ok: true };
+      };
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      trustedClick(contOf(env));
+      await sleep(300);
+      ok(out.done === null && panelOf(env) !== null && contOf(env) && contOf(env).disabled === false, "(L2) the button hidden during the record round trip: the panel is up again, the job did not fail", says(out));
+      ok(state.queue[0].agreeClicked === false && JSON.stringify(out.ctx.rec.updates) === JSON.stringify([{ agreeClicked: true }, { agreeClicked: false }]) && clicks() === 0, "(L2) the record was undone (true, then false), no click", JSON.stringify(out.ctx.rec.updates));
+      ok(out.ctx.rec.logs.some((m) => /refused to click: Agree button not visible; the Agree click record was cleared: no click was made/.test(m)) && out.ctx.rec.logs.some((m) => /Agree button not visible; asking for your confirmation again/.test(m)), "logged: the record cleared, then the re-ask", out.ctx.rec.logs.join(" | "));
+      ok(env.A.continueAge(RUN_ID, 0, "agree") === null, "(L2) the spent Continue was forgotten (a fresh trusted Continue is needed)");
+      agreeNode(env).style.display = "";
+      agreeNode(env).addEventListener("click", () => { env.document.body.insertAdjacentHTML("beforeend", SUCCESS); });
+      trustedClick(contOf(env));
+      await out.p;
+      ok(out.done && !out.done.e && out.done.r.status === "done" && clicks() === 1 && state.queue[0].agreeClicked === true, "with the button back a trusted Continue clicks Agree once: done, recorded", says(out) + " clicks=" + clicks());
+    }
+    env.win.close();
+
+    // (N2) the same window with the "Enable APIs" dialog: the re-asked wait clears it, then a Continue clicks.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      let records = 0, enableClicks = 0;
+      ctx.updateJob = async (f) => {
+        ctx.rec.updates.push(f); Object.assign(state.queue[0], f);
+        if (f.agreeClicked === true && ++records === 1) {
+          env.document.body.insertAdjacentHTML("beforeend", API_DIALOG);
+          for (const b of env.D.qa("#api button")) b.addEventListener("click", () => { if (env.D.text(b) === "Enable") { enableClicks += 1; env.document.getElementById("api").remove(); } });
+        }
+        return { ok: true };
+      };
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      trustedClick(contOf(env));
+      await sleep(300);
+      ok(out.done === null && panelOf(env) !== null && contOf(env).disabled === false && enableClicks === 1 && !env.document.getElementById("api"), '(N2) the "Enable APIs" dialog during the record round trip: re-asked, the wait cleared the dialog (one Enable click), Continue enabled', `${says(out)} enableClicks=${enableClicks}`);
+      ok(state.queue[0].agreeClicked === false && clicks() === 0, "agreeClicked unset again, Agree not clicked", JSON.stringify(out.ctx.rec.updates));
+      agreeNode(env).addEventListener("click", () => { env.document.body.insertAdjacentHTML("beforeend", SUCCESS); });
+      trustedClick(contOf(env));
+      await out.p;
+      ok(out.done && !out.done.e && out.done.r.status === "done" && clicks() === 1, "then a trusted Continue clicks Agree once: done", says(out) + " clicks=" + clicks());
+    }
+    env.win.close();
+
+    // (N5) Stop while the "Enable APIs" dialog's close wait runs inside the Agree wait: honoured at the
+    // next poll (the dialog never closes here), the panel is not shown again.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    {
+      env.K.TIMEOUTS.API_DIALOG_CLOSE = 5000;
+      const state = stateFor({ live: true });
+      const ctx = ctxFor(env, state);
+      out = { ctx, done: null };
+      out.p = env.A.handleAgreements(ctx).then((x) => { out.done = { r: x }; }, (e) => { out.done = { e }; });
+      await sleep(300);
+      env.document.body.insertAdjacentHTML("beforeend", API_DIALOG); // its Enable is clicked, but the dialog stays
+      let enableClicks = 0;
+      for (const b of env.D.qa("#api button")) b.addEventListener("click", () => { if (env.D.text(b) === "Enable") enableClicks += 1; });
+      await sleep(150);
+      ok(enableClicks === 1 && out.done === null && out.ctx.rec.logs.some((m) => /clicked Enable, waiting for it to close/.test(m)), "the dialog's Enable was clicked and the close wait is running", `enableClicks=${enableClicks} ${says(out)}`);
+      const t0 = Date.now();
+      state.stopRequested = true; // Stop from the popup (or the panel's Stop: the same storage flag)
+      await out.p;
+      const ms = Date.now() - t0;
+      ok(out.done && out.done.e && out.done.e.name === "StoppedError" && ms < 1000, `(N5) Stop during the close wait ends it at the next poll (${ms} ms, not api_dialog_close_ms)`, says(out) + ` ${ms} ms`);
+      ok(panelOf(env) === null && clicks() === 0 && !out.ctx.rec.logs.some((m) => /confirmation panel shown again/.test(m)) && !out.ctx.rec.logs.some((m) => /"Enable APIs" dialog closed/.test(m)), "the panel was closed and not re-shown, nothing clicked", out.ctx.rec.logs.join(" | "));
+      env.K.TIMEOUTS.API_DIALOG_CLOSE = env.K.TIMING_DEFAULTS.api_dialog_close_ms;
     }
     env.win.close();
 

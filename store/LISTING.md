@@ -1,7 +1,12 @@
 # Chrome Web Store listing: Model Garden Clicker
 
+**Re-paste needed.** The Description below was rewritten on 2026-10-08 as a
+step-by-step walkthrough (same facts, same summary). If the dashboard still
+holds the earlier text, paste the new Description into the Store listing tab
+and save the draft.
+
 Every field of the developer dashboard, ready to paste. Replace `https://github.com/pepsi133/model-garden-clicker`
-with the public GitHub URL before pasting. Package version: 0.3.0
+with the public GitHub URL before pasting. Package version: 0.4.0
 (`extension/manifest.json`).
 
 ## Store listing tab
@@ -14,21 +19,27 @@ with the public GitHub URL before pasting. Package version: 0.3.0
 
     Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.
 
-### Description (plain text, 3,152 characters, under the 4,000 limit)
+### Description (plain text, 3,683 characters, under the 4,000 limit)
 
     Model Garden Clicker enables Anthropic Claude models in the Google Cloud console Model Garden for many projects, one project and one model at a time, inside your own signed-in browser.
 
-    Enabling a Claude model in a project means filling the model enablement questionnaire (business name, website, contact email, headquarters country, industry, intended users, use cases, Acceptable Use Policy answer) and then accepting the Marketplace agreement. There is no API for this flow. Doing it by hand for every project and every model is slow and error-prone. This extension does the clicking for you: you type the questionnaire values once in the options page, paste a list of project IDs, tick the models you want, and press Start. The extension opens one console tab, works through every project and model pair in order, and records a result per pair.
+    Enabling a Claude model in a project means filling the model enablement questionnaire (business name, website, contact email, headquarters country, industry, intended users, use cases, Acceptable Use Policy answer) and then accepting the Marketplace agreement. There is no API for this flow, and doing it by hand for every project and every model is slow and error-prone. This extension does the clicking for you.
+
+    ONE RUN, STEP BY STEP
+
+    1. Open the options page and type the questionnaire values once. Click Save. They stay in this browser's local extension storage.
+    2. Click the toolbar icon. Paste project IDs, one per line, and tick the models. Every project and model pair becomes one job.
+    3. Click Start. One console tab opens and the jobs run in order. A dark badge in the corner of that tab shows the job, the current step with its timeout, and what comes next.
+    4. For each job the extension opens the model page, clicks Enable, fills the questionnaire with your saved values, clicks Next and ticks the terms checkbox on the Agreements page.
+    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (the model was already enabled), failed (with the reason) or stopped. The log keeps the last 50 lines.
 
     MODES
 
-    DRY RUN is the default mode. In a dry run the extension clicks Enable, fills the questionnaire, clicks Next, ticks the terms checkbox on the Agreements page and stops there. It never clicks Agree, so nothing is approved, purchased or enabled. Use it to check that the form is filled the way you want.
+    DRY RUN is the default. The job stops on the Agreements page with the checkbox ticked. Agree is never clicked, so nothing is approved, purchased or enabled. Use it to check that the form is filled the way you want.
 
-    FULL RUN is a separate setting that you must untick in the options page and confirm again when you press Start. In a full run the extension clicks Agree. Agree accepts the publisher's terms and makes a Marketplace purchase that bills the project. The extension only clicks Agree when the page is the Agreements page of the job's own project, product and exact model version and the terms checkbox is verified ticked.
+    FULL RUN is a separate setting: untick the DRY RUN box in the options page (or switch the popup's mode banner) and confirm again when you press Start. The extension then clicks Agree once per job. Agree accepts the publisher's terms and makes a Marketplace purchase that bills the project. Agree is clicked only when the page is the Agreements page of the job's own project, product and exact model version and the terms checkbox is verified ticked. The job is done when the console reports "Successfully purchased".
 
-    Step-by-step confirmation can be turned on in either mode. The extension then fills each page and waits for you to press Continue in a panel on the page before it clicks Next, and before it clicks Agree in a full run.
-
-    A status badge in the corner of the console tab shows which job is running, what the extension is waiting for and what comes next. The popup shows a results table and a log. Projects where the model is already enabled are reported as skipped.
+    Step-by-step confirmation works in either mode. The extension fills each page and waits for you: a panel in the console tab offers Continue and Stop before Next, and before Agree in a full run. In a dry run the panel ends with Next job and Stop. If you click the console's own button instead, the extension notices and continues.
 
     WHAT IT STORES
 

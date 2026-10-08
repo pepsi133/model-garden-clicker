@@ -65,8 +65,10 @@ The two settings can also be switched from the popup's header:
   a click does.
 - next to it, a second button shows the step-by-step setting: **slow mode**
   with a snail icon while step-by-step confirmation is on, **kubardy mode**
-  with a running-dog icon while it is off (each job runs through without
-  pausing). Clicking it switches the setting, the icon and the label.
+  with a warning-sign icon (a triangle with an exclamation mark, in the
+  same colour) while it is off: each job runs through without pausing, no
+  Continue before Next and, in a full run, none before Agree. The button's
+  tooltip says so. Clicking it switches the setting, the icon and the label.
 
 Both buttons write the same settings the options page writes, through the
 same path, and both are refused with a message while a run is active. The
@@ -74,16 +76,23 @@ options page's boxes follow what the popup switched.
 
 ## The popup and "Open in a tab"
 
-Chrome caps an extension popup at 800 x 600 px. The popup uses that height:
-the header (photo, title, the two header buttons, **Open in a tab**,
-**Options**) and the project and model inputs keep their natural size
-except the model checklist, which shrinks to 120 px with its own scroll
-when space is short, and the results table and the log share a scrollable
-region of at least 160 px below them, so unfolding the log never scrolls
-the whole popup. The log starts unfolded while a run is active. **Open in a
-tab** opens the same page in a normal tab, where it grows with the window
-(up to 900 px wide); it reads the same storage and talks to the same
-worker, so it can be used instead of the popup at any time.
+Chrome caps an extension popup at 800 x 600 px and the popup uses all of
+it. The header (photo, title, the two header buttons, **Open in a tab**,
+**Options**) and the inputs (the three-row project text area, the model
+checklist, the extra-slugs field, Start and Stop, the status line) keep
+their natural size and never sit inside a scroll region. The checklist is
+a four-column grid, so the twelve models of `models.json` are all visible
+without a scrollbar (a longer list scrolls inside the box). The results
+table and the log share the remaining height below them with their own
+scroll, so unfolding the log never scrolls the whole popup. The log starts
+unfolded while a run is active. **Open in a tab** opens the same page in a
+normal tab, where it is fluid: it grows with the window (between 360 and
+900 px wide) and the checklist takes as many columns as fit; it reads the
+same storage and talks to the same worker, so it can be used instead of
+the popup at any time, the OK on the end-of-run summary included (the
+worker tells that page apart from a console tab by its extension URL, not
+by its tab id). The geometry is checked in headless Chrome by
+`python/scripts/popup_layout.py`.
 
 ## Run a dry run
 
@@ -104,8 +113,13 @@ worker, so it can be used instead of the popup at any time.
    happens next in this phase and the next job's project and model. The
    popup mirrors the current step under its status line. Leave that tab
    alone while a run is active: the extension refuses to act on a page that
-   is not the job's project, and a job whose page changed under it is
-   marked `failed`.
+   is not the job's project, the model page is checked against the job's
+   model slug before anything is decided on it, and a job whose page
+   changed under it is marked `failed`. One document acts for one job: the
+   finished job's page, in the instant before the tab is navigated to the
+   next job, never judges or clicks for that next job, whatever project or
+   model it shows; the navigation always brings a fresh page, and if it
+   never lands the watchdog ends the job.
 6. In a dry run the extension clicks Enable as soon as the button is present
    and enabled and no "Enable APIs" dialog is showing, fills the
    questionnaire, clicks Next, checks that the Agreements page is the job's
@@ -154,12 +168,40 @@ setting can add a pause). Each phase of a job has a ten-minute watchdog
 (`watchdog_min`). A job that produces no result in that time is marked
 `failed` (or `unverified` when Agree had already been clicked) and the run
 moves on. If the model is already enabled for a project the job is marked
-`skipped`.
+`skipped`; the enabled state (the "Open in Agent Studio" link with no
+Enable button) must hold for two poll intervals and at least 500 ms first
+(`poll_ms` is 250 by default), because the console can render that link a
+poll before the Enable button.
 
 Disabling the extension, reloading it or restarting Chrome during a run
 ends the run: it never resumes on its own. The job that was in progress is
 marked `stopped` (or `unverified` if Agree had already been clicked); the
 rest stay `pending`. Start again to continue.
+
+When a run ends, for any reason (all jobs processed, Stop, a failure, a
+lost tab), the badge in the worker tab turns into an end-of-run summary:
+the counts (done, dry-run, skipped, failed, unverified, stopped), one line
+per job with its project, model, status and a short message (at most
+twelve lines, then "and N more") and an **OK** button. It stays until you
+press OK: the summary is recorded in storage with the run's id, so a
+reload or a route change of that tab shows it again. The popup, as the
+action popup or opened in a tab, shows the same summary above its results
+while it is unacknowledged, with its own OK that dismisses both. The next
+Start clears it. The extension never brings the worker tab or its window
+to the front for this (nor for a later job's navigation: only the tab's
+creation, right after Start, opens it in front), never opens the popup by
+itself and raises no system notification.
+
+Because of that, a worker tab you switch away from stays in the
+background for the rest of the run, and Chrome throttles a hidden page's
+timers: after one minute they run once a second at most, and after five
+minutes hidden a chain of timers (every wait of the extension is one)
+wakes once a minute. A job in a tab hidden that long crawls through its
+waits and can hit the per-phase watchdog (`failed: timeout`); nothing
+wrong is clicked, since every click re-checks the page at click time, and
+the watchdog bounds the effect. To avoid it, keep the worker tab visible
+in its own window (drag it out, or start the run from a window you do
+not use) rather than switching tabs in front of it.
 
 ## Step-by-step confirmation
 
@@ -176,7 +218,10 @@ summary of the step and two buttons:
 - in a dry run there is no Agree to confirm: once the terms checkbox is
   ticked the panel shows the dry-run message with **Next job** and **Stop**.
   The job ends `dry-run` on either; **Next job** lets the run go on, **Stop**
-  stops the run after this job. The job does not end until you press one.
+  stops the run after this job (the worker honours that stop only with the
+  result of the job that is current, so a late result for an earlier job
+  can never stop the run after a later one). The job does not end until
+  you press one.
 
 Only a click or keyboard activation that the browser marks as trusted
 (`event.isTrusted`: a real pointer click, Enter or Space on the focused
@@ -187,29 +232,42 @@ the last five minutes.
 
 If you click the console's own Next instead, the extension notices the page
 leaving the questionnaire and continues. If you activate the console's own
-Agree yourself, a listener on that very button (capture phase, trusted
-click or Enter/Space) records it: the job records `agreeClickedByUser` and
-the console's confirmation or error dialog is then judged exactly as after
-the extension's own click (`done`, `unverified` or `failed`). The extension
-never infers your click from a dialog: a "Successfully purchased" dialog
-that opens while nobody activated Agree ends the job `unverified: the
-console reported a purchase while waiting for confirmation` without
-recording a click, and an unrelated error dialog is treated like any open
-dialog (below). Click one or the other, not both: if you click the
+Agree yourself, a listener on that very button (capture phase) records it:
+a trusted click, which is also what the browser fires for Enter or Space
+on the focused button (key events on their own never count: a keydown,
+with or without its keyup, that produces no click records nothing and
+locks nothing). The job records
+`agreeClickedByUser` and the console's confirmation or error dialog is
+then judged exactly as after the extension's own click (`done`,
+`unverified` or `failed`). The extension never infers your click from a
+dialog: a "Successfully purchased" dialog that opens while nobody activated
+Agree ends the job `unverified: the console reported a purchase while
+waiting for confirmation` without recording a click, and an unrelated
+error dialog is treated like any open dialog (below). Click one or the
+other, not both; either order ends in one click, yours: if you click the
 console's Agree and then Continue within the same seconds, the Continue is
 ignored and your click's outcome is judged; in the reverse order (Continue,
 then the console's Agree before the extension's click happens) the guard
-finds the button gone and the job is likewise judged on your click, not
-reported `failed`.
+checks for your activation at every step up to the instant of its click
+and refuses, undoing the click record it had made, and the job is likewise
+judged on your click, not reported `failed`.
 
 While a console dialog is open (an error, or the "Enable APIs" dialog) the
 panel's Continue is disabled and the dialog's title is shown in the panel;
 close it in the console and Continue is enabled again. The "Enable APIs"
 dialog is cleared by the extension itself (its Enable is clicked, as on any
-page) and the panel is shown again. A Continue never reaches the Agree
-guard while a dialog is open; if a dialog opens in the instant between
-your Continue and the click, the guard refuses and the panel asks again
-instead of failing the job.
+page) and the panel is shown again; a Stop during that dialog's close wait
+is honoured at the next poll, not after the dialog's full timeout. A
+Continue never reaches the Agree guard while a dialog is open; if a dialog
+opens in the instant between your Continue and the click, in either of the
+guard's windows (before it records the click, or during the record's round
+trip to the worker, in which case the record is undone, since no click was
+made), the guard refuses and the panel asks again instead of failing the
+job; the same happens when the page changes under the guard during that
+round trip (the Agree button hidden or disabled by a re-render): every
+refusal raised after the record undoes it, because the click comes after
+that check. The spent Continue is forgotten and the next one must be a
+fresh click. The extension asks again at most five times for one job.
 
 While a job waits, the popup's status reads `waiting for your confirmation
 on <project>/<model>: Next` (or `Agree`, or `Next job`), the job's phase is
@@ -296,7 +354,7 @@ every use and fall back to the constants when nothing is stored.
 | `background/service-worker.js` | Queue, worker tab, run identity, watchdog alarm, all storage writes. |
 | `content/dom.js` | Generic Angular Material helpers; refuses to click anything containing "agree". |
 | `content/selectors.js` | Every console DOM locator and URL check, written from `docs/dom-map.md`. |
-| `content/badge.js` | Floating status badge (job, step with timeout, plan, next job) and the step-by-step panel. |
+| `content/badge.js` | Floating status badge (job, step with timeout, plan, next job), the step-by-step panel and the end-of-run summary. |
 | `content/actions.js` | Per-page handlers, the step-by-step wait and `clickAgreeGuarded()`, the only function that clicks Agree. |
 | `content/main.js` | Page loop: detects the page and runs the handler. |
 | `popup/` | Start/stop UI (popup and tab layouts), mode banner, missing-options notice, step mirror, results table and log. |
@@ -345,8 +403,9 @@ cropped to a square avatar centered on the face (`extension/icons/icon-master.pn
 at 512x512, downscaled to the 16/32/48/128 sizes the manifest references
 and to `icons/avatar96.png`, the 96 px copy the popup and the options page
 show in their header; the master stays in the repository but is not
-shipped in the release zip). The step-by-step button's snail and
-running-dog icons are small inline SVG paths, not image files.
+shipped in the release zip). The step-by-step button's snail (slow mode)
+and warning-sign (kubardy mode) icons are small inline SVG paths, not
+image files.
 Promotional images for the Chrome Web Store listing live in `store/`.
 
 The colours of the popup and the options page come from that photo:

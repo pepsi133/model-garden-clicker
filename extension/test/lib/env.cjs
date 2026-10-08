@@ -184,6 +184,7 @@ function fireTrusted(el, type, init) {
 }
 const trustedClick = (el) => fireTrusted(el, "click");
 const trustedKeydown = (el, key) => fireTrusted(el, "keydown", { key });
+const trustedKeyup = (el, key) => fireTrusted(el, "keyup", { key });
 
 /* ------------------------------------------------------------ tiny test reporter */
 
@@ -214,4 +215,4 @@ function finish(name) {
   console.log("ALL " + line.toUpperCase().replace(/: .*/, "") + " CHECKS PASSED (" + line.split(": ")[1] + ")");
 }
 
-module.exports = { EXT, RECON, reconPath, readSnapshot, rehydrate, makeEnv, envFromSnapshot, findRun, listRuns, inlineVisible, fireTrusted, trustedClick, trustedKeydown, ok, skip, finish, counts, hasJsdom: () => !!jsdom };
+module.exports = { EXT, RECON, reconPath, readSnapshot, rehydrate, makeEnv, envFromSnapshot, findRun, listRuns, inlineVisible, fireTrusted, trustedClick, trustedKeydown, trustedKeyup, ok, skip, finish, counts, hasJsdom: () => !!jsdom };

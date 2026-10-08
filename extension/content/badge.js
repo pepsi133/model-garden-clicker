@@ -27,9 +27,11 @@
   const B = {};
   const ID = "mgc-badge";
   const PANEL_ID = "mgc-panel";
+  const SUMMARY_ID = "mgc-summary";
   let el = null;
   let text = null;     // the three-line block
   let panelEl = null;  // the confirmation panel, when open
+  let summaryEl = null; // the end-of-run summary, when open
   let info = null;      // last B.update() argument
   let action = null;    // current action named by B.step() (shown when no wait is running)
   let timer = null;
@@ -100,9 +102,77 @@
    * this phase), nextJob ({ projectId, modelSlug } | null), note }.
    */
   B.update = function (next) {
+    B.closeSummary(); // a run is in progress: the previous run's summary is gone
     info = next;
     render();
     if (!timer) timer = setInterval(render, 1000);
+  };
+
+  /**
+   * Turn the badge into the end-of-run summary: { title, counts (text),
+   * lines: [text], more (number), onOk(event) }. The three-line block
+   * shows the title and the counts; under it one line per job, "and N
+   * more" when capped, and an OK button (the only element that takes
+   * pointer events). Replaces an open panel or summary. Nothing here
+   * focuses the tab or the window.
+   */
+  B.summary = function (spec) {
+    const node = ensure();
+    B.closePanel();
+    B.closeSummary();
+    if (timer) { clearInterval(timer); timer = null; }
+    info = null;
+    action = null;
+    text.textContent = `${spec.title || "MG Clicker: run finished"}\n${spec.counts || ""}`;
+    summaryEl = document.createElement("div");
+    summaryEl.id = SUMMARY_ID;
+    Object.assign(summaryEl.style, {
+      marginTop: "8px",
+      paddingTop: "8px",
+      borderTop: "1px solid rgba(255,255,255,0.25)",
+      pointerEvents: "auto",
+      font: "11px/1.45 ui-monospace, Menlo, Consolas, monospace"
+    });
+    for (const line of spec.lines || []) {
+      const div = document.createElement("div");
+      div.className = "mgc-summary-line";
+      div.textContent = line;
+      summaryEl.appendChild(div);
+    }
+    if (spec.more > 0) {
+      const div = document.createElement("div");
+      div.className = "mgc-summary-more";
+      div.textContent = `and ${spec.more} more`;
+      summaryEl.appendChild(div);
+    }
+    const row = document.createElement("div");
+    row.style.marginTop = "8px";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mgc-summary-ok";
+    btn.dataset.action = "ok";
+    btn.textContent = "OK";
+    Object.assign(btn.style, {
+      font: "13px system-ui, sans-serif", fontWeight: "700", padding: "6px 16px", borderRadius: "4px", cursor: "pointer",
+      border: "1px solid #8c6424", background: "#d99a38", color: "#1c140e"
+    });
+    btn.addEventListener("click", (ev) => { try { if (typeof spec.onOk === "function") spec.onOk(ev); } catch (e) { /* the caller logs */ } });
+    row.appendChild(btn);
+    summaryEl.appendChild(row);
+    node.appendChild(summaryEl);
+    node.style.border = "2px solid #8c6424";
+    node.style.display = "block";
+    return summaryEl;
+  };
+
+  B.closeSummary = function () {
+    if (summaryEl && summaryEl.parentNode) summaryEl.parentNode.removeChild(summaryEl);
+    summaryEl = null;
+  };
+
+  /** True while the end-of-run summary is open in this document. */
+  B.summaryOpen = function () {
+    return !!(summaryEl && summaryEl.isConnected);
   };
 
   /** Name the action in progress (cleared with null); shown while no wait runs. */
@@ -199,6 +269,7 @@
     info = null;
     action = null;
     B.closePanel();
+    B.closeSummary();
     if (timer) { clearInterval(timer); timer = null; }
     if (el && el.isConnected) el.style.display = "none";
   };

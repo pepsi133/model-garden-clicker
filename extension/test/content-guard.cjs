@@ -452,6 +452,55 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     const state = st(); const updates = [];
     await env.A.clickAgreeGuarded(mk(state, updates));
     ok(clicks === 1 && state.queue[0].agreeClicked === true, "with a fresh trusted Continue every other condition met: Agree clicked exactly once", clicks);
+    ok(env.A.continueAge(RUN_ID, 0, "agree") === null, "the trusted Continue record is cleared once its click was made");
+    // (N1) the refuse hook: a reason it returns refuses at the first check, before any record, with no click.
+    const env1 = E.makeEnv({ html: snap05.html, url: snap05.url }); E.rehydrate(env1.document, snap05.forms);
+    let clicks1 = 0; env1.S.agreements.agreeButton().addEventListener("click", () => { clicks1 += 1; });
+    ok(env1.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a trusted Continue recorded in a fresh window");
+    const st1 = st(); const updates1 = [];
+    let err1 = null;
+    try { await env1.A.clickAgreeGuarded(mk(st1, updates1), { refuse: () => "you activated the console's Agree yourself" }); } catch (e) { err1 = e; }
+    ok(err1 && err1.name === "ForbiddenClickError" && /you activated the console's Agree yourself/.test(err1.message) && err1.byUser === true && clicks1 === 0 && updates1.length === 0 && st1.queue[0].agreeClicked === false,
+      "(N1) refuse() with a reason: refused before any record, flagged byUser, no click", err1 ? err1.message : "no error");
+    // (N1) the hook turning true during the record round trip: the record is undone, no click.
+    let hookOn = false;
+    const cx1 = mk(st1, updates1);
+    cx1.updateJob = async (f) => { Object.assign(st1.queue[0], f); updates1.push(f); if (f.agreeClicked === true) hookOn = true; return { ok: true }; };
+    err1 = null;
+    try { await env1.A.clickAgreeGuarded(cx1, { refuse: () => (hookOn ? "you activated the console's Agree yourself" : null) }); } catch (e) { err1 = e; }
+    ok(err1 && err1.byUser === true && err1.recordCleared === true && clicks1 === 0 && JSON.stringify(updates1) === JSON.stringify([{ agreeClicked: true }, { agreeClicked: false }]) && st1.queue[0].agreeClicked === false,
+      "(N1) refuse() true only after the record: the record is undone (agreeClicked true then false), recordCleared set, no click", err1 ? `${err1.message} ${JSON.stringify(updates1)}` : "no error");
+    // and the guard's per-tab memory was undone too: a later call with a fresh Continue clicks once.
+    ok(env1.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a fresh trusted Continue");
+    await env1.A.clickAgreeGuarded(mk(st1, updates1));
+    ok(clicks1 === 1 && st1.queue[0].agreeClicked === true, "after the undone record the guard clicks once with everything in place (the tab's memory was cleared with the record)", clicks1);
+    env1.win.close();
+    // (L2) every refusal of the second check undoes the record: the button disabled by a re-render during the
+    // record round trip (no user, no dialog) leaves agreeClicked false in storage, no click, recordCleared set.
+    const env2 = E.makeEnv({ html: snap05.html, url: snap05.url }); E.rehydrate(env2.document, snap05.forms);
+    let clicks2 = 0; const agreeBtn2 = env2.S.agreements.agreeButton(); agreeBtn2.addEventListener("click", () => { clicks2 += 1; });
+    ok(env2.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a trusted Continue recorded in a fresh window");
+    const st2 = st(); const updates2 = [];
+    const cx2 = mk(st2, updates2);
+    cx2.updateJob = async (f) => { Object.assign(st2.queue[0], f); updates2.push(f); if (f.agreeClicked === true) agreeBtn2.setAttribute("aria-disabled", "true"); return { ok: true }; };
+    let err2 = null;
+    try { await env2.A.clickAgreeGuarded(cx2); } catch (e) { err2 = e; }
+    ok(err2 && err2.name === "ForbiddenClickError" && /Agree button is disabled/.test(err2.message) && err2.byUser !== true && err2.dialogOpen !== true && err2.recordCleared === true && clicks2 === 0 && JSON.stringify(updates2) === JSON.stringify([{ agreeClicked: true }, { agreeClicked: false }]) && st2.queue[0].agreeClicked === false,
+      "(L2) the button disabled during the record round trip: refused, the record undone (true then false), recordCleared, no click", err2 ? `${err2.message} ${JSON.stringify(updates2)}` : "no error");
+    agreeBtn2.removeAttribute("aria-disabled");
+    ok(env2.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a fresh trusted Continue");
+    await env2.A.clickAgreeGuarded(mk(st2, updates2));
+    ok(clicks2 === 1 && st2.queue[0].agreeClicked === true, "(L2) with the button enabled again the guard clicks once (the tab's memory was cleared with the record)", clicks2);
+    // control: a refusal BEFORE the record (the first check) makes no record and needs no undo.
+    const st3 = st(); const updates3 = [];
+    const env3 = E.makeEnv({ html: snap05.html, url: snap05.url }); E.rehydrate(env3.document, snap05.forms);
+    env3.S.agreements.agreeButton().setAttribute("aria-disabled", "true");
+    ok(env3.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a trusted Continue in a third window");
+    let err3 = null;
+    try { await env3.A.clickAgreeGuarded(mk(st3, updates3)); } catch (e) { err3 = e; }
+    ok(err3 && /Agree button is disabled/.test(err3.message) && updates3.length === 0 && err3.recordCleared === undefined, "control: the same refusal at the first check records nothing and clears nothing", err3 ? `${err3.message} ${JSON.stringify(updates3)}` : "no error");
+    env3.win.close();
+    env2.win.close();
     env.win.close();
   }
 

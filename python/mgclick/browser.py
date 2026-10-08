@@ -140,6 +140,10 @@ def make_driver(
     opts.add_experimental_option("useAutomationExtension", False)
     if headless:
         opts.add_argument("--headless=new")
+    # The browser console log is readable through driver.get_log("browser")
+    # only when asked for at session start; ext_dryrun.py reads it at the end
+    # of a run to fail on SEVERE entries from the extension's own scripts.
+    opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})
 
     driver = webdriver.Chrome(service=Service(executable_path=driver_path), options=opts)
     driver.set_window_size(*WINDOW_SIZE)

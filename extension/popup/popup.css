@@ -1,14 +1,17 @@
 /*
- * Popup layout. Chrome caps an action popup at 800 x 600 px, so the page is
- * a fixed-height flex column: the header keeps its natural size, the inputs
- * shrink when space is short (the model checklist gives way first, with
- * its own scroll), and the results and the log share a scroll region of at
- * least 160 px below them; the page itself never scrolls. html.tab (set by
- * popup.js when the page is open in a normal tab) makes the column fill the
- * window instead.
+ * Popup layout. Chrome caps an action popup at 800 x 600 px and the page
+ * uses all of it: a fixed-size flex column in which the header and every
+ * input keep their natural size (the inputs never sit in a scroll region),
+ * and the results and the log share the remaining height with their own
+ * scroll; the page itself never scrolls. At 800 px the model checklist is
+ * a four-column grid, so the twelve models of models.json show without a
+ * scrollbar; a longer list scrolls inside the box (max-height). html.tab
+ * (set by popup.js when the page is open in a normal tab) makes the column
+ * fluid: it fills the window and the checklist takes as many columns as
+ * fit (at least 190 px each).
  */
 html, body { margin: 0; }
-html.popup body { width: 520px; height: 600px; }
+html.popup body { width: 800px; height: 600px; }
 html.tab body { width: auto; min-width: 360px; max-width: 900px; height: 100vh; margin: 0 auto; }
 html.tab #open-tab { display: none; }
 body { box-sizing: border-box; padding: 8px 12px; font: var(--mgc-font); display: flex; flex-direction: column; overflow: hidden; }
@@ -24,30 +27,28 @@ header .step-toggle[aria-pressed="true"] { border-color: var(--mgc-accent-dark);
 header .header-actions { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 header .header-actions a { font-size: 12px; white-space: nowrap; }
 
-/* The inputs column shrinks before the results region does: every section
- * is fixed except the models one, whose checklist scrolls on its own. */
-.inputs { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; overflow: auto; }
+/* The inputs column never shrinks and never scrolls: every row keeps its
+ * natural height. The models section is a transparent box (display:
+ * contents) so its row, checklist and extra-slugs input are direct items of
+ * the column. Only the results/log region below takes what is left. */
+.inputs { display: flex; flex-direction: column; flex: none; overflow: visible; }
 .inputs > *, .inputs > .models-section > * { flex: none; }
-/* The models section is a transparent box (display: contents): its row,
- * checklist and extra-slugs input are direct flex items of the column, so
- * the checklist alone shrinks (down to its 120 px floor) while every other
- * row keeps its height. When even that does not fit, the inputs column
- * scrolls instead of overlapping. */
 .inputs > .models-section { display: contents; }
-.inputs > .models-section > .models { flex: 0 1 auto; }
 .inputs > .models-section > input { margin-bottom: 6px; }
-.scroll { flex: 1 1 auto; min-height: 160px; overflow: auto; border-top: 1px solid var(--mgc-border); padding-top: 4px; }
+.scroll { flex: 1 1 auto; min-height: 120px; overflow: auto; border-top: 1px solid var(--mgc-border); padding-top: 4px; }
 
 section { margin-bottom: 6px; }
 label { display: block; font-weight: 600; margin: 4px 0; }
 .row { display: flex; justify-content: space-between; align-items: baseline; }
 .links { font-size: 12px; }
 textarea, input[type="text"] { width: 100%; box-sizing: border-box; font: 12px var(--mgc-mono); padding: 4px; }
-/* The checklist: two columns of rows that keep their natural height (no
- * shrinking items); the box scrolls on its own and, as the one shrinkable
- * part of the inputs column, gives way first, but never below 120 px. */
-.models { display: flex; flex-wrap: wrap; align-content: flex-start; flex: 0 1 auto; min-height: 120px; max-height: 150px; overflow-y: auto; box-sizing: border-box; border: 1px solid var(--mgc-border); background: var(--mgc-surface); padding: 4px; margin-bottom: 4px; border-radius: 4px; }
-.models label { flex: 0 0 50%; box-sizing: border-box; padding: 1px 8px 1px 0; font-weight: 400; margin: 0; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The checklist: a grid of rows at their natural line height (rows never
+ * shrink or overlap); four columns in the popup, as many as fit in a tab.
+ * Twelve models make three rows, well under the max-height, so no
+ * scrollbar; a longer models.json scrolls inside the box. */
+.models { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-content: start; max-height: 170px; overflow-y: auto; box-sizing: border-box; border: 1px solid var(--mgc-border); background: var(--mgc-surface); padding: 4px; margin-bottom: 4px; border-radius: 4px; }
+html.tab .models { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.models label { min-width: 0; box-sizing: border-box; padding: 1px 8px 1px 0; font-weight: 400; margin: 0; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .models .stage { color: var(--mgc-muted); font-size: 11px; }
 .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
 button { padding: 6px 14px; font-size: 13px; }
@@ -59,6 +60,14 @@ button.primary { font-size: 15px; padding: 8px 28px; }
 .status { padding: 4px 8px; background: var(--mgc-neutral); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .step { margin-top: 4px; padding: 4px 8px; background: var(--mgc-surface); color: var(--mgc-info); border: 1px solid var(--mgc-border); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .error { margin-top: 6px; padding: 6px 8px; }
+
+/* The end-of-run summary (shown until OK, mirrored from the worker tab's badge). */
+.summary { margin: 2px 0 8px; padding: 6px 8px; background: var(--mgc-surface); border: 1px solid var(--mgc-accent-dark); border-radius: 4px; font-size: 12px; }
+.summary .title { font-weight: 700; }
+.summary .counts { margin: 2px 0 4px; font-family: var(--mgc-mono); font-size: 11px; }
+.summary .line, .summary .more { font-family: var(--mgc-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.summary .more { color: var(--mgc-muted); }
+.summary button { margin-top: 6px; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--mgc-surface); }
 th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--mgc-border); vertical-align: top; }

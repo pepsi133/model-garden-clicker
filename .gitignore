@@ -23,6 +23,11 @@ package-lock.json
 # Build output
 dist/
 
+# Agent skills installed with `npx skills add` (tooling for the docs, not part of the extension)
+.agents/
+.claude/skills/
+skills-lock.json
+
 # Editors, OS, environment
 .DS_Store
 Thumbs.db

@@ -23,7 +23,8 @@
     LOG: "log",                     // array of { t, level, src, msg }, capped
     POPUP_STATE: "popup_state",     // last popup inputs (projects text, models, extras)
     RUN: "run",                     // { runId, live, startedAt, finishedAt, reason }: the run's identity and mode snapshot
-    TIMING: "timing"                // advanced timing settings (options page "Advanced"); absent = constants below
+    TIMING: "timing",               // advanced timing settings (options page "Advanced"); absent = constants below
+    SUMMARY_ACK: "summary_ack"      // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
   };
 
   /* Job phases, written to storage as current.phase. */
@@ -77,7 +78,50 @@
     JOB_UPDATE: "mgc:job-update",   // content -> worker  { runId, jobIndex, fields } (whitelisted fields only)
     JOB_RESULT: "mgc:job-result",   // content -> worker  { runId, jobIndex, status, message, stopAfter? } (stopAfter: record the result, then stop the run instead of advancing)
     LOG: "mgc:log",                 // any -> worker      { level, msg }
-    VERSION: "mgc:version"          // any -> worker: { manifest, keys } of the worker that is running
+    VERSION: "mgc:version",         // any -> worker: { manifest, keys } of the worker that is running
+    SUMMARY_ACK: "mgc:summary-ack"  // popup or worker-tab content -> worker { runId }: OK on the end-of-run summary
+  };
+
+  /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
+  MGC.SUMMARY_MAX_LINES = 12;
+  MGC.SUMMARY_MESSAGE_CHARS = 80;
+  MGC.SUMMARY_STATUSES = ["done", "dry-run", "skipped", "failed", "unverified", "stopped"];
+
+  /** True when `summary` (KEYS.SUMMARY_ACK) is the unacknowledged summary of `run`. */
+  MGC.summaryPending = function (summary, run) {
+    return !!(summary && run && typeof summary.runId === "string" && summary.runId === run.runId && summary.ack !== true);
+  };
+
+  /**
+   * Counts and per-job lines of a finished run, shared by the worker tab's
+   * badge and the popup: { total, counts: { done, "dry-run", skipped,
+   * failed, unverified, stopped, pending }, lines: [{ text }], more }.
+   * lines holds at most SUMMARY_MAX_LINES entries; more is the number
+   * left out.
+   */
+  MGC.runSummary = function (queue) {
+    const jobs = Array.isArray(queue) ? queue : [];
+    const counts = {};
+    for (const s of MGC.SUMMARY_STATUSES) counts[s] = 0;
+    counts.pending = 0;
+    for (const j of jobs) {
+      const s = MGC.SUMMARY_STATUSES.includes(j.status) ? j.status : "pending";
+      counts[s] += 1;
+    }
+    const lines = jobs.slice(0, MGC.SUMMARY_MAX_LINES).map((j) => {
+      let message = String(j.message || "").replace(/\s+/g, " ").trim();
+      if (message.length > MGC.SUMMARY_MESSAGE_CHARS) message = message.slice(0, MGC.SUMMARY_MESSAGE_CHARS - 1) + "…";
+      const status = j.status || "pending";
+      return { text: `${j.projectId} · ${j.modelSlug} · ${status}${message ? ` · ${message}` : ""}` };
+    });
+    return { total: jobs.length, counts, lines, more: Math.max(0, jobs.length - lines.length) };
+  };
+
+  /** "done 1 · dry-run 2 · skipped 0 · ..." (pending only when some job is left pending). */
+  MGC.summaryCountsText = function (counts) {
+    const parts = MGC.SUMMARY_STATUSES.map((s) => `${s} ${counts[s] || 0}`);
+    if (counts.pending) parts.push(`pending ${counts.pending}`);
+    return parts.join(" · ");
   };
 
   /* Job fields the content script may set through JOB_UPDATE. `step` is the
@@ -123,6 +167,7 @@
   MGC.WATCHDOG_MINUTES = 10;
   MGC.LOG_CAP = 500;
   MGC.URL_POLL_MS = 250;                    // content script loop and every D.waitFor poll
+  MGC.ENABLED_CONFIRM_MIN_MS = 500;         // model page: the "already enabled" state must hold at least this long (and two polls) before a job is skipped
   MGC.MAX_ATTEMPTS_PER_PAGE = 3;
   MGC.JOB_SETTLE_MS = 0;                    // pause between a job's result and the next job's navigation (0 = none)
   MGC.RECOVER_DELAY_MS = 1500;              // worker start -> check for a run left mid-settle by a terminated worker
@@ -314,6 +359,17 @@
     if (o[MGC.KEYS.RUNNING] === true && modeChanged) return { ok: false, error: MGC.RUN_LOCK_MESSAGE, settings: stored };
     await area.set({ [MGC.KEYS.SETTINGS]: next });
     return { ok: true, settings: next };
+  };
+
+  /**
+   * How long the model page's "already enabled" state must hold before a
+   * job is skipped: two poll intervals, never under ENABLED_CONFIRM_MIN_MS.
+   * The console can render the Agent Studio link a poll before the Enable
+   * button, so one poll of margin is not enough; the window follows the
+   * poll interval, which the advanced settings can change.
+   */
+  MGC.enabledConfirmMs = function () {
+    return Math.max(MGC.ENABLED_CONFIRM_MIN_MS, 2 * MGC.URL_POLL_MS);
   };
 
   /** Build the model page URL for a (project, model) pair. */

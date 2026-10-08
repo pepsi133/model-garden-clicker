@@ -91,6 +91,22 @@
     try { return new URL(location.href).searchParams.get("project"); } catch (e) { return null; }
   };
 
+  /**
+   * The model slug the current model page URL names (the path segment
+   * after MODEL_PATH_PREFIX, decoded), or null when the path is not a
+   * model page's. The model handler compares it with the job's slug before
+   * any decision, so a document left on another model's page never judges
+   * or clicks for a job.
+   */
+  S.urlModelSlug = function () {
+    try {
+      const path = new URL(location.href).pathname;
+      if (!path.startsWith(MODEL_PATH_PREFIX)) return null;
+      const slug = decodeURIComponent(path.slice(MODEL_PATH_PREFIX.length).split("/")[0]);
+      return slug || null;
+    } catch (e) { return null; }
+  };
+
   /* ------------------------------------------------------------ model page */
 
   S.model = {
@@ -318,28 +334,25 @@
     },
     /**
      * Watch for the user activating the console's own Agree button while
-     * the step-by-step panel waits: a trusted click on the node (a pointer
-     * click, or the click the browser fires for Enter/Space on the focused
-     * button) or a trusted Enter/Space keydown on it. The listeners sit on
-     * the document in the capture phase, so a handler on the button cannot
-     * hide the event, and the target is compared with the Agree node at
-     * event time (the page may re-render). callback(how) is called with
-     * "click" or "keyboard". Returns a function that stops watching.
-     * Nothing here clicks anything; the node is never handed out.
+     * the step-by-step panel waits: a trusted click on the node. That is
+     * the pointer click, or the click the browser itself fires for Enter or
+     * Space on the focused button, so a keyboard activation is seen through
+     * the same event. Key events are not counted on their own: a keydown
+     * with its keyup and no click is not an activation the console acted
+     * on, and counting it would lock the job as clicked. The listener sits
+     * on the document in the capture phase, so a handler on the button
+     * cannot hide the event, and the target is compared with the Agree
+     * node at event time (the page may re-render). callback("click") is
+     * called once per trusted click. Returns a function that stops
+     * watching. Nothing here clicks anything; the node is never handed out.
      */
     onAgreeActivation: function (callback) {
-      const hit = (ev) => {
+      const onClick = (ev) => {
         const node = agreeButtonNode();
-        return !!(node && ev && ev.isTrusted === true && ev.target && node.contains(ev.target));
+        if (node && ev && ev.isTrusted === true && ev.target && node.contains(ev.target)) callback("click");
       };
-      const onClick = (ev) => { if (hit(ev)) callback("click"); };
-      const onKey = (ev) => { if ((ev.key === "Enter" || ev.key === " ") && hit(ev)) callback("keyboard"); };
       document.addEventListener("click", onClick, true);
-      document.addEventListener("keydown", onKey, true);
-      return () => {
-        document.removeEventListener("click", onClick, true);
-        document.removeEventListener("keydown", onKey, true);
-      };
+      return () => document.removeEventListener("click", onClick, true);
     },
     /**
      * The purchase confirmations open in the document, as [{ dialog,

@@ -177,12 +177,19 @@
 
   /* ---------------------------------------------------------- state */
 
+  // The version of the extension this popup_state was last saved by; a first
+  // load after an upgrade (the stored marker differs from the manifest) resets
+  // the model selection to none once (see init).
+  let manifestVersion = null;
+
   function savePopupState() {
     chrome.storage.local.set({
       [KEYS.POPUP_STATE]: {
         projects: $("projects") ? $("projects").value : "",
         models: Array.from(document.querySelectorAll("#models input:checked")).map((cb) => cb.value),
-        extra: $("extra-models") ? $("extra-models").value : ""
+        extra: $("extra-models") ? $("extra-models").value : "",
+        includeDone: $("include-done") ? $("include-done").checked === true : false,
+        version: manifestVersion
       }
     });
   }
@@ -327,12 +334,21 @@
 
   async function init() {
     detectLayout();
+    manifestVersion = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || null;
     const o = await chrome.storage.local.get(KEYS.POPUP_STATE);
     const ps = o[KEYS.POPUP_STATE] || {};
+    // First load of a new version: reset the model selection to none, once, so
+    // an upgrade (0.4.0 ticked every model by default) does not carry a full
+    // selection into a Start. A later load keeps whatever the user picked.
+    const freshVersion = ps.version !== manifestVersion;
     setIf("projects", (el) => { el.value = ps.projects || ""; });
     setIf("extra-models", (el) => { el.value = ps.extra || ""; });
+    setIf("include-done", (el) => { el.checked = ps.includeDone === true; el.addEventListener("change", savePopupState); });
     const models = await loadModels();
-    if ($("models")) renderModels(models, Array.isArray(ps.models) ? ps.models : null);
+    if ($("models")) renderModels(models, freshVersion ? null : (Array.isArray(ps.models) ? ps.models : null));
+    // Record the version marker (and the reset selection) so the reset happens
+    // only once per upgrade.
+    if (freshVersion) savePopupState();
 
     // Every listener goes through on(): a missing element is warned about
     // in the console and skipped, so the rest of the page still works.
@@ -375,7 +391,8 @@
       setIf("start", (el) => { el.disabled = true; });
       // The mode shown (and, for a full run, confirmed) travels with the
       // request; the worker refuses to start if the setting changed in between.
-      const reply = await send({ type: MSG.START, projects, models, live });
+      const includeDone = $("include-done") ? $("include-done").checked === true : false;
+      const reply = await send({ type: MSG.START, projects, models, live, includeDone });
       if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); setIf("start", (el) => { el.disabled = false; }); }
       render();
     });

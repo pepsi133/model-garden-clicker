@@ -12,7 +12,13 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a full commit SHA (supply-chain hardening); the comment names
+      # the release. persist-credentials: false keeps the GITHUB_TOKEN out of
+      # .git/config, so the npm step below cannot read it (the gh release step
+      # uses GH_TOKEN from the env instead).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Check that the tag matches the manifest version
         run: |
@@ -25,18 +31,29 @@ jobs:
 
       # jsdom 30 (extension/test/package.json) runs on Node 22.22+ or 24.15+;
       # Node 20 fails at require time (undici's markAsUncloneable).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
+
+      # Install from the committed lockfile (npm ci), so the release builds the
+      # exact dependency tree the repository pins and runs no resolution.
+      - name: Install the test dependencies
+        run: cd extension/test && npm ci --no-audit --no-fund
 
       # The offline suite must pass before anything is built. The recon dumps
       # are not in the repository, so the dump-based checks skip here;
       # MGC_ALLOW_SKIP=1 accepts those skips and nothing else (a failed check
-      # still fails the release).
-      - name: Run the offline test suite
+      # still fails the release). run.sh prints which suites were reduced.
+      - name: Run the offline test suite (dump-based checks reduced)
+        run: MGC_ALLOW_SKIP=1 sh extension/test/run.sh
+
+      # The two dump-independent suites never skip, so CI proves them in full,
+      # strictly (no MGC_ALLOW_SKIP): a skip or a failure fails the release.
+      - name: Prove the dump-independent suites in full
         run: |
-          (cd extension/test && npm install --no-audit --no-fund)
-          MGC_ALLOW_SKIP=1 sh extension/test/run.sh
+          cd extension/test
+          node worker-harness.mjs
+          node ui-pages.cjs
 
       - name: Build the extension zip
         run: sh scripts/build-extension-zip.sh

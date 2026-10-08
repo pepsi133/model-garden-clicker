@@ -5,6 +5,7 @@ import path from "node:path";
 const EXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fakeIDB = createRequire(import.meta.url)("./lib/fake-idb.cjs");
 globalThis.indexedDB = fakeIDB;
+globalThis.IDBKeyRange = fakeIDB.IDBKeyRange;
 const store = {};
 const listeners = { message: [], alarm: [], removed: [], installed: [], startup: [] };
 const events = [];
@@ -58,7 +59,10 @@ process.on("exit", (code) => { if (!finished && code === 0) { console.log(`FAIL 
 function assert(c, m) { if (!c) { console.error("FAIL:", m, JSON.stringify(store, null, 1)); process.exit(1); } n++; console.log("ok  ", m); }
 const runId = () => store.run && store.run.runId;
 /** A START message as the popup sends it: with the mode it showed (the stored setting unless overridden). */
-const START = (projects, models, live) => ({ type: K.MSG.START, projects, models, live: live === undefined ? !!(store.settings && store.settings.live_mode === true) : live });
+// includeDone defaults to true here so the cross-run double-purchase guard
+// (tested on its own in section 24) does not reach back into the records the
+// earlier sections leave behind and skip a pair they expect to run.
+const START = (projects, models, live, includeDone) => ({ type: K.MSG.START, projects, models, live: live === undefined ? !!(store.settings && store.settings.live_mode === true) : live, includeDone: includeDone === undefined ? true : includeDone });
 
 // 1. start without settings -> refused
 let r = await msg(START(["proj-one"], ["claude-haiku-4-5"]));
@@ -446,20 +450,25 @@ r = await msg({ type: K.MSG.SUMMARY_ACK, runId: runId() }); assert(r.ok === true
 //     the job list, the results and every log line (uncapped); the storage log and its cap are untouched
 const RL = globalThis.MGC_RUNLOG;
 const records = () => fakeIDB.dump(RL.DB_NAME, RL.STORE).sort((a, b) => b.startedAt - a.startedAt);
+// Schema v2: log lines live in their own store, keyed [runId, seq]. Read a
+// run's lines straight from the fake for the assertions below.
+const lineRecs = (rid) => fakeIDB.dump(RL.DB_NAME, RL.LINES).filter((l) => l.runId === rid).sort((a, b) => a.seq - b.seq);
 const RLAST = runId();
 let rec = records().find((x) => x.runId === RLAST);
-assert(RL && RL.DB_NAME === "mgc-runs" && RL.STORE === "runs", "common/runlog.js is loaded by the worker: database mgc-runs, store runs");
+assert(RL && RL.DB_NAME === "mgc-runs" && RL.STORE === "runs" && RL.LINES === "lines", "common/runlog.js is loaded by the worker: database mgc-runs, stores runs and lines (schema v2)");
 assert(!!rec && rec.runId === RLAST && rec.startedAt === store.run.startedAt && rec.finishedAt === store.run.finishedAt && rec.reason === "all jobs processed" && rec.live === false && rec.stepByStep === false, "the finished run has a record with its id, start, end, reason and mode snapshot (L1): " + JSON.stringify(rec && { runId: rec.runId, reason: rec.reason, live: rec.live }));
 assert(Array.isArray(rec.jobs) && rec.jobs.length === 1 && rec.jobs[0].projectId === "proj-one" && rec.jobs[0].modelSlug === "claude-haiku-4-5" && Object.keys(rec.jobs[0]).sort().join() === "modelName,modelSlug,projectId", "the record carries the job list (project, model, name only)");
 assert(Array.isArray(rec.results) && rec.results.length === 1 && rec.results[0].status === "skipped" && rec.results[0].message === "z" && rec.results[0].finishedAt > 0 && !("phase" in rec.results[0]) && !("step" in rec.results[0]), "the record carries the per-job results (status, message, times; no phase or step fields): " + JSON.stringify(rec.results[0]));
-const recLines = rec.lines.map((l) => l.msg);
+const lastLines = lineRecs(RLAST);
+const recLines = lastLines.map((l) => l.msg);
 assert(recLines.length >= 4 && /^run .* started: 1 project\(s\)/.test(recLines[0]) && /^job 0: navigating/.test(recLines[1]) && /^job 0: skipped - z$/.test(recLines[2]) && recLines[recLines.length - 1] === "run finished: all jobs processed", "the record's lines run from the start line to the 'run finished' line (written after RUNNING went false): " + JSON.stringify(recLines));
-assert(rec.lines.every((l) => typeof l.t === "number" && typeof l.level === "string" && typeof l.src === "string" && typeof l.msg === "string") && rec.lines.every((l) => l.src === "worker"), "every line has t, level, src and msg; these are the worker's");
-assert(!rec.lines.some((l) => /summary acknowledged/.test(l.msg)), "a line logged after the run ended (the summary OK) is not in the record");
+assert(rec.lineCount === lastLines.length && lastLines.every((l, i) => l.seq === i) && typeof rec.byteCount === "number" && rec.byteCount > 0, "the record's counters match the line store: lineCount equals the number of line records (seq 0..n-1) and byteCount is set (L1 v2): " + JSON.stringify({ lineCount: rec.lineCount, byteCount: rec.byteCount, stored: lastLines.length }));
+assert(lastLines.every((l) => typeof l.t === "number" && typeof l.level === "string" && typeof l.src === "string" && typeof l.msg === "string") && lastLines.every((l) => l.src === "worker"), "every line has t, level, src and msg; these are the worker's");
+assert(!lastLines.some((l) => /summary acknowledged/.test(l.msg)), "a line logged after the run ended (the summary OK) is not in the record");
 assert(store.log.length === K.LOG_CAP && store.log.some((l) => /summary acknowledged/.test(l.msg)), "the storage log is still the capped one and still receives every line");
 assert(fakeIDB.openCount > 0 && fakeIDB.openCount === fakeIDB.closeCount, `no long-lived database handle: every open was closed (${fakeIDB.openCount} opens, ${fakeIDB.closeCount} closes)`);
 r = await msg({ type: K.MSG.LOG, level: "warn", msg: "ui line after the run" }, null, TAB_PAGE(556));
-assert(!records().find((x) => x.runId === RLAST).lines.some((l) => /ui line after the run/.test(l.msg)), "MSG.LOG with no run in progress goes to the storage log only");
+assert(!lineRecs(RLAST).some((l) => /ui line after the run/.test(l.msg)), "MSG.LOG with no run in progress goes to the storage log only");
 
 // 23b. content and ui lines land in the record with their source; a fresh worker instance (restart mid-settle) keeps
 //      appending to the same record, and the results follow every job
@@ -470,19 +479,19 @@ r = await msg({ type: K.MSG.LOG, level: "info", msg: "model page detected +1200m
 r = await msg({ type: K.MSG.LOG, level: "debug", msg: "popup says hi" }, null, TAB_PAGE(557));
 rec = records().find((x) => x.runId === R23);
 assert(!!rec && rec.finishedAt === null && rec.reason === null && rec.results.length === 2 && rec.results.every((j) => j.status === "running" || j.status === "pending"), "a run in progress has an open record (no end, no reason) with the results as they stand");
-assert(rec.lines.some((l) => l.src === "content" && l.level === "info" && l.msg === "model page detected +1200ms") && rec.lines.some((l) => l.src === "ui" && l.msg === "popup says hi"), "content and ui lines are appended with their source and level");
+assert(lineRecs(R23).some((l) => l.src === "content" && l.level === "info" && l.msg === "model page detected +1200ms") && lineRecs(R23).some((l) => l.src === "ui" && l.msg === "popup says hi"), "content and ui lines are appended with their source and level");
 pending = msg({ type: K.MSG.JOB_RESULT, runId: R23, jobIndex: 0, status: "dry-run", message: "checkbox ticked" }, t23); await settle();
 rec = records().find((x) => x.runId === R23);
 assert(rec.results[0].status === "dry-run" && rec.results[0].message === "checkbox ticked" && rec.results[1].status === "pending", "a job result is written to the record's results at once (before the next job starts)");
-const linesBeforeRestart = rec.lines.length;
+const linesBeforeRestart = lineRecs(R23).length;
 await import(pathToFileURL(path.join(EXT, "background/service-worker.js")).href + "?instance=9"); await settle(); await settle();
 rec = records().find((x) => x.runId === R23);
-assert(store.current.jobIndex === 1 && rec.lines.length > linesBeforeRestart && rec.lines.some((l) => /worker restarted between jobs; advancing/.test(l.msg)) && rec.lines.some((l) => /job 1: navigating/.test(l.msg)), "a fresh worker instance appends to the same record (no handle survived; the database is opened per write) (L1)");
+assert(store.current.jobIndex === 1 && lineRecs(R23).length > linesBeforeRestart && rec.lineCount === lineRecs(R23).length && lineRecs(R23).some((l) => /worker restarted between jobs; advancing/.test(l.msg)) && lineRecs(R23).some((l) => /job 1: navigating/.test(l.msg)), "a fresh worker instance appends to the same record (no handle survived; the database is opened per write) (L1)");
 K.JOB_SETTLE_MS = 0;
 await pending; await settle();
 r = await msg({ type: K.MSG.JOB_RESULT, runId: R23, jobIndex: 1, status: "skipped", message: "already enabled" }, t23); await settle();
 rec = records().find((x) => x.runId === R23);
-assert(store.running === false && rec.finishedAt > 0 && rec.reason === "all jobs processed" && rec.results.map((j) => j.status).join() === "dry-run,skipped" && rec.lines[rec.lines.length - 1].msg === "run finished: all jobs processed", "the record is closed with the end, the reason, both results and the final line");
+assert(store.running === false && rec.finishedAt > 0 && rec.reason === "all jobs processed" && rec.results.map((j) => j.status).join() === "dry-run,skipped" && lineRecs(R23).slice(-1)[0].msg === "run finished: all jobs processed", "the record is closed with the end, the reason, both results and the final line");
 assert(records().filter((x) => x.runId === R23).length === 1 && records().filter((x) => x.runId === RLAST).length === 1, "records accumulate, one per run, the earlier one untouched");
 assert(fakeIDB.openCount === fakeIDB.closeCount, "still no open handle after the restart and the second run");
 
@@ -500,7 +509,7 @@ r = await msg({ type: K.MSG.LOG, level: "info", msg: "line while full" }, t23c);
 r = await msg({ type: K.MSG.JOB_RESULT, runId: R23c, jobIndex: 1, status: "skipped", message: "y" }, t23c); await settle();
 assert(store.running === false && store.run.reason === "all jobs processed" && store.queue[1].status === "skipped" && store.log.filter((l) => /full run log: could not/.test(l.msg)).length === warnsBefore + 1, "later failures are silent (still one warning); the run finished normally");
 rec = records().find((x) => x.runId === R23c);
-assert(!!rec && rec.finishedAt === null && !rec.lines.some((l) => /line while full/.test(l.msg)) && rec.results[0].status !== "dry-run", "the record stayed as it was before the quota hit (not closed, no later lines)");
+assert(!!rec && rec.finishedAt === null && !lineRecs(R23c).some((l) => /line while full/.test(l.msg)) && rec.results[0].status !== "dry-run", "the record stayed as it was before the quota hit (not closed, no later lines)");
 fakeIDB.quota = false;
 fakeIDB.openError = "database cannot be opened";
 r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
@@ -535,8 +544,9 @@ r = await msg({ type: K.MSG.RUNS_DELETE, runId: older }, t23e);
 assert(r.ok === false && /own pages/.test(r.error) && records().some((x) => x.runId === older), "RUNS_DELETE from a content script is refused (L4)");
 r = await msg({ type: K.MSG.RUNS_DELETE, runId: R23e }, null, TAB_PAGE(558));
 assert(r.ok === false && /in progress/.test(r.error) && records().some((x) => x.runId === R23e), "RUNS_DELETE of the run in progress is refused (L4)");
+const olderLinesBefore = lineRecs(older).length;
 r = await msg({ type: K.MSG.RUNS_DELETE, runId: older }, null, TAB_PAGE(558));
-assert(r.ok === true && !records().some((x) => x.runId === older), "RUNS_DELETE of an older run from the runs page deletes its record (L4)");
+assert(r.ok === true && !records().some((x) => x.runId === older) && olderLinesBefore > 0 && lineRecs(older).length === 0, "RUNS_DELETE of an older run from the runs page deletes its record and its lines (L4 v2)");
 r = await msg({ type: K.MSG.RUNS_DELETE, runId: older });
 assert(r.ok === false && /no log/.test(r.error), "deleting it again: no log for that run");
 r = await msg({ type: K.MSG.RUNS_DELETE });
@@ -545,8 +555,9 @@ r = await msg({ type: K.MSG.RUNS_PURGE }, t23e);
 assert(r.ok === false && records().length >= 2, "RUNS_PURGE from a content script is refused");
 const nBefore = records().length;
 r = await msg({ type: K.MSG.RUNS_PURGE });
-assert(r.ok === true && r.deleted === nBefore - 1 && r.kept === 1 && records().length === 1 && records()[0].runId === R23e, "RUNS_PURGE during a run deletes every other record and keeps the run in progress (L4): " + JSON.stringify(r));
-assert(records()[0].lines.some((l) => /full run logs purged: \d+ deleted, the run in progress kept/.test(l.msg)), "the purge is logged into the run in progress");
+const linesByRunAfterPurge = new Set(fakeIDB.dump(RL.DB_NAME, RL.LINES).map((l) => l.runId));
+assert(r.ok === true && r.deleted === nBefore - 1 && r.kept === 1 && records().length === 1 && records()[0].runId === R23e && linesByRunAfterPurge.size <= 1 && (linesByRunAfterPurge.size === 0 || linesByRunAfterPurge.has(R23e)), "RUNS_PURGE during a run deletes every other record (and their lines) and keeps the run in progress (L4 v2): " + JSON.stringify(r));
+assert(lineRecs(records()[0].runId).some((l) => /full run logs purged: \d+ deleted, the run in progress kept/.test(l.msg)), "the purge is logged into the run in progress");
 r = await msg({ type: K.MSG.STOP }); await settle();
 r = await msg({ type: K.MSG.RUNS_PURGE }, null, TAB_PAGE(559));
 assert(r.ok === true && r.deleted === 1 && r.kept === 0 && records().length === 0, "RUNS_PURGE with no run in progress deletes everything (L4)");
@@ -555,6 +566,67 @@ assert(r.ok === true && r.deleted === 0, "purging an empty database is ok with 0
 assert(fakeIDB.openCount === fakeIDB.closeCount, "every open closed after delete and purge");
 r = await msg({ type: K.MSG.VERSION });
 assert(r.messages.includes("mgc:runs-delete") && r.messages.includes("mgc:runs-purge") && r.keys.includes("runs_keep"), "VERSION reports the new message types and the runs_keep key");
+
+// 24. (U10) the cross-run double-purchase guard at Start: a (project, model)
+//     pair recorded done in an earlier run, or unverified with Agree on
+//     record, is skipped in the new queue unless includeDone is true; a pair
+//     that was only dry-run (or unverified without a click) is not skipped.
+fakeIDB.reset();
+const GSTAMP = Date.UTC(2026, 9, 8, 9, 0, 0);
+await RL.create({ runId: "g-prev", startedAt: GSTAMP, live: true }, [], false);
+await RL.update("g-prev", { finishedAt: GSTAMP + 1000, reason: "all jobs processed", results: [
+  { projectId: "guard-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true },
+  { projectId: "guard-dry", modelSlug: "claude-haiku-4-5", status: "dry-run", agreeClicked: false },
+  { projectId: "guard-unv-click", modelSlug: "claude-haiku-4-5", status: "unverified", agreeClicked: true },
+  { projectId: "guard-unv-noclick", modelSlug: "claude-haiku-4-5", status: "unverified", agreeClicked: false }
+] });
+const guardStamp = RL.stamp(GSTAMP);
+// 24a. default (includeDone false, as the popup sends with the box unchecked):
+//      done and unverified-with-click are skipped; dry-run and unverified-no-click run.
+r = await msg(START(["guard-done", "guard-dry", "guard-unv-click", "guard-unv-noclick"], ["claude-haiku-4-5"], false, false)); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped" && store.queue[0].message === `done in run ${guardStamp} (done)` && store.queue[0].phase === "finished", "24a a pair done in an earlier run is created skipped with a 'done in run <stamp> (done)' message (U10): " + store.queue[0].message);
+assert(store.queue[2].status === "skipped" && store.queue[2].message === `done in run ${guardStamp} (unverified)`, "24a a pair unverified with Agree on record is skipped too (reason 'unverified'): " + store.queue[2].message);
+assert(store.queue[1].status !== "skipped" && store.queue[3].status !== "skipped", "24a a dry-run pair and an unverified-without-a-click pair are NOT skipped (a dry run is not 'done')");
+assert(store.log.some((l) => /cross-run guard: 2 job\(s\) skipped/.test(l.msg)), "24a the guard logs how many it skipped and how to override it");
+const g1 = runId();
+assert(RL.counts(records().find((x) => x.runId === g1)).skipped === 2, "24a the run record's results carry the two skipped jobs");
+r = await msg({ type: K.MSG.STOP }); await settle();
+// 24b. includeDone true: the guard is off, nothing is skipped for the same pairs.
+r = await msg(START(["guard-done", "guard-unv-click"], ["claude-haiku-4-5"], false, true)); await settle();
+assert(r.ok === true && store.queue[0].status !== "skipped" && store.queue[1].status !== "skipped", "24b with includeDone the guard is off: neither already-done pair is skipped (U10)");
+r = await msg({ type: K.MSG.STOP }); await settle();
+// 24c. a queue whose every pair is already done finishes at Start with no tab navigation.
+const tabsBefore = tabs.size;
+r = await msg(START(["guard-done", "guard-unv-click"], ["claude-haiku-4-5"], false, false)); await settle();
+assert(r.ok === true && store.running === false && store.current === null && tabs.size === tabsBefore, "24c a queue of only already-done pairs finishes at Start with no console navigation (U10)");
+assert(store.queue.every((j) => j.status === "skipped"), "24c every job of that run is skipped");
+r = await msg({ type: K.MSG.STOP }); await settle();
+
+// 25. (U5) prune never deletes the run in progress, and an append to a
+//     missing record warns once in the capped log.
+fakeIDB.reset();
+store.runs_keep = 1;
+// An older record with a LATER startedAt (a clock that went backwards): a
+// prune by start time alone would keep it and drop the new run's own record.
+await RL.create({ runId: "skew-future", startedAt: Date.now() + 600000, live: false }, [], false);
+r = await msg(START(["proj-skew"], ["claude-haiku-4-5"], false, true)); await settle();
+const gskew = runId();
+assert(records().some((x) => x.runId === gskew), "25a prune at Start keeps the run in progress even under a backwards clock (runs_keep 1, an older record dated in the future) (U5)");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: gskew, jobIndex: 0, status: "dry-run", message: "ok" }, store.tab_id); await settle();
+assert(lineRecs(gskew).some((l) => /job 0: dry-run/.test(l.msg)), "25a the kept record still takes appends (its full log is not lost)");
+delete store.runs_keep;
+// 25b. a run whose record vanished mid-run (a wiped database, say): the next
+//      append resolves false and the worker warns once in the capped log.
+r = await msg(START(["proj-orphan"], ["claude-haiku-4-5"], false, true)); await settle();
+const gorphan = runId();
+await RL.delete(gorphan); // drop the record out from under the run in progress
+const orphanWarnsBefore = store.log.filter((l) => /no record for the run in progress/.test(l.msg)).length;
+r = await msg({ type: K.MSG.LOG, level: "info", msg: "orphan line one" }, store.tab_id);
+r = await msg({ type: K.MSG.LOG, level: "info", msg: "orphan line two" }, store.tab_id);
+const orphanWarns = store.log.filter((l) => /no record for the run in progress/.test(l.msg));
+assert(orphanWarns.length === orphanWarnsBefore + 1, "25b append to a missing record warns exactly once in the capped log (U5): " + orphanWarns.length);
+assert(store.log.some((l) => l.msg === "orphan line one") && store.log.some((l) => l.msg === "orphan line two"), "25b the lines still reach the capped storage log");
+r = await msg({ type: K.MSG.STOP }); await settle();
 
 finished = true;
 console.log(`ALL WORKER CHECKS PASSED (${n} passed)`);

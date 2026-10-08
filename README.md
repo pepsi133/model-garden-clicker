@@ -133,7 +133,7 @@ model-garden-clicker/
 ├── extension/            # the Chrome extension (Manifest V3, no build step); README.md is the user manual
 │   ├── background/       # service worker: queue, worker tab, run id, watchdog
 │   ├── content/          # page handlers; selectors.js holds every console locator
-│   ├── popup/ options/   # the two pages; common/ holds constants, option lists and the theme
+│   ├── popup/ options/ runs/  # the three pages; common/ holds constants, option lists, the per-run log module (runlog.js) and the theme
 │   └── test/             # offline tests that run against recorded console pages
 ├── python/               # Selenium harness: records the console pages and runs the extension end to end
 ├── docs/                 # dom-map.md (the console DOM), MAINTENANCE.md, models.md, BACKLOG.md

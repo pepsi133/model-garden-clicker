@@ -95,20 +95,21 @@
     });
     cell(tr, "jobs", (td) => { td.textContent = String((rec.jobs || []).length); });
     cell(tr, "counts", (td) => { td.textContent = K.summaryCountsText(RL.counts(rec)); });
-    cell(tr, "log", (td) => { td.textContent = `${(rec.lines || []).length} lines · ${RL.sizeText(RL.sizeOf(rec))}`; });
+    cell(tr, "log", (td) => { td.textContent = `${rec.lineCount || 0} lines · ${RL.sizeText(RL.sizeOf(rec))}`; });
     cell(tr, "actions", (td) => {
       button(td, "download", "Download log", `Save this run's full log as ${RL.fileName(rec)}`, async () => {
         notice("");
         try {
           const fresh = (await RL.get(rec.runId)) || rec;
-          saveText(RL.fileName(fresh), RL.textOf(fresh));
+          const lines = await RL.readLines(rec.runId);
+          saveText(RL.fileName(fresh), RL.textOf(fresh, lines));
         } catch (err) {
           notice(`could not read the run log: ${err && err.message ? err.message : err}`);
         }
       });
       const del = button(td, "delete", "Delete", inProgress ? "This run is in progress; stop it before deleting its log" : "Delete this run's full log (asks first)", async () => {
         notice("");
-        if (!confirm(`Delete the full log of the run started ${fmt(rec.startedAt)} (${(rec.lines || []).length} lines)?`)) return;
+        if (!confirm(`Delete the full log of the run started ${fmt(rec.startedAt)} (${rec.lineCount || 0} lines)?`)) return;
         const r = await send({ type: MSG.RUNS_DELETE, runId: rec.runId });
         if (!r.ok) notice(r.error || "could not delete the run log");
         render();
@@ -159,7 +160,9 @@
     try {
       const records = await RL.list();
       if (!records.length) { notice("no runs to download"); return; }
-      saveText(RL.allFileName(Date.now()), RL.textOfAll(records));
+      const entries = [];
+      for (const r of records) entries.push({ record: r, lines: await RL.readLines(r.runId) });
+      saveText(RL.allFileName(Date.now()), RL.textOfAll(entries));
     } catch (err) {
       notice(`could not read the run logs: ${err && err.message ? err.message : err}`);
     }

@@ -71,7 +71,16 @@ async function appendLogUnsafe(level, msg, src, fullLogRunId) {
   } else if (typeof fullLogRunId === "string") {
     runId = fullLogRunId;
   }
-  if (runId) await runlogSafe(runId, "append a line", () => RL.append(runId, entry));
+  if (runId) {
+    const appended = await runlogSafe(runId, "append a line", () => RL.append(runId, entry));
+    // RL.append resolves false when the run has no record (pruned by a
+    // backwards clock, or never created). That is not a thrown error, so
+    // runlogSafe does not warn; warn here once, in the capped log only.
+    if (appended === false && runlogFailedFor !== runId) {
+      runlogFailedFor = runId;
+      await appendLogUnsafe("warn", "full run log: no record for the run in progress (it was pruned or never created); this run's full log is incomplete", "worker", null);
+    }
+  }
 }
 function log(level, msg, src) {
   return serialized(() => appendLogUnsafe(level, msg, src));
@@ -152,7 +161,53 @@ async function modelNames() {
  * must equal the stored setting at this instant: the run's snapshot is the
  * confirmed mode, never a value the options page wrote in between.
  */
-async function startRunUnsafe({ projects, models, live }) {
+/**
+ * The cross-run double-purchase guard: for every (project, model) pair in
+ * the new queue, look at the stored run records; if an earlier run recorded
+ * the pair as done (or unverified with Agree on record), mark the new job
+ * skipped so the extension does not queue a purchase for a pair it may have
+ * already bought. A dry-run or an already-enabled skip is not "done", so a
+ * pair that was only dry-run is never skipped here. The user overrides the
+ * whole guard with the popup's "Include pairs already done in earlier runs"
+ * box (includeDone). This is independent of, and additional to, the model
+ * page's own enabled-state check, which still runs for every job that is not
+ * skipped here. Best effort: a database error leaves the queue untouched.
+ */
+async function applyCrossRunGuardUnsafe(queue, includeDone) {
+  if (includeDone === true) return 0;
+  let prior;
+  try {
+    prior = await RL.list(); // newest first
+  } catch (e) {
+    return 0;
+  }
+  const doneBy = new Map(); // "project\0model" -> { startedAt, status }
+  for (const rec of Array.isArray(prior) ? prior : []) {
+    for (const res of (rec && Array.isArray(rec.results) ? rec.results : [])) {
+      const done = res.status === STATUS.DONE || (res.status === STATUS.UNVERIFIED && res.agreeClicked === true);
+      if (!done) continue;
+      const key = `${res.projectId}\u0000${res.modelSlug}`;
+      if (!doneBy.has(key)) doneBy.set(key, { startedAt: rec.startedAt, status: res.status });
+    }
+  }
+  let skipped = 0;
+  for (const job of queue) {
+    const hit = doneBy.get(`${job.projectId}\u0000${job.modelSlug}`);
+    if (!hit) continue;
+    const now = Date.now();
+    Object.assign(job, {
+      status: STATUS.SKIPPED,
+      message: `done in run ${RL.stamp(hit.startedAt)} (${hit.status})`,
+      phase: PHASE.FINISHED,
+      startedAt: now,
+      finishedAt: now
+    });
+    skipped += 1;
+  }
+  return skipped;
+}
+
+async function startRunUnsafe({ projects, models, live, includeDone }) {
   const o = await get([KEYS.RUNNING, KEYS.SETTINGS]);
   if (o[KEYS.RUNNING] === true) return { ok: false, error: "a run is already in progress" };
 
@@ -184,6 +239,12 @@ async function startRunUnsafe({ projects, models, live }) {
       });
     }
   }
+  // Cross-run double-purchase guard: mark pairs already bought in an earlier
+  // run as skipped before the queue is stored (so the record reflects it and
+  // the job is never navigated). Runs before create(), which reads the same
+  // records this guard just read.
+  const skippedByGuard = await applyCrossRunGuardUnsafe(queue, includeDone === true);
+
   const run = { runId: newRunId(), live, startedAt: Date.now(), finishedAt: null, reason: null };
   await set({
     [KEYS.QUEUE]: queue,
@@ -200,8 +261,13 @@ async function startRunUnsafe({ projects, models, live }) {
   runlogFailedFor = null;
   await runlogSafe(run.runId, "create the run record", () => RL.create(run, queue, settings.step_by_step === true));
   const keepStored = await get(KEYS.RUNS_KEEP);
-  await runlogSafe(run.runId, "prune old run records", () => RL.prune(K.runsKeepFrom(keepStored[KEYS.RUNS_KEEP])));
+  // Prune to "runs to keep", but never delete this run's own record, whatever
+  // a backwards clock did to the stored start times.
+  await runlogSafe(run.runId, "prune old run records", () => RL.prune(K.runsKeepFrom(keepStored[KEYS.RUNS_KEEP]), run.runId));
   await appendLogUnsafe("info", `run ${run.runId} started: ${projectIds.length} project(s) x ${modelSlugs.length} model(s) = ${queue.length} job(s), mode ${live ? "FULL RUN" : "DRY RUN"}${settings.step_by_step === true ? ", step-by-step confirmation on" : ""}`);
+  if (skippedByGuard > 0) {
+    await appendLogUnsafe("info", `cross-run guard: ${skippedByGuard} job(s) skipped as already done in an earlier run; tick "Include pairs already done in earlier runs" in the popup to re-run them`);
+  }
   await advanceUnsafe();
   return { ok: true, jobs: queue.length, runId: run.runId };
 }

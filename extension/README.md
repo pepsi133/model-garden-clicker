@@ -103,9 +103,22 @@ by its tab id). The geometry is checked in headless Chrome by
 4. Tick the models you want. No model is ticked when the popup is first
    opened; the selection you make is kept in the extension's local storage
    and shown again next time, as are the project IDs and the extra slugs.
+   The first time the popup opens after an update, the model selection is
+   reset to none once, so an upgrade never carries an old full selection
+   into a Start; later opens keep whatever you picked.
    Add any other model slugs in the extra field,
    separated by commas or new lines. Slugs are the last path segment of a
    model's Model Garden URL, for example `claude-haiku-4-5`.
+   The **Include pairs already done in earlier runs** box (unchecked by
+   default) controls the cross-run guard: with it unchecked, a project and
+   model pair that an earlier run recorded as done, or as unverified with
+   Agree already clicked, is created as `skipped` in the new queue (the
+   message names the earlier run) so the extension does not line up a
+   purchase for a pair it may already have bought. Tick the box to run those
+   pairs anyway. A pair that was only dry-run, or skipped because the model
+   was already enabled, is never skipped by this guard. This is separate
+   from, and in addition to, the model page's own already-enabled check,
+   which still runs for every job.
 5. Click **Start** (a dry run starts at once; only a full run asks for a
    confirmation). The extension opens one tab and works through every
    project and model pair in order. A dark badge in the tab's bottom-right

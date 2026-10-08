@@ -35,8 +35,17 @@ const E = require("./lib/env.cjs");
 const { ok } = E;
 const { JSDOM } = require("jsdom");
 const fakeIDB = require("./lib/fake-idb.cjs");
+// A node-side copy of the per-run log module, sharing the same fake database
+// as the pages, so seed() can build records (and their lines) with the real
+// API and the tests can compute the expected text/size from the store.
+globalThis.indexedDB = fakeIDB;
+globalThis.IDBKeyRange = fakeIDB.IDBKeyRange;
+require(path.join(E.EXT, "common/constants.js"));
+require(path.join(E.EXT, "common/runlog.js"));
+const RLNODE = globalThis.MGC_RUNLOG;
 
 const FULL = { business_name: "b", business_website: "https://b.example", contact_email: "a@b.example", headquarters: "Elsewhere", industry: "Education", intended_users: "Internal employees", use_cases: "x", aup_additional_requirements: "no", aup_details: "", live_mode: false };
+const MANIFEST_VERSION = JSON.parse(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8")).version;
 
 function fakeChrome(store, extra) {
   const listeners = [];
@@ -50,7 +59,7 @@ function fakeChrome(store, extra) {
     },
     /** Fire storage.onChanged the way Chrome does after a set: { key: { newValue } }. */
     __fire: (changes) => { for (const fn of listeners) fn(changes, "local"); },
-    runtime: { openOptionsPage: () => { store.__opened = (store.__opened || 0) + 1; }, sendMessage: (m, cb) => { (store.__messages = store.__messages || []).push(m); cb(store.__reply ? store.__reply(m) : { ok: true }); }, getURL: (p) => "chrome-extension://x/" + p, lastError: undefined },
+    runtime: { openOptionsPage: () => { store.__opened = (store.__opened || 0) + 1; }, sendMessage: (m, cb) => { (store.__messages = store.__messages || []).push(m); cb(store.__reply ? store.__reply(m) : { ok: true }); }, getURL: (p) => "chrome-extension://x/" + p, getManifest: () => ({ version: MANIFEST_VERSION }), lastError: undefined },
     tabs: { create: ({ url }) => { store.__tab = url; } }
   }, extra);
 }
@@ -63,6 +72,7 @@ async function loadPage(rel, store, scripts, query) {
   win.chrome = fakeChrome(store);
   win.confirm = () => true;
   win.indexedDB = fakeIDB; // the per-run logs (common/runlog.js); fakeIDB.reset() between pages that must start empty
+  win.IDBKeyRange = fakeIDB.IDBKeyRange; // the line store's index cursors use it
   win.Blob = Blob; // Node's Blob (jsdom's has no text()); a download's content is read back from it
   win.URL.createObjectURL = (blob) => { (store.__blobs = store.__blobs || []).push(blob); return `blob:x/${store.__blobs.length}`; };
   win.URL.revokeObjectURL = () => {};
@@ -442,7 +452,7 @@ function setSelect(p, name, value) {
     const store = { settings: Object.assign({}, FULL), running: false };
     let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     let d = p.document;
-    ok(d.querySelectorAll("#models input").length === 12 && d.querySelectorAll("#models input:checked").length === 0 && !store.popup_state, "first use (no popup_state): twelve models, none ticked, nothing stored yet", `${d.querySelectorAll("#models input:checked").length} ticked`);
+    ok(d.querySelectorAll("#models input").length === 12 && d.querySelectorAll("#models input:checked").length === 0 && store.popup_state && store.popup_state.models.length === 0 && store.popup_state.version === MANIFEST_VERSION, "first use (no popup_state): twelve models, none ticked; the version marker is stored with an empty selection", `${d.querySelectorAll("#models input:checked").length} ticked, ps ${JSON.stringify(store.popup_state)}`);
     d.getElementById("projects").value = "proj-one";
     d.getElementById("start").click(); await tick();
     ok(/select at least one model/.test(d.getElementById("error").textContent) && !(store.__messages || []).some((m) => m.type === p.K.MSG.START), "Start with nothing ticked is refused in the popup, no START message", d.getElementById("error").textContent);
@@ -530,8 +540,8 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.5.0", "the manifest version is 0.5.0", manifest.version);
-    ok(!/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.5.0 added no permission: no downloads (the log is saved through an anchor), no unlimitedStorage (IndexedDB needs none), no notifications, no tabs", JSON.stringify(manifest.permissions));
+    ok(manifest.version === "0.6.0", "the manifest version is 0.6.0", manifest.version);
+    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.6.0 added no permission: still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
     ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
     ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
@@ -743,15 +753,16 @@ function setSelect(p, name, value) {
     results: [Object.assign({}, RUN_A.results[0], { status: "done", message: "Successfully purchased" }), Object.assign({}, RUN_A.results[1], { status: "stopped", message: "stopped by user" })],
     lines: RUN_A.lines.slice(0, 2) });
   const RUN_C = { runId: "run-c", startedAt: Date.UTC(2026, 9, 8, 13, 0, 0), finishedAt: null, live: false, stepByStep: false, reason: null, jobs: RUN_A.jobs, results: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "running" }, { projectId: "proj-two", modelSlug: "claude-haiku-4-5", status: "pending" }], lines: [RUN_A.lines[0]] };
+  // Build each record (and its line records) with the real schema-v2 API:
+  // create the run, append its lines (the counters follow), then close it
+  // with its results and reason. The fake database is shared with the pages.
   async function seed(records) {
     fakeIDB.reset();
-    const req = fakeIDB.open("mgc-runs", 1);
-    await new Promise((resolve) => { req.onupgradeneeded = () => req.result.createObjectStore("runs", { keyPath: "runId" }); req.onsuccess = resolve; });
-    const db = req.result;
-    const tx = db.transaction("runs", "readwrite");
-    for (const r of records) tx.objectStore("runs").put(r);
-    await new Promise((resolve) => { tx.oncomplete = resolve; });
-    db.close();
+    for (const r of records) {
+      await RLNODE.create({ runId: r.runId, startedAt: r.startedAt, live: r.live, finishedAt: r.finishedAt }, r.jobs || [], r.stepByStep);
+      for (const ln of (r.lines || [])) await RLNODE.append(r.runId, ln);
+      await RLNODE.update(r.runId, { finishedAt: r.finishedAt, reason: r.reason, results: r.results });
+    }
   }
   {
     // Empty database.
@@ -779,8 +790,9 @@ function setSelect(p, name, value) {
     ok(a[1] === "DRY RUN" && cells(rows[1])[1] === "FULL RUN · step-by-step" && rows[1].querySelector("td.mode .live") && !rows[2].querySelector("td.mode .live"), "the mode cell: DRY RUN, or FULL RUN in the warning colour, with the step-by-step mark", cells(rows[1])[1]);
     ok(a[2] === "2" && a[3] === "done 0 · dry-run 1 · skipped 1 · failed 0 · unverified 0 · stopped 0", "jobs and the six counts (as the popup's summary counts them)", a[3]);
     ok(cells(rows[1])[3] === "done 1 · dry-run 0 · skipped 0 · failed 0 · unverified 0 · stopped 1" && cells(rows[0])[3] === "done 0 · dry-run 0 · skipped 0 · failed 0 · unverified 0 · stopped 0 · pending 2", "counts of the other runs (a pending count only when some job is pending)", cells(rows[0])[3]);
-    const sizeA = RL.sizeOf(RUN_A);
-    ok(a[4] === `4 lines · ${RL.sizeText(sizeA)}` && sizeA > 800 && /^\d+(\.\d)? KB$/.test(RL.sizeText(sizeA)), "the log cell: the line count and the size of the text that Download log produces", `${a[4]} (${sizeA} bytes)`);
+    const recA = await RLNODE.get("run-a");
+    const sizeA = RL.sizeOf(recA);
+    ok(recA.lineCount === 4 && recA.byteCount > 0 && a[4] === `4 lines · ${RL.sizeText(sizeA)}` && sizeA > 800 && /^\d+(\.\d)? KB$/.test(RL.sizeText(sizeA)), "the log cell: the line count (from the counter) and the size from the counters (schema v2)", `${a[4]} (lineCount ${recA.lineCount}, byteCount ${recA.byteCount}, sizeOf ${sizeA})`);
     ok(/\(in progress\)/.test(cells(rows[0])[0]) && rows[0].querySelector("td.actions button.delete").disabled === true && rows[2].querySelector("td.actions button.delete").disabled === false, "the run in progress is marked and its Delete is disabled; an older run's Delete is enabled");
     ok(rows.every((r) => r.querySelectorAll("td.actions button").length === 2 && r.querySelector("button.download").textContent === "Download log" && r.querySelector("button.delete").textContent === "Delete"), 'every row has "Download log" and "Delete"');
     // The hostile log line was rendered as text, never as markup.
@@ -792,7 +804,8 @@ function setSelect(p, name, value) {
     ok(store.__downloads && store.__downloads.length === 1 && store.__downloads[0].download === "model-garden-clicker-run-20261008-" + `${String(new Date(RUN_A.startedAt).getHours()).padStart(2, "0")}0500.txt` && /^blob:/.test(store.__downloads[0].href), "Download log clicks an anchor with download=model-garden-clicker-run-<YYYYMMDD-HHMMSS>.txt (local time of the start) and an object URL", JSON.stringify(store.__downloads));
     const blob = store.__blobs[0];
     const text = await blob.text();
-    ok(blob.type.startsWith("text/plain") && text === RL.textOf(RUN_A), "the file is text/plain holding MGC_RUNLOG.textOf(record)", blob.type);
+    const expectedA = RLNODE.textOf(recA, await RLNODE.readLines("run-a"));
+    ok(blob.type.startsWith("text/plain") && text === expectedA, "the file is text/plain holding MGC_RUNLOG.textOf(record, lines read by the index cursor)", blob.type);
     const lines = text.split("\n");
     ok(lines[0] === "Model Garden Clicker run log" && lines[1] === "run id:        run-a" && lines[2] === "started:       2026-10-08T10:05:00.000Z" && lines[3] === "ended:         2026-10-08T10:09:30.000Z" && lines[4] === "mode:          DRY RUN" && lines[5] === "step-by-step:  off" && lines[6] === "reason:        all jobs processed" && lines[7] === "jobs:          2 (done 0 · dry-run 1 · skipped 1 · failed 0 · unverified 0 · stopped 0)" && lines[8] === "log lines:     4",
       "the header block: run id, start, end (ISO), mode, step-by-step, reason, jobs with counts, line count", lines.slice(0, 9).join(" | "));
@@ -810,7 +823,7 @@ function setSelect(p, name, value) {
     ok(store.__downloads.length === 2 && /^model-garden-clicker-runs-\d{8}-\d{6}\.txt$/.test(store.__downloads[1].download), "Download all saves model-garden-clicker-runs-<now>.txt", store.__downloads[1].download);
     // The header is "run <id> started <ISO>"; a log line reads "run <id> started: N project(s)" (RUN_B's lines are copied from RUN_A), so the needle carries the date.
     const order = ["\nrun run-c started 2026-", "\nrun run-b started 2026-", "\nrun run-a started 2026-"].map((h) => all.indexOf(h));
-    const allParts = { head: /^Model Garden Clicker: 3 run\(s\), newest first/.test(all), order: order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1])), textA: all.includes(RL.textOf(RUN_A)), rules: (all.match(/^=+$/gm) || []).length };
+    const allParts = { head: /^Model Garden Clicker: 3 run\(s\), newest first/.test(all), order: order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1])), textA: all.includes(expectedA), rules: (all.match(/^=+$/gm) || []).length };
     ok(allParts.head && allParts.order && allParts.textA && allParts.rules === 6, "one text with every run separated by headers, newest first, each run's full text included", JSON.stringify(allParts) + " " + JSON.stringify(all.slice(0, 120)));
 
     // Delete: confirm names the run; declined does nothing; accepted sends RUNS_DELETE to the worker; a refusal is shown.
@@ -847,6 +860,101 @@ function setSelect(p, name, value) {
     ok(p.document.getElementById("notice").hidden === false && /could not open the run log database: blocked by policy/.test(p.document.getElementById("notice").textContent) && p.document.getElementById("empty").hidden === false, "an unopenable database is reported in the notice; the page still renders", p.document.getElementById("notice").textContent);
     fakeIDB.reset();
     p.win.close();
+  }
+
+  console.log("--- (U4) the downloaded log replaces control characters (except tab and newline) and bidi controls with U+FFFD");
+  {
+    fakeIDB.reset();
+    // The review's sample: ESC sequences, CR, NUL, BEL, line/paragraph
+    // separators, a right-to-left override and a right-to-left mark, plus a
+    // tab (kept) and a newline (folded to a space).
+    const esc = String.fromCharCode(0x1b), cr = String.fromCharCode(0x0d), nul = String.fromCharCode(0x00), bel = String.fromCharCode(0x07);
+    const ls = String.fromCharCode(0x2028), ps = String.fromCharCode(0x2029), rlo = String.fromCharCode(0x202e), rlm = String.fromCharCode(0x200f);
+    const hostile = `tick failed: ${esc}[31mred${esc}[0m\tTAB${cr}CR${nul}NUL${bel}BEL${ls}LS${ps}PS${rlo}RLO${rlm}RLM\nsecond line`;
+    const forbidden = [0x1b, 0x0d, 0x00, 0x07, 0x2028, 0x2029, 0x202e, 0x200f];
+    await RLNODE.create({ runId: "r-clean", startedAt: Date.UTC(2026, 9, 8, 10, 0, 0), live: false }, [], false);
+    await RLNODE.append("r-clean", { t: Date.UTC(2026, 9, 8, 10, 0, 0), level: "warn", src: "content", msg: hostile });
+    const rec = await RLNODE.get("r-clean");
+    const text = RLNODE.textOf(rec, await RLNODE.readLines("r-clean"));
+    const line = text.split("\n").find((l) => /red/.test(l)) || "";
+    const expectedFffd = Array.from(hostile).filter((c) => forbidden.includes(c.charCodeAt(0))).length; // two ESC, so 9
+    const stillForbidden = Array.from(line).filter((c) => forbidden.includes(c.charCodeAt(0)));
+    const fffd = (line.match(/�/g) || []).length;
+    ok(stillForbidden.length === 0 && fffd === expectedFffd, `every control and bidi character is replaced with U+FFFD (${fffd} of ${expectedFffd}; none left)`, JSON.stringify(stillForbidden));
+    ok(line.includes("\tTAB") && /red/.test(line) && /second line/.test(line), "a tab is kept, the message's own newline is folded to a space, and the readable text survives", JSON.stringify(line));
+    fakeIDB.reset();
+  }
+
+  console.log("--- (U2 migration) a v1 database upgrades to v2: embedded lines move to the line store, counters filled, nothing lost");
+  {
+    fakeIDB.reset();
+    const v1lines = [
+      { t: Date.UTC(2026, 9, 8, 11, 0, 0), level: "info", src: "worker", msg: "run v1run started: 1 project(s) x 1 model(s) = 1 job(s), mode DRY RUN" },
+      { t: Date.UTC(2026, 9, 8, 11, 0, 1), level: "info", src: "content", msg: "model page detected +900ms" },
+      { t: Date.UTC(2026, 9, 8, 11, 0, 2), level: "info", src: "worker", msg: "run finished: all jobs processed" }
+    ];
+    const v1rec = { runId: "v1run", startedAt: Date.UTC(2026, 9, 8, 11, 0, 0), finishedAt: Date.UTC(2026, 9, 8, 11, 0, 2), live: false, stepByStep: false, reason: "all jobs processed",
+      jobs: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5" }],
+      results: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "dry-run", message: "checkbox ticked" }],
+      lines: v1lines };
+    // Write it as schema v1: database version 1, a single "runs" store, the
+    // lines embedded on the record (no "lines" store, no counters).
+    await new Promise((resolve, reject) => {
+      const req = fakeIDB.open("mgc-runs", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("runs", { keyPath: "runId" });
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction("runs", "readwrite");
+        tx.objectStore("runs").put(v1rec);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    // First v2 access triggers the upgrade handler's migration.
+    const rec = await RLNODE.get("v1run");
+    const lines = await RLNODE.readLines("v1run");
+    const lineStore = fakeIDB.dump("mgc-runs", "lines").filter((l) => l.runId === "v1run").sort((a, b) => a.seq - b.seq);
+    ok(rec && !("lines" in rec) && rec.lineCount === 3 && rec.byteCount > 0, "the migrated record holds counters, not a lines array", JSON.stringify({ lineCount: rec && rec.lineCount, byteCount: rec && rec.byteCount, hasLines: rec && "lines" in rec }));
+    ok(lineStore.length === 3 && lineStore.every((l, i) => l.seq === i) && lineStore.map((l) => l.msg).join("|") === v1lines.map((l) => l.msg).join("|"), "the three embedded lines moved to the line store, keyed by seq, in order, nothing lost", JSON.stringify(lineStore.map((l) => l.msg)));
+    ok(lines.map((l) => l.msg).join("|") === v1lines.map((l) => l.msg).join("|") && rec.reason === "all jobs processed" && rec.results[0].status === "dry-run", "readLines returns the migrated lines and the record's metadata is intact");
+    fakeIDB.reset();
+  }
+
+  console.log("--- (U3) first load of a new version resets the model selection to none, once; later loads keep it");
+  {
+    const models12 = JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")).map((m) => m.slug);
+    // A 0.4.0-shaped popup_state: every model ticked, no version marker.
+    const store = { settings: Object.assign({}, FULL), popup_state: { projects: "proj-one", models: models12.slice(), extra: "" } };
+    let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    let ticked = Array.from(p.document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
+    ok(models12.length >= 1 && ticked.length === 0 && store.popup_state.version === MANIFEST_VERSION && store.popup_state.models.length === 0, "a 0.4.0 popup_state (all models ticked, no version) loads with none ticked and records the version marker", `${ticked.length} ticked, version ${store.popup_state.version}`);
+    p.win.close();
+    // The user now picks one model; it is stored with the current version.
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    const one = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
+    one.checked = true; one.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    ok(JSON.stringify(store.popup_state.models) === JSON.stringify([models12[0]]), "the user's pick is stored with the version marker");
+    p.win.close();
+    // A second load at the same version keeps the user's selection.
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    ticked = Array.from(p.document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
+    ok(JSON.stringify(ticked) === JSON.stringify([models12[0]]), "a later load at the same version keeps whatever the user picked (no second reset)", JSON.stringify(ticked));
+    p.win.close();
+    // The include-done box defaults off and round-trips through popup_state.
+    const store2 = { settings: Object.assign({}, FULL) };
+    p = await loadPage("popup/popup.html", store2, POPUP_SCRIPTS);
+    ok(p.document.getElementById("include-done") && p.document.getElementById("include-done").checked === false, 'the "Include pairs already done in earlier runs" box exists and is unchecked by default');
+    const box = p.document.getElementById("include-done");
+    box.checked = true; box.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    p.document.getElementById("projects").value = "proj-x";
+    const haiku = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
+    haiku.checked = true; haiku.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    p.document.getElementById("start").click(); await tick();
+    const startMsg = (store2.__messages || []).find((m) => m.type === p.K.MSG.START);
+    ok(store2.popup_state.includeDone === true && startMsg && startMsg.includeDone === true, "ticking the box stores includeDone and sends it with Start", JSON.stringify({ stored: store2.popup_state.includeDone, sent: startMsg && startMsg.includeDone }));
+    p.win.close();
+    fakeIDB.reset();
   }
 
   console.log('--- options page: the Logs section ("Runs to keep", Purge all)');

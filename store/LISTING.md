@@ -19,7 +19,7 @@ with the public GitHub URL before pasting. Package version: 0.5.0
 
     Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.
 
-### Description (plain text, 3,683 characters, under the 4,000 limit)
+### Description (plain text, 3,817 characters, under the 4,000 limit)
 
     Model Garden Clicker enables Anthropic Claude models in the Google Cloud console Model Garden for many projects, one project and one model at a time, inside your own signed-in browser.
 
@@ -131,7 +131,8 @@ Facts the answer rests on:
   user's behalf.
 - Nothing is sent to the developer or to any third party. There is no server.
 - On a failure the local log can hold a form value (the field name and what
-  was rejected). The log stays in local storage and is never transmitted.
+  was rejected). The log, and the per-run logs the extension keeps in its own
+  IndexedDB (the Runs page), stay in local storage and are never transmitted.
 
 Recommended answer: tick **Personally identifiable information** and nothing
 else. The dashboard's own definition of "collect" covers storing user-provided

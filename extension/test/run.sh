@@ -34,6 +34,7 @@ fi
 # pass. Each file's summary line reads "... (N passed, N failed, N skipped)".
 allow_skip="${MGC_ALLOW_SKIP:-0}"
 out=$(mktemp) || exit 2
+reduced="" # suites that skipped checks (no dumps): named in the summary so a reduced CI run is visible
 for t in worker-harness.mjs content-guard.cjs main-loop.cjs dialog-step.cjs model-step.cjs questionnaire-step.cjs step-by-step.cjs selectors.cjs ui-pages.cjs; do
   echo "=== $t"
   node "$t" > "$out" 2>&1; rc=$?
@@ -41,6 +42,8 @@ for t in worker-harness.mjs content-guard.cjs main-loop.cjs dialog-step.cjs mode
   skipped=$(sed -n 's/.*, \([0-9][0-9]*\) skipped.*/\1/p' "$out" | tail -n 1)
   if [ "$rc" != 0 ]; then echo "FAIL $t"; fail=1
   elif [ -n "$skipped" ] && [ "$skipped" != 0 ]; then
+    reduced="$reduced  $t ($skipped skipped)
+"
     if [ "$allow_skip" = 1 ]; then echo "note $t: $skipped check(s) skipped, accepted because MGC_ALLOW_SKIP=1"
     else echo "FAIL $t: $skipped check(s) skipped (no recon dump of that shape under python/recon); set MGC_ALLOW_SKIP=1 to accept a run without the dumps"; fail=1
     fi
@@ -49,5 +52,14 @@ done
 rm -f "$out"
 
 echo "==="
+# Name every suite that ran with checks skipped (dump-based proofs absent), so
+# a reduced run (CI, a fresh clone) never looks like a full one in the log.
+if [ -n "$reduced" ]; then
+  echo "SUITES REDUCED (no recon dumps; dump-based checks skipped):"
+  printf '%s' "$reduced"
+  echo "The dump-independent suites (worker-harness.mjs, ui-pages.cjs) are never reduced; they ran in full above."
+else
+  echo "no suites reduced: every check ran (recon dumps present)"
+fi
 if [ "$fail" = 0 ]; then echo "ALL TEST FILES PASSED"; else echo "SOME TESTS FAILED"; fi
 exit $fail

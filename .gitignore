@@ -16,9 +16,11 @@ python/recon*/
 
 # Node
 extension/test/node_modules/
-extension/test/package-lock.json
 node_modules/
 package-lock.json
+# extension/test/package-lock.json is tracked (the release workflow runs `npm ci`
+# against it); the bare rule above would otherwise ignore it in every directory.
+!extension/test/package-lock.json
 
 # Build output
 dist/

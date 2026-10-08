@@ -238,5 +238,40 @@ const { ok, skip } = E;
     ok(no.yesChecked === false && no.detailsValue === "" && no.clicks === 1, "No: the details field is left untouched, Next still clicked once", `${no.detailsValue} clicks=${no.clicks}`);
   }
 
+  console.log("--- (T6) the questionnaire's readiness wait names the page and the locator instead of retrying blind");
+  {
+    const eS = serve();
+    const baseSettings = settingsFrom(eS);
+    // ctxFor reads the settings off the page, which these pages cannot give: the same ctx shape with the dump's values.
+    const plainCtx = (e) => {
+      const job = { projectId: new URL(snap.url).searchParams.get("project"), modelSlug: SLUG };
+      return { runId: "run-1", jobIndex: 0, job, settings: baseSettings, log: () => {}, mark: () => {}, step: () => {}, setPhase: async () => {}, assertMayAct: async () => {},
+        updateJob: async (f) => { Object.assign(job, f); return { ok: true }; }, refresh: async () => ({}) };
+    };
+    // (a) the shell rendered but the business name hook renamed: fatal after the wait, naming the locator.
+    eS.K.TIMEOUTS.FORM_READY = 300; eS.K.URL_POLL_MS = 20;
+    eS.D.q('raf-runtime-form-element[raf-name="businessName"]').setAttribute("raf-name", "companyName");
+    let errT = null; let t0 = Date.now();
+    try { await eS.A.handleQuestionnaire(plainCtx(eS)); } catch (x) { errT = x; }
+    ok(errT && eS.D.isFatal(errT) && Date.now() - t0 >= 300 && /^the questionnaire rendered \(its raf-form or footer is present\) but its business name input was not found by raf-runtime-form-element\[raf-name="businessName"\] within 0 s; the console renamed the field: see docs\/MAINTENANCE\.md \(questionnaire\.businessName\)$/.test(errT.message),
+      "(T6) raf-name businessName renamed on the real form: fatal after the form wait, naming the page's shell and the locator", errT ? errT.message : "no error");
+    eS.win.close();
+    // (b) the questionnaire URL, but the body holds the model page's shell: fatal naming the page shown.
+    const e2 = E.makeEnv({ url: snap.url, html: '<!doctype html><html><body><vai-model-garden-call-to-action-button-stack><vertex-ai-request-access-button><button> Enable </button></vertex-ai-request-access-button></vai-model-garden-call-to-action-button-stack></body></html>' });
+    e2.K.TIMEOUTS.FORM_READY = 300; e2.K.URL_POLL_MS = 20;
+    errT = null;
+    try { await e2.A.handleQuestionnaire(plainCtx(e2)); } catch (x) { errT = x; }
+    ok(errT && e2.D.isFatal(errT) && /^the questionnaire URL is open but after 0 s the page body shows the model page's shell and not the questionnaire's \(raf-form RequestAccessFormGroup or cfc-panel-footer\.mg-questionnaire-footer\); the console changed the questionnaire page: see docs\/MAINTENANCE\.md$/.test(errT.message),
+      "(T6) the questionnaire URL with the model page's shell in the body: fatal after the wait, naming the page shown and the questionnaire's shell locators", errT ? errT.message : "no error");
+    e2.win.close();
+    // (c) control: an empty body is a plain timeout (a slow page), retried by the loop.
+    const e3 = E.makeEnv({ url: snap.url });
+    e3.K.TIMEOUTS.FORM_READY = 300; e3.K.URL_POLL_MS = 20;
+    errT = null;
+    try { await e3.A.handleQuestionnaire(plainCtx(e3)); } catch (x) { errT = x; }
+    ok(errT && errT.name === "TimeoutError" && !e3.D.isFatal(errT), "(T6) control: an empty body is a plain timeout, not fatal", errT ? errT.message : "no error");
+    e3.win.close();
+  }
+
   E.finish("questionnaire step");
 })();

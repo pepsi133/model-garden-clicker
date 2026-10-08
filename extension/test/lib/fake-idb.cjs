@@ -7,10 +7,13 @@
  *     can read one store and write another;
  *   - compound key paths (the "lines" store is keyed ["runId", "seq"]);
  *   - indexes (createIndex / store.index(name)) and cursors
- *     (store.openCursor / index.openCursor, cursor.continue / update /
- *     delete), with IDBKeyRange.only / bound / lowerBound / upperBound;
+ *     (store.openCursor / index.openCursor, cursor.continue / update), with
+ *     IDBKeyRange.only / bound, and store.delete over a key or a key range
+ *     (what deleteLines uses: one request for every line of a run);
  *   - the real oldVersion in onupgradeneeded, so a v1 database upgrades to
  *     v2 and the migration runs.
+ * Only the methods common/runlog.js calls exist here, so a call the real
+ * database would accept but this fake lacks fails the test loudly.
  * Requests complete on a macrotask, as in a browser, so a promise
  * continuation that issues the next request keeps the transaction alive;
  * the transaction completes once no request is pending after that.
@@ -72,9 +75,7 @@ class FakeKeyRange {
 }
 const IDBKeyRange = {
   only: (v) => new FakeKeyRange(v, v, false, false),
-  bound: (lo, hi, loOpen, hiOpen) => new FakeKeyRange(lo, hi, loOpen, hiOpen),
-  lowerBound: (lo, open) => new FakeKeyRange(lo, undefined, open, false),
-  upperBound: (hi, open) => new FakeKeyRange(undefined, hi, false, open)
+  bound: (lo, hi, loOpen, hiOpen) => new FakeKeyRange(lo, hi, loOpen, hiOpen)
 };
 function rangeIncludes(range, key) {
   if (range === undefined || range === null) return true;
@@ -121,6 +122,7 @@ class FakeTransaction {
     if (this._finished) throw new FakeDOMException("TransactionInactiveError", "transaction finished");
     const req = new FakeRequest();
     req.transaction = this;
+    fake.requests += 1;
     this._pending += 1;
     later(() => {
       this._pending -= 1;
@@ -152,6 +154,7 @@ class FakeTransaction {
     let pos = 0;
     const advance = () => {
       if (this._finished) throw new FakeDOMException("TransactionInactiveError", "transaction finished");
+      fake.requests += 1; // every cursor step is a request round trip, as in a browser
       this._pending += 1;
       later(() => {
         this._pending -= 1;
@@ -161,7 +164,6 @@ class FakeTransaction {
         const cursor = {
           key: item.key, primaryKey: item.primaryKey, value: structuredClone(item.value),
           continue: () => { pos += 1; advance(); },
-          delete: () => this._request(() => { store.data.delete(item.skey); return undefined; }),
           update: (v) => this._request(() => {
             const key = extractKey(store.keyPath, v);
             if (skey(key) !== item.skey) throw new FakeDOMException("DataError", "cursor update changed the key");
@@ -191,8 +193,6 @@ class FakeIndex {
     return out;
   }
   openCursor(range) { return this._store.tx._cursor(this._store._store, this._sorted(range)); }
-  getAll(range) { return this._store.tx._request(() => this._sorted(range).map((e) => structuredClone(e.value))); }
-  getAllKeys(range) { return this._store.tx._request(() => this._sorted(range).map((e) => e.primaryKey)); }
 }
 
 class FakeStore {
@@ -219,10 +219,10 @@ class FakeStore {
     return new FakeIndex(this, { keyPath });
   }
   get(key) { return this.tx._request(() => { const e = this._store.data.get(skey(key)); return e ? structuredClone(e.value) : undefined; }); }
-  getAll(range) { return this.tx._request(() => this._entries().filter((e) => rangeIncludes(range, e.key)).map((e) => structuredClone(e.value))); }
-  getAllKeys(range) { return this.tx._request(() => this._entries().filter((e) => rangeIncludes(range, e.key)).map((e) => e.key)); }
-  count(range) { return this.tx._request(() => (range === undefined ? this._store.data.size : this._entries().filter((e) => rangeIncludes(range, e.key)).length)); }
-  openCursor(range) { return this.tx._cursor(this._store, this._entries().filter((e) => rangeIncludes(range, e.key))); }
+  getAll() { return this.tx._request(() => this._entries().map((e) => structuredClone(e.value))); }
+  getAllKeys() { return this.tx._request(() => this._entries().map((e) => e.key)); }
+  count() { return this.tx._request(() => this._store.data.size); }
+  openCursor() { return this.tx._cursor(this._store, this._entries()); }
   put(value) {
     return this._write(() => {
       if (fake.quota) throw new FakeDOMException("QuotaExceededError", "The quota has been exceeded.");
@@ -233,9 +233,17 @@ class FakeStore {
       return key;
     });
   }
-  add(value) { return this.put(value); }
-  delete(key) { return this._write(() => { this._store.data.delete(skey(key)); return undefined; }); }
-  clear() { return this._write(() => { this._store.data.clear(); return undefined; }); }
+  /** Delete one key, or every key inside an IDBKeyRange (one request, as in a browser). */
+  delete(keyOrRange) {
+    return this._write(() => {
+      if (keyOrRange instanceof FakeKeyRange) {
+        for (const [sk, entry] of Array.from(this._store.data)) if (keyOrRange.includes(entry.key)) this._store.data.delete(sk);
+      } else {
+        this._store.data.delete(skey(keyOrRange));
+      }
+      return undefined;
+    });
+  }
 }
 
 class FakeDatabase {
@@ -259,6 +267,7 @@ const fake = {
   quota: false,
   openError: null,
   puts: 0,
+  requests: 0, // request round trips (every store/index request and every cursor step)
   openCount: 0,
   closeCount: 0,
   IDBKeyRange,
@@ -292,10 +301,9 @@ const fake = {
     });
     return req;
   },
-  deleteDatabase(name) { const req = new FakeRequest(); later(() => { databases.delete(name); req._succeed(undefined); }); return req; },
   /** Direct read of a store's values, for assertions (no transaction). */
   dump(name, store) { const d = databases.get(name); const s = d && d.stores.get(store); return s ? Array.from(s.data.values()).map((e) => structuredClone(e.value)) : []; },
-  reset() { databases.clear(); fake.quota = false; fake.openError = null; fake.puts = 0; fake.openCount = 0; fake.closeCount = 0; }
+  reset() { databases.clear(); fake.quota = false; fake.openError = null; fake.puts = 0; fake.requests = 0; fake.openCount = 0; fake.closeCount = 0; }
 };
 
 module.exports = fake;

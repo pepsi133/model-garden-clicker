@@ -85,7 +85,8 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
   await refused(blank, liveState(P, { job: { productId: "anthropic/anthropic-884.cloudpartnerservices.goog" } }), "ForbiddenClickError", "guard (F1): URL product id differs from the job's product id", { re: /not the job's product/ });
   await refused(blank, liveState(P, { job: { productId: null } }), "ForbiddenClickError", "guard (F1): no product id recorded on the job", { re: /no Marketplace product id/ });
   // A page whose SKU rows name another model (row format from docs/dom-map.md, "Purchase summary").
-  const skuRow = (name) => `<h2>Purchase summary</h2><button class="cfc-tiered-table-entry">${name} - Batch Cache Read Tokens - global</button>`;
+  // A Purchase summary row as the 04/05 dumps render it: an em-dash-separated SKU row with the context-window tail.
+  const skuRow = (name) => `<h2>Purchase summary</h2><button class="cfc-tiered-table-entry">${name} — Batch Cache Read Tokens — global — Context Window Size from 0 to 200000 Tokens</button>`;
   blank.document.body.innerHTML = skuRow("Claude Sonnet 4 6");
   await refused(blank, liveState(P), "ForbiddenClickError", "guard (F1): page naming another model (Claude Sonnet 4 6) refused for a claude-haiku-4-5 job", { re: /does not name/ });
   blank.document.body.innerHTML = "";
@@ -310,10 +311,17 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
   // handler waits for checkbox + Agree button + model name together.
   console.log("--- (R1) handleAgreements waits for the rendered Purchase summary before judging the model name");
   {
-    const RENDERED = '<h1>Agreements</h1><h2>Purchase summary</h2><table><tr><td>Claude Haiku 4 5 - Input Tokens - global</td></tr></table>' +
-      '<mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><input type="checkbox"></mat-checkbox>' +
-      '<button data-prober="cloud-marketplace-request-product"> Agree </button>';
-    const OTHER = RENDERED.replace("Claude Haiku 4 5", "Claude Sonnet 4 6");
+    // The rendered Agreements page as the 04/05 dumps shape it: the body component, the Purchase summary's
+    // em-dash SKU rows (with the context-window tail and a second row), the hooked mat-checkbox around
+    // mp-agreements-tos, and the Agree button with both hooks and its label span.
+    const RENDERED = '<h1>Agreements</h1><billing-integrated-ai-agreements-body><h2>Purchase summary</h2>' +
+      '<button class="cfc-tiered-table-entry">Claude Haiku 4 5 — Input Tokens — global — Context Window Size from 0 to 200000 Tokens</button>' +
+      '<button class="cfc-tiered-table-entry">Claude Haiku 4 5 — Web Search Requests — global</button>' +
+      '<mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><label><input type="checkbox"><mp-agreements-tos><p>By purchasing, deploying, accessing, or using this product, you agree to comply with the terms.</p></mp-agreements-tos></label></mat-checkbox>' +
+      '<button data-prober="cloud-marketplace-request-product" aria-label="Agree to the terms and agreements before continuing"><span class="mdc-button__label"> Agree </span></button></billing-integrated-ai-agreements-body>';
+    const OTHER = RENDERED.split("Claude Haiku 4 5").join("Claude Sonnet 4 6");
+    const NO_BOX = RENDERED.replace(/<mat-checkbox[\s\S]*?<\/mat-checkbox>/, '<mp-agreements-tos><p>By purchasing you agree to the terms.</p></mp-agreements-tos>');
+    const NO_AGREE = RENDERED.replace(/<button data-prober[\s\S]*?<\/button>/, "");
     const dryCtx = (env) => {
       const state = liveState("proj-one", { state: { settings: { live_mode: false }, run: { runId: RUN_ID, live: false } } });
       return Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: false }, setPhase: async () => {}, assertMayAct: async () => {} });
@@ -343,8 +351,16 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     r = await run("empty body", "", RENDERED, 200);
     ok(r.result && r.result.status === "dry-run" && r.ms >= 200, "empty body for 200 ms, then the summary: dry-run", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms`);
     r = await run("other model from the start", OTHER, null, 0);
-    ok(!r.result && r.fatal && /not the job's Agreements page: page does not name the job's model "Claude Haiku 4.5"/.test(r.err.message) && r.ms >= 600 && !r.ticked,
-      "summary naming another model: fatal after the full wait, box untouched", r.err ? `${r.err.message.slice(0, 100)} ${r.ms} ms` : JSON.stringify(r.result));
+    ok(!r.result && r.fatal && /not the job's Agreements page: the page's visible text \(the Purchase summary rows\) does not name the job's model "Claude Haiku 4.5"/.test(r.err.message) && r.ms >= 600 && !r.ticked,
+      "summary naming another model: fatal after the full wait, box untouched, the message names the page and the locator (the visible text, the Purchase summary rows)", r.err ? `${r.err.message.slice(0, 140)} ${r.ms} ms` : JSON.stringify(r.result));
+    // (T6) the page rendered (its shell is there) but a control's every locator is missing: fatal at once after the
+    // wait, naming the page and the locators; nothing is ticked. A body without the shell stays a plain timeout.
+    r = await run("shell without the checkbox", NO_BOX, null, 0);
+    ok(!r.result && r.fatal && r.ms >= 600 && !r.ticked && /^the Agreements page rendered \(billing-integrated-ai-agreements-body or mp-agreements-tos is present\) but the terms checkbox \(mat-checkbox\.p6ntest-mp-agreements-body-tos-checkbox, mp-agreements-tos, or the one mat-checkbox inside billing-integrated-ai-agreements-body\) was not found within 1 s; the console changed the page: see docs\/MAINTENANCE\.md$/.test(r.err.message),
+      "(T6) the agreements shell rendered without any checkbox locator matching: fatal after the wait, naming the page and the three locators", r.err ? `${r.err.message} ${r.ms} ms` : JSON.stringify(r.result));
+    r = await run("shell without the Agree button", NO_AGREE, null, 0);
+    ok(!r.result && r.fatal && r.ms >= 600 && !r.ticked && /but the Agree button \(button\[data-prober="cloud-marketplace-request-product"\] or button\[aria-label\^="Agree to the terms"\]\) was not found within 1 s/.test(r.err.message),
+      "(T6) the agreements shell rendered without either Agree locator matching: fatal after the wait, naming both hooks, box untouched", r.err ? `${r.err.message} ${r.ms} ms` : JSON.stringify(r.result));
     r = await run("checkbox never renders", '<h2>Purchase summary</h2><p>Claude Haiku 4 5 - Input Tokens</p>', null, 0);
     ok(!r.result && r.err && r.err.name === "TimeoutError" && !r.fatal && /purchase summary naming the job's model, with the terms checkbox and the Agree button/.test(r.err.message),
       "model named but no checkbox or Agree button: a plain timeout (retried by the loop), not fatal", r.err ? r.err.message : JSON.stringify(r.result));
@@ -385,8 +401,8 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     let r = await live("control", "", success("Claude Haiku 4.5", false));
     ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms < 300, "control: no dialog before, the success dialog naming the model appears after the click: one click, done", r.err ? r.err.message : `${JSON.stringify(r.result)} clicks=${r.clicks}`);
     r = await live("error open", ERROR_OPEN, null);
-    ok(r.clicks === 0 && !r.recorded && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Something went wrong: Could not load billing accounts/.test(r.err.message),
-      "an unrelated error dialog open before the click: refused with the dialog's text, nothing recorded, no click", r.err ? r.err.message : JSON.stringify(r.result));
+    ok(r.clicks === 0 && !r.recorded && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Something went wrong: Could not load billing accounts\. Try again\. \(element mat-dialog-container\)/.test(r.err.message),
+      "an unrelated error dialog open before the click: refused with the dialog's text and the element it was matched by, nothing recorded, no click", r.err ? r.err.message : JSON.stringify(r.result));
     r = await live("Enable APIs open", API_OPEN, null);
     ok(r.clicks === 0 && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Enable APIs/.test(r.err.message), 'the "Enable APIs" dialog open before the click: refused, no click', r.err ? r.err.message : JSON.stringify(r.result));
     r = await live("success for the model open", success("Claude Haiku 4.5", false), null);
@@ -403,6 +419,16 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     r = await live("new error", "", failure(false));
     ok(r.clicks === 1 && r.result && r.result.status === "failed" && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(r.result.message),
       "the console's refusal dialog (behavior-failure-dialog) that appears after the click: failed with its title and text", r.err ? r.err.message : JSON.stringify(r.result));
+
+    console.log('--- (T6) the dialog check is scoped: a non-modal role="dialog" element blocks nothing; an aria-modal="true" one blocks and is named');
+    const DRAWER = '<div role="dialog" aria-modal="false" id="drawer"><h2>What is new</h2><p>Release notes for the console.</p></div><cfc-side-panel role="dialog" id="help"><h2>Help</h2></cfc-side-panel>';
+    const MODAL = '<div role="dialog" aria-modal="true" id="survey"><h2>Survey</h2><p>How are we doing?</p></div>';
+    r = await live("drawer open", DRAWER, success("Claude Haiku 4.5", false));
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && !r.logs.some((m) => /dialog is open/.test(m)),
+      '(T6) a visible non-modal role="dialog" drawer and a side panel without aria-modal, open before the click: not console dialogs, one click, done', r.err ? r.err.message : `${JSON.stringify(r.result)} clicks=${r.clicks}`);
+    r = await live("modal open", MODAL, null);
+    ok(r.clicks === 0 && !r.recorded && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Survey \(element div\[role="dialog"\]\)/.test(r.err.message),
+      '(T6) a visible aria-modal="true" role="dialog" element: refused, the element named in the message (div[role="dialog"]), nothing recorded, no click', r.err ? r.err.message : JSON.stringify(r.result));
   }
 
   // (T1) after the click only the console's refusal shape fails the job. A bare "Error dialog" container

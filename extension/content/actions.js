@@ -48,7 +48,7 @@
   const K = globalThis.MGC;
   const D = globalThis.MGC_DOM;
   const S = globalThis.MGC_SELECTORS;
-  const badge = () => globalThis.MGC_BADGE; // loaded before this file in the tab; absent in some tests
+  const B = globalThis.MGC_BADGE; // badge.js is loaded before this file (manifest content_scripts, test/lib/env.cjs)
   const { PHASE, STATUS, PAGE } = K;
   const T = K.TIMEOUTS;
   const A = {};
@@ -81,9 +81,13 @@
     return confirmations.delete(`${runId}|${jobIndex}|${step}`);
   };
 
-  /** Title and text of a visible dialog, for logs and the panel note. */
+  /** Title and text of a visible dialog, for the panel note. */
   function dialogLabel(d) {
     return [d.title, d.text].filter(Boolean).join(": ") || "dialog without text";
+  }
+  /** The same, naming the element the dialog check matched, for the log (a false block is then diagnosable). */
+  function dialogNamed(d) {
+    return `${dialogLabel(d)} (element ${d.element || "unknown"})`;
   }
 
   /**
@@ -112,10 +116,9 @@
    *
    * opts: summary, title, continueLabel (default "Continue"),
    * continueAction (data-action, default "continue"), proceedText (log
-   * wording after the click), allowContinue (false: Stop only), userActed,
-   * outcome, stopEndsJob. The caller sets the awaiting_confirmation phase
-   * around this call (that pauses the worker's watchdog) and the page's
-   * phase again after it.
+   * wording after the click), userActed, outcome, stopEndsJob. The caller
+   * sets the awaiting_confirmation phase around this call (that pauses the
+   * worker's watchdog) and the page's phase again after it.
    */
   A.awaitConfirmation = async function (ctx, step, opts) {
     const o = opts || {};
@@ -124,19 +127,16 @@
     const continueAction = o.continueAction || "continue";
     const userActed = () => typeof o.userActed === "function" && !!o.userActed();
     let decision = null;
-    const buttons = [];
-    if (o.allowContinue !== false) {
-      buttons.push({
-        label: continueLabel, action: continueAction, primary: true,
-        onClick: (ev) => {
-          if (userActed()) { ctx.log(`ignored ${continueLabel}: you already activated the console's ${label} yourself`); return; }
-          const open = S.dialogs.visible();
-          if (open.length) { ctx.log(`ignored ${continueLabel} while a console dialog is open: ${dialogLabel(open[0])}`); return; }
-          if (!A.recordContinue(ctx.runId, ctx.jobIndex, step, ev)) { ctx.log(`ignored an untrusted ${continueLabel} click before ${label}`); return; }
-          decision = "continue";
-        }
-      });
-    }
+    const buttons = [{
+      label: continueLabel, action: continueAction, primary: true,
+      onClick: (ev) => {
+        if (userActed()) { ctx.log(`ignored ${continueLabel}: you already activated the console's ${label} yourself`); return; }
+        const open = S.dialogs.visible();
+        if (open.length) { ctx.log(`ignored ${continueLabel} while a console dialog is open: ${dialogNamed(open[0])}`); return; }
+        if (!A.recordContinue(ctx.runId, ctx.jobIndex, step, ev)) { ctx.log(`ignored an untrusted ${continueLabel} click before ${label}`); return; }
+        decision = "continue";
+      }
+    }];
     buttons.push({
       label: "Stop", action: "stop",
       onClick: () => {
@@ -145,8 +145,7 @@
       }
     });
     const spec = { title: o.title || `Step-by-step: ${label}`, summary: o.summary || "", buttons };
-    const B = badge();
-    const show = () => { if (B) B.panel(spec); };
+    const show = () => B.panel(spec);
     show();
     ctx.log(`confirmation panel shown before ${label}: ${buttons.map((b) => b.label).join(" / ")}`);
     ctx.step(`waiting for your confirmation before ${label}`);
@@ -174,17 +173,19 @@
             blockedBy = null;
             decision = null;
           } else {
-            const what = dialogLabel(open[0]);
+            const what = dialogNamed(open[0]);
             if (blockedBy !== what) {
               blockedBy = what;
-              if (B) { B.panelNote(`A console dialog is open: ${what}. Close it in the console; ${continueLabel} is disabled meanwhile.`); B.panelEnable(continueAction, false); }
+              B.panelNote(`A console dialog is open: ${dialogLabel(open[0])}. Close it in the console; ${continueLabel} is disabled meanwhile.`);
+              B.panelEnable(continueAction, false);
               ctx.log(`a console dialog is open while waiting for your confirmation: ${what}; ${continueLabel} disabled until it closes`);
             }
             if (decision === "continue") { ctx.log(`dropped a ${continueLabel} that arrived while a console dialog was open`); decision = null; }
           }
         } else if (blockedBy !== null) {
           blockedBy = null;
-          if (B) { B.panelNote(null); B.panelEnable(continueAction, true); }
+          B.panelNote(null);
+          B.panelEnable(continueAction, true);
           ctx.log(`the console dialog closed; ${continueLabel} is enabled again`);
         }
         if (decision === "continue" && !open.length) {
@@ -205,7 +206,7 @@
         await D.sleep(K.URL_POLL_MS);
       }
     } finally {
-      if (B) B.closePanel();
+      B.closePanel();
     }
   };
 
@@ -379,7 +380,28 @@
     const rec = await ctx.updateJob({ productId: id.productId });
     if (!rec || !rec.ok) throw new D.FatalError("could not record the product id on the job (stale run or tab)");
 
-    const nameInput = await D.waitFor(() => S.questionnaire.businessName(), { timeout: T.FORM_READY, what: "questionnaire form" });
+    let nameInput;
+    try {
+      nameInput = await D.waitFor(() => S.questionnaire.businessName(), { timeout: T.FORM_READY, what: "questionnaire form" });
+    } catch (err) {
+      // A plain timeout is retried by the page loop (a slow page). Two
+      // shapes are not: the body shows another page's shell and not the
+      // questionnaire's (the URL changed but the console rendered something
+      // else), or the questionnaire's own shell rendered without the hook
+      // the field is found by (the console renamed it). Both halt the job
+      // at once naming the page and the locator; nothing is clicked.
+      if (err instanceof D.TimeoutError) {
+        const secs = Math.round(T.FORM_READY / 1000);
+        const shown = S.detectPageByDom();
+        if (shown !== PAGE.UNKNOWN && shown !== PAGE.QUESTIONNAIRE) {
+          throw new D.FatalError(`the questionnaire URL is open but after ${secs} s the page body shows the ${shown} page's shell and not the questionnaire's (raf-form RequestAccessFormGroup or cfc-panel-footer.mg-questionnaire-footer); the console changed the questionnaire page: see docs/MAINTENANCE.md`);
+        }
+        if (S.questionnaire.hasShell()) {
+          throw new D.FatalError(`the questionnaire rendered (its raf-form or footer is present) but its business name input was not found by raf-runtime-form-element[raf-name="businessName"] within ${secs} s; the console renamed the field: see docs/MAINTENANCE.md (questionnaire.businessName)`);
+        }
+      }
+      throw err;
+    }
     await ctx.assertMayAct();
     ctx.step("filling the questionnaire");
     ctx.mark("action started: fill the questionnaire");
@@ -494,6 +516,21 @@
   }
 
   /**
+   * Why the Agreements page, whose shell has rendered, is missing a control
+   * the handler needs, or null when both are there: the page is then not
+   * waited for any longer, since a renamed hook does not come back, and the
+   * message names the page and every locator that was tried.
+   */
+  function agreementsControlsMissing(secs) {
+    if (!S.agreements.hasShell()) return null;
+    const missing = [];
+    if (!S.agreements.termsCheckbox()) missing.push("the terms checkbox (mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox, mp-agreements-tos, or the one mat-checkbox inside billing-integrated-ai-agreements-body)");
+    if (!S.agreements.hasAgreeButton()) missing.push('the Agree button (button[data-prober="cloud-marketplace-request-product"] or button[aria-label^="Agree to the terms"])');
+    if (!missing.length) return null;
+    return `the Agreements page rendered (billing-integrated-ai-agreements-body or mp-agreements-tos is present) but ${missing.join(" and ")} was not found within ${secs} s; the console changed the page: see docs/MAINTENANCE.md`;
+  }
+
+  /**
    * Why the Agreements page in the tab is not the one for `job`, or null
    * when it is: the URL checks above plus the rendered text naming the
    * job's model. Used by the guard, and by the handler once the Purchase
@@ -503,7 +540,7 @@
   function agreementsPageMismatch(job) {
     const url = agreementsUrlMismatch(job);
     if (url) return url;
-    if (!pageNamesModel(job)) return `page does not name the job's model "${job.modelName || job.modelSlug}"`;
+    if (!pageNamesModel(job)) return `the page's visible text (the Purchase summary rows) does not name the job's model "${job.modelName || job.modelSlug}"`;
     return null;
   }
 
@@ -538,8 +575,12 @@
     try {
       checkbox = await D.waitFor(ready, { timeout: T.AGREEMENTS_READY, what: "purchase summary naming the job's model, with the terms checkbox and the Agree button" });
     } catch (err) {
-      if (err instanceof D.TimeoutError && S.agreements.termsCheckbox() && S.agreements.hasAgreeButton() && !pageNamesModel(job)) {
-        throw new D.FatalError(`not the job's Agreements page: ${agreementsPageMismatch(job)}`);
+      if (err instanceof D.TimeoutError) {
+        if (S.agreements.termsCheckbox() && S.agreements.hasAgreeButton() && !pageNamesModel(job)) {
+          throw new D.FatalError(`not the job's Agreements page: ${agreementsPageMismatch(job)}`);
+        }
+        const missing = agreementsControlsMissing(Math.round(T.AGREEMENTS_READY / 1000));
+        if (missing) throw new D.FatalError(missing);
       }
       throw err;
     }
@@ -827,8 +868,7 @@
       // the dialog would be mistaken for the click's outcome.
       const open = S.dialogs.visible();
       if (open.length) {
-        const d = open[0];
-        const err = new D.ForbiddenClickError(`a console dialog is open: ${[d.title, d.text].filter(Boolean).join(": ") || "dialog without text"}`);
+        const err = new D.ForbiddenClickError(`a console dialog is open: ${dialogNamed(open[0])}`);
         err.dialogOpen = true;
         throw err;
       }

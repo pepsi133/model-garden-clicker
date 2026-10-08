@@ -103,26 +103,15 @@
   /* ---------------------------------------------------------- models.json */
 
   /**
-   * Accepts several shapes so the file can be replaced without code changes:
-   *   ["slug", ...]
-   *   [{ slug, name?, launchStage? }, ...]   (also "id" instead of "slug")
-   *   { models: <either of the above> }
-   *   { "slug": "Name" | { name?, ... }, ... }
+   * models.json is an array of { slug, name, launchStage? } (the shape the
+   * worker reads for the job names too); an entry without a valid slug is
+   * dropped, a missing name falls back to the slug.
    */
   function parseModelsFile(data) {
-    let list = data;
-    if (list && !Array.isArray(list) && typeof list === "object") {
-      if (Array.isArray(list.models)) list = list.models;
-      else list = Object.entries(list).filter(([k]) => !k.startsWith("_")).map(([slug, v]) =>
-        typeof v === "string" ? { slug, name: v } : Object.assign({ slug }, v || {}));
-    }
-    if (!Array.isArray(list)) return [];
-    return list.map((item) => {
-      if (typeof item === "string") return { slug: item, name: item };
-      const slug = item.slug || item.id;
-      if (!slug) return null;
-      return { slug, name: item.name || item.label || item.title || slug, launchStage: item.launchStage || "" };
-    }).filter(Boolean).filter((m) => K.isValidModelSlug(m.slug));
+    if (!Array.isArray(data)) return [];
+    return data
+      .filter((item) => item && typeof item === "object" && typeof item.slug === "string" && K.isValidModelSlug(item.slug))
+      .map((item) => ({ slug: item.slug, name: item.name || item.slug, launchStage: item.launchStage || "" }));
   }
 
   async function loadModels() {
@@ -344,9 +333,9 @@
     setIf("extra-models", (el) => { el.value = ps.extra || ""; });
     // The "Include pairs already done in earlier runs" box is a per-run
     // choice, not a saved setting: it starts unchecked on every popup open
-    // (a stored legacy includeDone is ignored) and is cleared after a
-    // successful Start, so one tick cannot silently disable the cross-run
-    // guard for every later run.
+    // (a stored legacy includeDone is ignored) and every Start click spends
+    // it, so one tick cannot silently disable the cross-run guard for a
+    // later run.
     setIf("include-done", (el) => { el.checked = false; });
     const models = await loadModels();
     if ($("models")) renderModels(models, freshVersion ? null : (Array.isArray(ps.models) ? ps.models : null));
@@ -375,20 +364,20 @@
 
     on("start", "click", async () => {
       showError("");
+      // The include-done override is read and spent by this click, whatever
+      // comes of it (a refusal here or by the worker, a cancelled confirm, a
+      // started run): it is never carried into a later Start unnoticed.
+      const includeDone = $("include-done") ? $("include-done").checked === true : false;
+      setIf("include-done", (el) => { el.checked = false; });
       const projects = projectIds();
       const models = selectedModels();
-      const badProject = projects.find((p) => !K.isValidProjectId(p));
+      // Only the empty lists are refused here, for instant feedback; the
+      // worker validates the IDs and the options and its reply carries the
+      // reason.
       if (!projects.length) return showError("enter at least one project ID");
-      if (badProject) return showError(`invalid project ID: ${badProject}`);
       if (!models.length) return showError("select at least one model");
-      const badModel = models.find((m) => !K.isValidModelSlug(m));
-      if (badModel) return showError(`invalid model slug: ${badModel}`);
       const settings = Object.assign({}, K.DEFAULT_SETTINGS, (await chrome.storage.local.get(KEYS.SETTINGS))[KEYS.SETTINGS] || {});
-      const missing = K.missingSettings(settings);
-      if (missing.length) return showError(`fill these options first: ${labels(missing)}`);
       const live = settings.live_mode === true;
-      // The box is read now so the full-run confirmation can name the override.
-      const includeDone = $("include-done") ? $("include-done").checked === true : false;
       // Only a full run asks for a confirmation; a dry run starts at once.
       if (live) {
         let msg = `FULL RUN: this will click Agree and make purchases that bill the project for ${projects.length * models.length} project/model pair(s).`;
@@ -402,9 +391,6 @@
       // request; the worker refuses to start if the setting changed in between.
       const reply = await send({ type: MSG.START, projects, models, live, includeDone });
       if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); setIf("start", (el) => { el.disabled = false; }); }
-      // The include-done override lasts one Start: clear it once the run began
-      // so it is never carried into a later run unnoticed.
-      else setIf("include-done", (el) => { el.checked = false; });
       render();
     });
 

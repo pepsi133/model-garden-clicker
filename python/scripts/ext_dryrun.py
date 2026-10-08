@@ -26,7 +26,10 @@ Browser attempts, in order (Google Chrome 137+ ignores --load-extension):
 Expectations: every job must end as `dry-run` or `skipped`; `--expect
 PROJECT=dry-run` or `--expect PROJECT=skipped` pins the status for a project
 (a project where the model is not enabled ends dry-run with the terms
-checkbox ticked, a project where it is already enabled ends skipped).
+checkbox ticked, a project where it is already enabled ends skipped). The
+run's log must carry no error-level line (the extension logs every caught
+tick, handler and worker error at that level) and the browser console no
+SEVERE entry from the extension's own scripts or pages.
 
 Exit codes: 0 every expectation holds, 1 a job ended differently, 2 config or
 extension problem, 3 profile signed out / browser could not be started.
@@ -610,7 +613,25 @@ def check_runs_page(driver, ext_id: str, out_dir: Path, run: dict, log_lines: li
     good = log_start > 0 and len(entries) >= len(log_lines) and all(re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z (worker|content|ui) \[\w+\] ", l) for l in entries)
     print(f"{'PASS' if good else 'FAIL'} the log section holds {len(entries)} entries (at least the {len(log_lines)} of the storage log), each '<ISO> <source> [<level>] <message>'")
     ok = ok and good
+    # The extension reports every error it catches (a tick, a handler, a
+    # worker message handler, a failed delete) as an error-level line, so
+    # the downloaded run log is where a swallowed failure would show.
+    errors = [l for l in entries if re.match(r"\S+ (worker|content|ui) \[error\] ", l)]
+    print(f"{'PASS' if not errors else 'FAIL'} no error-level line in the downloaded run log ({len(errors)} found)")
+    for l in errors:
+        print(f"     {l}")
+    ok = ok and not errors
     return ok
+
+
+def check_error_lines(st: dict) -> bool:
+    """The extension's storage log must carry no error-level entry: a caught tick, handler or worker error is logged at that level."""
+    bad = [e for e in (st.get("log") or []) if e.get("level") == "error"]
+    print()
+    print(f"{'PASS' if not bad else 'FAIL'} no error-level line in the extension's storage log ({len(bad)} found; every error the extension catches is logged at that level)")
+    for e in bad:
+        print(f"     [{e.get('src')}] {e.get('msg')}")
+    return not bad
 
 
 def collect_console(driver, ext_id: str, out_dir: Path) -> bool:
@@ -745,6 +766,7 @@ def main() -> int:
         run = st.get("run") or {}
         log(f"run {run.get('runId')!r} finished: {run.get('reason')!r} (mode snapshot live={run.get('live')!r})")
         ok = evaluate(st.get("queue") or [], expectations)
+        ok = check_error_lines(st) and ok
         if args.step_by_step:
             ok = check_step_log(lines, run.get("runId")) and ok
         driver.switch_to.window(popup)

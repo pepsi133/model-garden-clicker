@@ -63,8 +63,7 @@
   }
 
   function utf8Len(s) {
-    if (typeof TextEncoder === "function") return new TextEncoder().encode(s).length;
-    return unescape(encodeURIComponent(String(s))).length;
+    return new TextEncoder().encode(s).length;
   }
 
   /* ---------------------------------------------------------------- text helpers */
@@ -85,11 +84,15 @@
    * Beyond C0, DEL and the bidi controls this also covers the C1 range
    * (U+0080-U+009F, e.g. NEL and the 8-bit CSI), the soft hyphen (U+00AD),
    * the zero-width characters (U+200B-U+200D, word joiner U+2060, BOM/ZWNBSP
-   * U+FEFF) and the tag characters (U+E0000-U+E007F), which hide or reshape
-   * text in an editor or terminal. The "u" flag is needed for the astral
-   * tag-character range.
+   * U+FEFF), the Mongolian vowel separator (U+180E), the invisible operators
+   * (U+2061-U+2064), the interlinear annotation characters (U+FFF9-U+FFFB),
+   * the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the variation
+   * selectors (U+FE00-U+FE0F, U+E0100-U+E01EF; an emoji that carries one
+   * renders without it) and the tag characters (U+E0000-U+E007F), which hide
+   * or reshape text in an editor or terminal. The "u" flag is needed for the
+   * astral ranges.
    */
-  var CONTROL_AND_BIDI = new RegExp("[\\u0000-\\u0008\\u000b-\\u001f\\u007f\\u0080-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060\\u2066-\\u2069\\ufeff\\u{e0000}-\\u{e007f}]", "gu");
+  var CONTROL_AND_BIDI = new RegExp("[\\u0000-\\u0008\\u000b-\\u001f\\u007f\\u0080-\\u009f\\u00ad\\u061c\\u115f\\u1160\\u180e\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff9-\\ufffb\\u{e0000}-\\u{e007f}\\u{e0100}-\\u{e01ef}]", "gu");
   function clean(s) {
     return fold(s).replace(CONTROL_AND_BIDI, "\ufffd");
   }
@@ -202,18 +205,15 @@
     return L.withTx(L.STORE, mode, (tx) => fn(tx.objectStore(L.STORE)));
   };
 
-  /** Delete every line record of a run, through the index cursor. */
+  /**
+   * Delete every line record of a run with one request over the store's key
+   * range: the store is keyed [runId, seq], -Infinity is the lowest key and
+   * an empty array sorts above every number, so the bound covers every seq
+   * of this run and nothing of another run. One request, however many lines
+   * the run has (a cursor would cost one round trip per line).
+   */
   function deleteLines(linesStore, runId) {
-    return new Promise((resolve, reject) => {
-      const req = linesStore.index(L.RUN_INDEX).openCursor(keyRange().only(runId));
-      req.onsuccess = () => {
-        const c = req.result;
-        if (!c) { resolve(); return; }
-        c.delete();
-        c.continue();
-      };
-      req.onerror = () => reject(req.error || new Error("could not delete run log lines"));
-    });
+    return request(linesStore.delete(keyRange().bound([runId, -Infinity], [runId, []])));
   }
 
   /** A result entry from a queue entry: the whitelisted fields only. */
@@ -328,9 +328,10 @@
   };
 
   /**
-   * Keep the `keep` newest records (by startedAt), delete the rest and their
-   * lines. `exceptRunId` (the run in progress) is never deleted, whatever a
-   * backwards clock did to the start times.
+   * Keep the newest records (by startedAt), delete the rest and their lines.
+   * `keep` is the stored "Runs to keep" value (K.runsKeepFrom turns anything
+   * invalid into the default). `exceptRunId` (the run in progress) is never
+   * deleted, whatever a backwards clock did to the start times.
    */
   L.prune = function (keep, exceptRunId) {
     const n = K.runsKeepFrom(keep);
@@ -381,7 +382,7 @@
     const r = record || {};
     const counts = L.counts(r);
     const jobs = Array.isArray(r.results) && r.results.length ? r.results : (Array.isArray(r.jobs) ? r.jobs : []);
-    const lineCount = typeof r.lineCount === "number" ? r.lineCount : (Array.isArray(r.lines) ? r.lines.length : 0);
+    const lineCount = typeof r.lineCount === "number" ? r.lineCount : 0;
     const head = [
       "Model Garden Clicker run log",
       `run id:        ${r.runId || ""}`,
@@ -402,29 +403,26 @@
   /**
    * The plain-text log of one run: the header block with the run's metadata,
    * the job results as a table, then one line per log entry. `lines` is the
-   * run's lines (from readLines); a v1-shaped record's own `lines` array is
-   * used when none is passed. The questionnaire values never appear here
+   * run's lines (from readLines). The questionnaire values never appear here
    * unless a log line already carried one. Control characters and bidi
    * overrides in a message are replaced with U+FFFD.
    */
   L.textOf = function (record, lines) {
     const r = record || {};
-    const ln = Array.isArray(lines) ? lines : (Array.isArray(r.lines) ? r.lines : []);
-    const body = ln.map(renderLine);
+    const body = (Array.isArray(lines) ? lines : []).map(renderLine);
     return headAndTable(r) + "\n" + body.join("\n") + "\n";
   };
 
   /**
    * Every run in one text, newest first, each under its own header line.
-   * `entries` is an array of { record, lines }; a bare record (with its own
-   * `lines` array) is also accepted.
+   * `entries` is an array of { record, lines } (lines from readLines).
    */
   L.textOfAll = function (entries) {
     const arr = Array.isArray(entries) ? entries : [];
     const parts = [`Model Garden Clicker: ${arr.length} run(s), newest first`, ""];
     for (const e of arr) {
-      const record = e && e.record ? e.record : e;
-      const lines = e && e.lines ? e.lines : (record && record.lines) || [];
+      const record = (e && e.record) || {};
+      const lines = e && Array.isArray(e.lines) ? e.lines : [];
       parts.push("=".repeat(72), `run ${record.runId || ""} started ${iso(record.startedAt)}`, "=".repeat(72), L.textOf(record, lines));
     }
     return parts.join("\n");

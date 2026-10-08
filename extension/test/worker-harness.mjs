@@ -461,7 +461,7 @@ assert(Array.isArray(rec.jobs) && rec.jobs.length === 1 && rec.jobs[0].projectId
 assert(Array.isArray(rec.results) && rec.results.length === 1 && rec.results[0].status === "skipped" && rec.results[0].message === "z" && rec.results[0].finishedAt > 0 && !("phase" in rec.results[0]) && !("step" in rec.results[0]), "the record carries the per-job results (status, message, times; no phase or step fields): " + JSON.stringify(rec.results[0]));
 const lastLines = lineRecs(RLAST);
 const recLines = lastLines.map((l) => l.msg);
-assert(recLines.length >= 4 && /^run .* started: 1 project\(s\)/.test(recLines[0]) && /^job 0: navigating/.test(recLines[1]) && /^job 0: skipped - z$/.test(recLines[2]) && recLines[recLines.length - 1] === "run finished: all jobs processed", "the record's lines run from the start line to the 'run finished' line (written after RUNNING went false): " + JSON.stringify(recLines));
+assert(recLines.length >= 5 && /^run .* started: 1 project\(s\)/.test(recLines[0]) && /^cross-run guard off for this run \("Include pairs already done in earlier runs" ticked\): pairs done in earlier runs are processed again$/.test(recLines[1]) && /^job 0: navigating/.test(recLines[2]) && /^job 0: skipped - z$/.test(recLines[3]) && recLines[recLines.length - 1] === "run finished: all jobs processed", "the record's lines run from the start line, through the guard-off note (P2: the box was ticked, logged once the record exists) to the 'run finished' line (written after RUNNING went false): " + JSON.stringify(recLines));
 assert(rec.lineCount === lastLines.length && lastLines.every((l, i) => l.seq === i) && typeof rec.byteCount === "number" && rec.byteCount > 0, "the record's counters match the line store: lineCount equals the number of line records (seq 0..n-1) and byteCount is set (L1 v2): " + JSON.stringify({ lineCount: rec.lineCount, byteCount: rec.byteCount, stored: lastLines.length }));
 assert(lastLines.every((l) => typeof l.t === "number" && typeof l.level === "string" && typeof l.src === "string" && typeof l.msg === "string") && lastLines.every((l) => l.src === "worker"), "every line has t, level, src and msg; these are the worker's");
 assert(!lastLines.some((l) => /summary acknowledged/.test(l.msg)), "a line logged after the run ended (the summary OK) is not in the record");
@@ -590,10 +590,12 @@ assert(store.queue[1].status !== "skipped" && store.queue[3].status !== "skipped
 assert(store.log.some((l) => /cross-run guard: 2 job\(s\) skipped/.test(l.msg)), "24a the guard logs how many it skipped and how to override it");
 const g1 = runId();
 assert(RL.counts(records().find((x) => x.runId === g1)).skipped === 2, "24a the run record's results carry the two skipped jobs");
+assert(!lineRecs(g1).some((l) => /cross-run guard off/.test(l.msg)) && lineRecs(g1).some((l) => /cross-run guard: 2 job\(s\) skipped/.test(l.msg)), "24a (P2) no guard-off line when the box is not ticked; the skipped-count line is in the run record");
 r = await msg({ type: K.MSG.STOP }); await settle();
 // 24b. includeDone true: the guard is off, nothing is skipped for the same pairs.
 r = await msg(START(["guard-done", "guard-unv-click"], ["claude-haiku-4-5"], false, true)); await settle();
 assert(r.ok === true && store.queue[0].status !== "skipped" && store.queue[1].status !== "skipped", "24b with includeDone the guard is off: neither already-done pair is skipped (U10)");
+assert(lineRecs(runId()).filter((l) => l.level === "info" && /^cross-run guard off for this run \("Include pairs already done in earlier runs" ticked\)/.test(l.msg)).length === 1 && store.log.some((l) => /cross-run guard off for this run/.test(l.msg)), "24b (P2) the worker logs one info line that the guard is off because the box was ticked, in the run record and the capped log");
 r = await msg({ type: K.MSG.STOP }); await settle();
 // 24c. a queue whose every pair is already done finishes at Start with no tab navigation.
 const tabsBefore = tabs.size;
@@ -636,6 +638,7 @@ r = await msg(START(["guard-done", "guard-fresh"], ["claude-haiku-4-5"], false, 
 assert(r.ok === true, "24d Start does not throw on a record whose results hold a null entry (N4): " + JSON.stringify(r));
 assert(store.queue[0].status === "skipped" && store.queue[1].status !== "skipped", "24d the well-formed done pair is still skipped; a fresh pair runs (N4)");
 assert(store.log.filter((l) => /malformed run record/.test(l.msg)).length === 1, "24d exactly one warning line names the malformed entries (N4)");
+assert(lineRecs(runId()).filter((l) => l.level === "warn" && /skipped 1 malformed run record entry while checking/.test(l.msg)).length === 1, "24d (P6) the warning is in the run record too (logged once the record exists), counting the null entry (the object without fields is tolerated, not counted)");
 r = await msg({ type: K.MSG.STOP }); await settle();
 // 24e. (N3) model slugs compare case-insensitively, the same way
 //      isValidModelSlug accepts them: a pair recorded under the lower-case
@@ -648,6 +651,87 @@ await RL.update("g-case", { finishedAt: GSTAMP + 1000, reason: "all jobs process
 r = await msg(START(["guard-done"], ["Claude-Haiku-4-5"], false, false)); await settle();
 assert(r.ok === true && store.queue[0].status === "skipped", "24e a pair recorded under the lower-case slug is skipped when queued mixed-case Claude-Haiku-4-5 (N3): " + store.queue[0].status);
 r = await msg({ type: K.MSG.STOP }); await settle();
+
+// 24f. (N2) the previous run's queue in chrome.storage is the guard's second
+//      source: with no run record at all (a wiped database) a pair that
+//      queue holds as done is still skipped, the message names that run's
+//      start, and a dry-run pair in it is not skipped.
+fakeIDB.reset();
+const PREV_START = Date.UTC(2026, 9, 8, 10, 30, 0);
+store.queue = [
+  { projectId: "queue-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true, message: "enabled" },
+  { projectId: "queue-dry", modelSlug: "claude-haiku-4-5", status: "dry-run", agreeClicked: false, message: "x" },
+  { projectId: "queue-unv", modelSlug: "claude-haiku-4-5", status: "unverified", agreeClicked: true, message: "x" },
+  null
+];
+store.run = { runId: "prev-run", live: true, startedAt: PREV_START, finishedAt: PREV_START + 5000, reason: "all jobs processed" };
+r = await msg(START(["queue-done", "queue-dry", "queue-unv", "queue-fresh"], ["claude-haiku-4-5"], false, false)); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped" && store.queue[0].message === `done in run ${RL.stamp(PREV_START)} (done)`, "24f (N2) a pair done in the previous run's queue is skipped with that run's stamp, with no run record at all: " + store.queue[0].message);
+assert(store.queue[2].status === "skipped" && store.queue[2].message === `done in run ${RL.stamp(PREV_START)} (unverified)`, "24f (N2) a pair unverified with Agree on record in that queue is skipped too");
+assert(store.queue[1].status !== "skipped" && store.queue[3].status !== "skipped", "24f (N2) a dry-run pair in the previous queue and a fresh pair are not skipped");
+assert(records().length === 1 && lineRecs(runId()).some((l) => l.level === "warn" && /skipped 1 malformed run record entry/.test(l.msg)), "24f (N2) control: the only record is the new run's (the queue alone decided); the null queue entry counted as one malformed entry");
+r = await msg({ type: K.MSG.STOP }); await settle();
+// With the previous queue cleared (the popup's "clear"), only the records decide.
+store.queue = []; store.run = null;
+await RL.create({ runId: "g-older", startedAt: GSTAMP, live: true }, [], false);
+await RL.update("g-older", { finishedAt: GSTAMP + 1000, reason: "all jobs processed", results: [{ projectId: "rec-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true }] });
+r = await msg(START(["rec-done", "queue-done"], ["claude-haiku-4-5"], false, false)); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped" && store.queue[0].message === `done in run ${guardStamp} (done)` && store.queue[1].status !== "skipped", "24f (N2) with the previous queue cleared only the run records decide: rec-done skipped, queue-done runs");
+r = await msg({ type: K.MSG.STOP }); await settle();
+
+// 24g. (N2) the run-record database cannot be opened: a FULL RUN is refused
+//      with a clear message and nothing is written (box ticked or not); a
+//      DRY RUN starts with a warning line and the previous queue still guards.
+fakeIDB.reset(); fakeIDB.openError = "database cannot be opened";
+store.queue = [{ projectId: "queue-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true }];
+store.run = { runId: "prev-run-2", live: true, startedAt: PREV_START, finishedAt: PREV_START + 1, reason: "all jobs processed" };
+store.settings.live_mode = true;
+const tabsBefore24g = tabs.size;
+r = await msg(START(["queue-done", "queue-fresh"], ["claude-haiku-4-5"], true, false)); await settle();
+assert(r.ok === false && /^full run refused: the run-record database could not be opened \(UnknownError: database cannot be opened\), so the cross-run double-purchase guard cannot check earlier runs and this run's record could not be kept; open the Runs page to see the database error, or start a dry run$/.test(r.error), "24g (N2) a full run with the database unopenable is refused with the reason: " + r.error);
+assert(store.running !== true && tabs.size === tabsBefore24g && store.run.runId === "prev-run-2" && store.queue.length === 1 && store.queue[0].status === "done", "24g (N2) nothing was written: no run, no tab, the previous run and queue untouched");
+r = await msg(START(["queue-fresh"], ["claude-haiku-4-5"], true, true)); await settle();
+assert(r.ok === false && /^full run refused: the run-record database could not be opened/.test(r.error) && store.running !== true && tabs.size === tabsBefore24g, "24g (N2) the Include-pairs box does not bypass the refusal");
+store.settings.live_mode = false;
+r = await msg(START(["queue-done", "queue-fresh"], ["claude-haiku-4-5"], false, false)); await settle();
+assert(r.ok === true && store.running === true && store.queue[0].status === "skipped" && store.queue[0].message === `done in run ${RL.stamp(PREV_START)} (done)` && store.queue[1].status === "running", "24g (N2) a dry run starts with the database unopenable, and the previous queue still skips the done pair");
+assert(store.log.some((l) => l.level === "warn" && /^cross-run guard: could not read the run records \(UnknownError: database cannot be opened\); the previous run's results in storage are the only earlier-run memory this run, and the model page's enabled-state check still runs$/.test(l.msg)), "24g (N2) the dry run says so with one warning line in the capped log");
+r = await msg({ type: K.MSG.STOP }); await settle();
+fakeIDB.openError = null;
+
+// 24h. (N12) the guard against a queue the real flow wrote: a full run
+//      reaches the Agreements phase and records the Agree click, the
+//      extension is reloaded (onInstalled ends the job unverified with the
+//      click on record), then the same pair is started again in a full run:
+//      skipped from the run record, and skipped from the previous queue
+//      alone once the records are wiped; no tab is navigated either time.
+fakeIDB.reset(); store.queue = []; store.run = null;
+store.settings.live_mode = true;
+r = await msg(START(["flow-proj"], ["claude-haiku-4-5"], true, false)); await settle();
+const tFlow = store.tab_id; const RFlow = runId();
+r = await msg({ type: K.MSG.SET_PHASE, runId: RFlow, jobIndex: 0, phase: "agreements" }, tFlow);
+r = await msg({ type: K.MSG.JOB_UPDATE, runId: RFlow, jobIndex: 0, fields: { agreeClicked: true } }, tFlow);
+lastInstalled(); await settle(); await settle();
+assert(store.running === false && store.queue[0].status === "unverified" && store.queue[0].agreeClicked === true && store.run.runId === RFlow, "24h (N12) the reload ended the live job unverified with Agree on record");
+const recFlow = records().find((x) => x.runId === RFlow);
+assert(!!recFlow && recFlow.results[0].status === "unverified" && recFlow.results[0].agreeClicked === true, "24h (N12) the run record carries the unverified result with the click");
+let tabsBefore24h = tabs.size; let navsBefore24h = events.filter((e) => e[0] === "tabs.update").length;
+r = await msg(START(["flow-proj"], ["claude-haiku-4-5"], true, false)); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped" && store.queue[0].message === `done in run ${RL.stamp(recFlow.startedAt)} (unverified)` && store.running === false && store.run.reason === "all jobs processed", "24h (N12) Start again, full run: the pair is skipped as unverified-with-click from the record, the run finishes at Start: " + store.queue[0].message);
+assert(tabs.size === tabsBefore24h && events.filter((e) => e[0] === "tabs.update").length === navsBefore24h, "24h (N12) no tab was created or navigated for it");
+// The second source alone: restore the flow's queue, wipe the records.
+store.queue = [{ projectId: "flow-proj", modelSlug: "claude-haiku-4-5", status: "unverified", agreeClicked: true, message: "Agree was clicked but the extension was reloaded" }];
+store.run = { runId: RFlow, live: true, startedAt: recFlow.startedAt, finishedAt: recFlow.startedAt + 1, reason: "extension was reloaded" };
+fakeIDB.reset();
+tabsBefore24h = tabs.size; navsBefore24h = events.filter((e) => e[0] === "tabs.update").length;
+r = await msg(START(["flow-proj"], ["claude-haiku-4-5"], true, false)); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped" && store.queue[0].message === `done in run ${RL.stamp(recFlow.startedAt)} (unverified)` && store.running === false && tabs.size === tabsBefore24h && events.filter((e) => e[0] === "tabs.update").length === navsBefore24h, "24h (N12) with every record wiped the previous queue alone skips the pair, no tab: " + store.queue[0].message);
+// Control: the queue source remembers one run back only (that run's queue is now all skipped, not done).
+r = await msg(START(["flow-proj"], ["claude-haiku-4-5"], true, false)); await settle();
+assert(r.ok === true && store.running === true && store.queue[0].status === "running", "24h control: a third Start, records still wiped and the previous queue holding only the skipped entry, runs the pair (the queue source remembers one run back)");
+r = await msg({ type: K.MSG.STOP }); await settle();
+store.settings.live_mode = false;
+store.queue = []; store.run = null;
 
 // 25. (U5) prune never deletes the run in progress, and an append to a
 //     missing record warns once in the capped log.
@@ -675,5 +759,43 @@ assert(orphanWarns.length === orphanWarnsBefore + 1, "25b append to a missing re
 assert(store.log.some((l) => l.msg === "orphan line one") && store.log.some((l) => l.msg === "orphan line two"), "25b the lines still reach the capped storage log");
 r = await msg({ type: K.MSG.STOP }); await settle();
 
+// 26. (N8) RUNS_DELETE of a 10,000-line run while another run is in
+//     progress: the lines go with one ranged delete request (the fake
+//     counts request round trips; a cursor would take one per line), the
+//     serialized chain hands the next message on at once, and the run in
+//     progress keeps its lines.
+fakeIDB.reset(); store.queue = []; store.run = null;
+await RL.create({ runId: "big-run", startedAt: GSTAMP, live: false }, [], false);
+await new Promise((resolve, reject) => {
+  const req = fakeIDB.open(RL.DB_NAME, RL.DB_VERSION);
+  req.onsuccess = () => {
+    const db = req.result;
+    const tx = db.transaction([RL.STORE, RL.LINES], "readwrite");
+    const ls = tx.objectStore(RL.LINES);
+    for (let i = 0; i < 10000; i++) ls.put({ runId: "big-run", seq: i, t: GSTAMP + i, level: "info", src: "worker", msg: "line " + i });
+    const g = tx.objectStore(RL.STORE).get("big-run");
+    g.onsuccess = () => { const rec = g.result; rec.lineCount = 10000; rec.finishedAt = GSTAMP + 10000; rec.reason = "all jobs processed"; tx.objectStore(RL.STORE).put(rec); };
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => reject(tx.error);
+  };
+  req.onerror = () => reject(req.error);
+});
+assert(lineRecs("big-run").length === 10000, "26 control: 10,000 line records exist for the old run");
+r = await msg(START(["proj-during-delete"], ["claude-haiku-4-5"], false, true)); await settle();
+const R26 = runId(); const t26 = store.tab_id;
+const linesInProgressBefore = lineRecs(R26).length;
+const requestsBefore = fakeIDB.requests;
+const t26start = Date.now();
+const delP = msg({ type: K.MSG.RUNS_DELETE, runId: "big-run" }, null, TAB_PAGE(560));
+const logP = msg({ type: K.MSG.LOG, level: "info", msg: "appended behind the delete" }, t26);
+const [delR] = await Promise.all([delP, logP]);
+const elapsed26 = Date.now() - t26start;
+const requestsUsed = fakeIDB.requests - requestsBefore;
+assert(delR.ok === true && lineRecs("big-run").length === 0 && !records().some((x) => x.runId === "big-run"), "26 (N8) the 10,000-line run and every one of its lines are gone");
+assert(requestsUsed < 20, `26 (N8) the delete, and the line appended behind it, took ${requestsUsed} request round trips in all (a cursor per row would take over 10,000): one ranged delete`);
+assert(elapsed26 < 2000, `26 (N8) both completed in ${elapsed26} ms`);
+assert(lineRecs(R26).length === linesInProgressBefore + 1 && lineRecs(R26).some((l) => l.msg === "appended behind the delete") && store.running === true, "26 (N8) the run in progress kept its lines and took the append queued behind the delete");
+r = await msg({ type: K.MSG.STOP }); await settle();
+
 finished = true;
-console.log(`ALL WORKER CHECKS PASSED (${n} passed)`);
+console.log(`ALL WORKER CHECKS PASSED (${n} passed, 0 failed, 0 skipped)`);

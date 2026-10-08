@@ -38,9 +38,11 @@ const { ok, skip, trustedClick, trustedKeydown, trustedKeyup } = E;
 const RUN_ID = "run-s";
 const PRODUCT = "anthropic/anthropic-867.cloudpartnerservices.goog";
 const AGREEMENTS_URL = `https://console.cloud.google.com/marketplace/agreements/${PRODUCT}?project=proj-one`;
-const RENDERED = '<h1>Agreements</h1><h2>Purchase summary</h2><table><tr><td>Claude Haiku 4 5 - Input Tokens - global</td></tr></table>' +
-  '<mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><input type="checkbox"></mat-checkbox>' +
-  '<button data-prober="cloud-marketplace-request-product"><span class="mdc-button__label"> Agree </span></button>';
+// The rendered Agreements page as the 04/05 dumps shape it (the body component, em-dash SKU rows, the hooked checkbox, the Agree button with its label span).
+const RENDERED = '<h1>Agreements</h1><billing-integrated-ai-agreements-body><h2>Purchase summary</h2>' +
+  '<button class="cfc-tiered-table-entry">Claude Haiku 4 5 — Input Tokens — global — Context Window Size from 0 to 200000 Tokens</button>' +
+  '<mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><label><input type="checkbox"><mp-agreements-tos><p>By purchasing you agree to the terms.</p></mp-agreements-tos></label></mat-checkbox>' +
+  '<button data-prober="cloud-marketplace-request-product" aria-label="Agree to the terms and agreements before continuing"><span class="mdc-button__label"> Agree </span></button></billing-integrated-ai-agreements-body>';
 const SUCCESS = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><mp-consent-complete-dialog><h1 matdialogtitle>Successfully purchased Claude Haiku 4.5</h1></mp-consent-complete-dialog></mat-dialog-container></div>';
 const ERROR_DIALOG = '<div class="cdk-overlay-container" id="err"><mat-dialog-container role="dialog" aria-label="Error dialog"><h1 matdialogtitle>Something went wrong</h1><div matdialogcontent>Could not load billing accounts. Try again.</div></mat-dialog-container></div>';
 // The console's refusal after Agree (docs/dom-map.md): the behavior-failure-dialog shape. ERROR_DIALOG above is a
@@ -154,9 +156,9 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
 
     const state3 = stateFor();
     const ctx3 = ctxFor(env, state3);
-    const p3 = env.A.awaitConfirmation(ctx3, "agree", { summary: "s", allowContinue: false });
+    const p3 = env.A.awaitConfirmation(ctx3, "agree", { summary: "s" });
     await sleep(60);
-    ok(buttonsOf(env).join("/") === "Stop", "allowContinue false: Stop only", buttonsOf(env).join("/"));
+    ok(buttonsOf(env).join("/") === "Continue/Stop", "every panel offers Continue and Stop (no Stop-only option exists)", buttonsOf(env).join("/"));
     state3.run = { runId: "another", live: false };
     err = null;
     try { await p3; } catch (e) { err = e; }
@@ -172,7 +174,7 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     await sleep(80);
     let cont = contOf(env);
     ok(cont.disabled === true && /A console dialog is open: Something went wrong: Could not load billing accounts\. Try again\./.test(noteOf(env)) && /Continue is disabled meanwhile/.test(noteOf(env)), "an error dialog opens: Continue disabled, the panel names the dialog", noteOf(env));
-    ok(ctx4.rec.logs.some((m) => /a console dialog is open while waiting for your confirmation: Something went wrong.*Continue disabled until it closes/.test(m)), "the dialog was logged once", ctx4.rec.logs.join(" | "));
+    ok(ctx4.rec.logs.some((m) => /a console dialog is open while waiting for your confirmation: Something went wrong.*\(element mat-dialog-container\); Continue disabled until it closes/.test(m)), "the dialog was logged once, naming the element it was matched by (T6)", ctx4.rec.logs.join(" | "));
     trustedClick(cont);
     await sleep(80);
     ok(settled4 === null && env.A.continueAge(RUN_ID, 0, "agree") === null, "a trusted Continue while the dialog is open is ignored and not recorded", settled4);

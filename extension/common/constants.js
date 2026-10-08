@@ -21,7 +21,7 @@
     STOP_REQUESTED: "stop_requested", // boolean: stop flag honored by worker + content script
     TAB_ID: "tab_id",               // id of the worker tab used for the run
     LOG: "log",                     // array of { t, level, src, msg }, capped
-    POPUP_STATE: "popup_state",     // last popup inputs (projects text, models, extras)
+    POPUP_STATE: "popup_state",     // last popup inputs: { projects (text), models (ticked slugs), extra (text), version (the manifest version that saved them) }
     RUN: "run",                     // { runId, live, startedAt, finishedAt, reason }: the run's identity and mode snapshot
     TIMING: "timing",               // advanced timing settings (options page "Advanced"); absent = constants below
     SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it

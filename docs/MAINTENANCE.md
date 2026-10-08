@@ -149,9 +149,10 @@ grep -o 'p6ntest-mp-agreements-body-tos-checkbox\|data-prober="cloud-marketplace
 
 | Page | Anchors in `selectors.js` | Where the map describes them |
 |---|---|---|
-| model | `vertex-ai-request-access-button button` with trimmed text `Enable`; `vertex-ai-open-generation-ai-studio-button` or the text `Open in Agent Studio` (already enabled); `apis-enabler` or the h1 `Enable APIs` (the dialog); path `/agent-platform/publishers/anthropic/model-garden/` | "Page 1: model page", "Conditional: Enable APIs dialog" |
-| questionnaire | `raf-runtime-form-element[raf-name=...]` for `businessName`, `businessWebsite`, `contactEmailAddress`, `businessHeadquarterSelect`, `industrySelect`, `intendedUserSelect`, `intendedUseCasesSelect`, `hasAdditionalRequirements`, `additionalRequirements`; `cfc-select` dropdowns (their `.cfc-select-trigger` and `.cfc-select-option-primary` classes live in `content/dom.js`, which handles how a control registers a value); `cfc-panel-footer.mg-questionnaire-footer` button `Next`; URL parameters `model=` and `mp=` | "Page 2: questionnaire" |
-| agreements | `mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox` or `mp-agreements-tos`; `button[data-prober="cloud-marketplace-request-product"]` or `aria-label^="Agree to the terms"`; `mp-consent-complete-dialog` (success), `behavior-failure-dialog` (error); path `/marketplace/agreements/anthropic/` | "Page 3: Agreements", "After Agree" |
+| model | `vertex-ai-request-access-button button` with trimmed text `Enable`, else the button reading `Enable` inside `vai-model-garden-call-to-action-button-stack` (never one elsewhere on the page); `vertex-ai-open-generation-ai-studio-button` or the text `Open in Agent Studio` (already enabled); `apis-enabler` or the h1 `Enable APIs` (the dialog); path `/agent-platform/publishers/anthropic/model-garden/`, with the stack as the page's DOM-side shell | "Page 1: model page", "Conditional: Enable APIs dialog" |
+| questionnaire | `raf-runtime-form-element[raf-name=...]` for `businessName`, `businessWebsite`, `contactEmailAddress`, `businessHeadquarterSelect`, `industrySelect`, `intendedUserSelect`, `intendedUseCasesSelect`, `hasAdditionalRequirements`, `additionalRequirements`; `cfc-select` dropdowns (their `.cfc-select-trigger` and `.cfc-select-option-primary` classes live in `content/dom.js`, which handles how a control registers a value); the button `Next` inside `cfc-panel-footer.mg-questionnaire-footer` (or any `.mg-questionnaire-footer` element; never one elsewhere); URL parameters `model=` and `mp=`; `raf-form[raf-entry-name="RequestAccessFormGroup"]` or the footer as the page's DOM-side shell | "Page 2: questionnaire" |
+| agreements | `mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox`, else `mp-agreements-tos` (its closest `mat-checkbox`), else the one `mat-checkbox` inside `billing-integrated-ai-agreements-body`; `button[data-prober="cloud-marketplace-request-product"]` or `aria-label^="Agree to the terms"` (no text locator for Agree); `mp-consent-complete-dialog` (success), `behavior-failure-dialog` (error); path `/marketplace/agreements/anthropic/`, with `billing-integrated-ai-agreements-body` or `mp-agreements-tos` as the page's DOM-side shell | "Page 3: Agreements", "After Agree" |
+| dialogs | `mat-dialog-container`, or any element with `role="dialog"` and `aria-modal="true"`; a non-modal `role="dialog"` (a drawer, a survey panel) blocks nothing, and every refusal or panel note names the element that matched | "Conditional: Enable APIs dialog", "After Agree" |
 
 Rules that held on every recorded page: generated ids (`_0rif_...`,
 `_1rif_...`) are never used; button text is padded (`" Enable "`) and is
@@ -159,7 +160,14 @@ trimmed before comparison; overlays render into
 `body > div.cdk-overlay-container`; the dialog's own Enable button is never
 confused with the model page's.
 
-A difference between the dump and the map is the thing to fix.
+A difference between the dump and the map is the thing to fix. A locator
+that no longer matches ends the job with a message that names the page and
+the locators it tried (for example `the Agreements page rendered
+(billing-integrated-ai-agreements-body or mp-agreements-tos is present) but
+the terms checkbox (...) was not found within 45 s`), and a page whose shell
+renders under a URL path the extension does not know fails after two polls
+naming the page and the path, so the first failed job already says which
+row of the table to look at.
 
 ## 4. Update the map, then the selectors
 
@@ -193,7 +201,7 @@ button while repairing a selector.
 ## 5. Run the offline suite against the new dumps
 
 ```sh
-cd extension/test && npm install && cd ../..    # once; installs jsdom locally
+cd extension/test && npm ci && cd ../..    # once; installs jsdom from the committed lockfile
 sh extension/test/run.sh
 ```
 
@@ -293,8 +301,12 @@ and the options page and fails (exit 1) on any SEVERE entry from the
 extension's own scripts or pages (`chrome-extension://` source), printing
 them; SEVERE noise from the console page itself is printed as a note only.
 The service worker's console is not in that log (the offline harness
-covers the worker), and errors the extension catches itself are logged at
-warning level, not SEVERE.
+covers the worker), so the script also fails on any error-level line in
+the run's log (the storage log and the downloaded run log): the extension
+logs every error it catches at that level (a tick that threw, a handler
+that threw something other than a timeout, a worker message handler that
+threw, a failed delete), and the content script's tick errors go to the
+browser console with `console.error` as well.
 
 Run it a second time with `--step-by-step` only when the panel code or the
 questionnaire handler changed. If anything under `popup/` or `options/`
@@ -326,10 +338,14 @@ git push origin main v<version>
 ```
 
 `.github/workflows/release.yml` runs on the tag: it checks that the tag
-equals the manifest version, installs jsdom and runs the offline suite
-with `MGC_ALLOW_SKIP=1` (the recon dumps are not in the repository, so
-the dump-based checks skip there; a failed check fails the release), then
-runs `scripts/build-extension-zip.sh` and
+equals the manifest version, installs the test dependencies from the
+committed lockfile (`npm ci`) and runs the offline suite with
+`MGC_ALLOW_SKIP=1` (the recon dumps are not in the repository, so the
+dump-based checks skip there; a failed check fails the release), then runs
+the two dump-independent suites (`worker-harness.mjs`, `ui-pages.cjs`) a
+second time under a strict wrapper that fails on a non-zero exit, on a
+missing summary line and on any skipped check, then runs
+`scripts/build-extension-zip.sh` and
 attaches `dist/model-garden-clicker-<version>.zip` to a GitHub release.
 Then upload that zip to the Chrome Web Store by hand; `store/CHECKLIST.md`
 walks the dashboard tabs.

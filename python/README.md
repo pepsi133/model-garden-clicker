@@ -112,7 +112,7 @@ text as the message.
 
 ## Offline tests of the extension
 
-    cd extension/test && npm install    # once; installs jsdom locally
+    cd extension/test && npm ci    # once; installs jsdom from the committed lockfile
     sh extension/test/run.sh
 
 `run.sh` runs `node --check` on every extension file, greps that
@@ -121,7 +121,7 @@ text as the message.
 
 | File | What it covers |
 |---|---|
-| `test/worker-harness.mjs` | The service worker against a fake `chrome` API: queue, worker tab, run id and live-mode snapshot, the popup opened in a tab treated as UI (its summary OK accepted, its job messages refused), Start refused when the mode the popup sent differs from the setting, stale-run messages dropped (also when Stop and Start interleave a message already being checked), watchdog re-armed per phase and `unverified` after a recorded Agree click, stop, recovery after a worker restart between jobs, a restart without the watchdog alarm (extension disabled and re-enabled) stopping the run, the `awaiting_confirmation` phase pausing the watchdog, a waiting job whose tab is gone stopped with a clear result, and a result with `stopAfter` ending the run instead of advancing. The per-run logs against a fake IndexedDB (`test/lib/fake-idb.cjs`, the subset `common/runlog.js` uses, with a switchable quota failure): one record per run with its metadata, job list, results and every line (worker, content and ui sources), the storage log still capped, a fresh worker instance appending to the same record, every database open closed again, a quota error or an unopenable database logged once and never failing a job, retention (`runs_keep`, default 50) pruning at Start, and delete/purge refused from a content script and for the run in progress. |
+| `test/worker-harness.mjs` | The service worker against a fake `chrome` API: queue, worker tab, run id and live-mode snapshot, the popup opened in a tab treated as UI (its summary OK accepted, its job messages refused), Start refused when the mode the popup sent differs from the setting, stale-run messages dropped (also when Stop and Start interleave a message already being checked), watchdog re-armed per phase and `unverified` after a recorded Agree click, stop, recovery after a worker restart between jobs, a restart without the watchdog alarm (extension disabled and re-enabled) stopping the run, the `awaiting_confirmation` phase pausing the watchdog, a waiting job whose tab is gone stopped with a clear result, and a result with `stopAfter` ending the run instead of advancing. The per-run logs against a fake IndexedDB (`test/lib/fake-idb.cjs`, the subset `common/runlog.js` uses, with a switchable quota failure and a request counter): one record per run with its metadata, job list, results and counters, its lines in their own store (one record per line; worker, content and ui sources), the storage log still capped, a fresh worker instance appending to the same record, every database open closed again, a quota error logged once and never failing a job, an unopenable database refusing a full run and warning in a dry run, retention (`runs_keep`, default 50) pruning at Start, delete/purge refused from a content script and for the run in progress, a 10,000-line run deleted with one ranged request while another run appends, and the cross-run double-purchase guard from both its sources (the run records and the previous run's queue in storage), through a full-run flow ended by a reload. |
 | `test/content-guard.cjs` | Every refusal of `clickAgreeGuarded()`: dry run, stop, wrong job or phase, the real Agreements page served under another project, another vendor's path or another product id, a page that does not name the model (exact version: Claude Sonnet 5 is not Claude Sonnet 5.5 and the reverse), a run started in dry-run mode, a stale run id, a second click for the same job, anything that changes while the click is being recorded, a console dialog open at click time; that live mode with every condition met clicks Agree exactly once (in jsdom only); that a dry run on a page that is not the job's fails instead of reporting `dry-run`; that the model name is judged on the rendered Purchase summary (a body that renders late is waited for, stale questionnaire text is not trusted); and that the post-Agree wait accepts only a dialog that appeared after the click and names the job's model. |
 | `test/main-loop.cjs` | The page loop in `content/main.js` with a fake `chrome`: `assertMayAct()` refusing after Stop, after a replaced run and on another project's page; the tick-level project check; one document, one job (a page that reported a job never acts for the next one, in the same project or another, whether it shows the enabled state, an Enable button or the ticked Agreements page, while a fresh document does); an idle tab reading storage once and polling only while a run is active; `handled` reset after a cleared "Enable APIs" dialog; attempts exhausted and fatal-error routing; one result per job; the badge and the mirrored step line; on the real ticked Agreements dump, one live Agree click reported `unverified` and no click without `?project=`; and with step-by-step on, the "Enable APIs" dialog cleared during the wait followed by a trusted Continue (one click, not a failed job), an error dialog disabling Continue and a Stop ending the loop, and the dry-run Next job / Stop panel. |
 | `test/dialog-step.cjs` | `clearBlockingDialog()` on the real "Enable APIs" dialog: one Enable click per job, a second appearance fails the job, a non-Enable button is refused. |
@@ -205,9 +205,11 @@ must save `model-garden-clicker-run-<YYYYMMDD-HHMMSS>.txt` into the
 download directory the browser was started with (`--download-dir`,
 default `<evidence dir>/downloads/`, set through Chrome's download
 preferences, no prompt); the file's first 20 lines are printed, its
-header must name the run id and the mode, and its log section must hold
+header must name the run id and the mode, its log section must hold
 at least as many `<ISO> <source> [<level>] <message>` lines as the capped
-storage log. At the end the
+storage log, and neither that log nor the storage log may hold an
+error-level line (the extension logs every error it catches at that
+level). At the end the
 script drains the session's browser console log, which covers the worker
 tab, the popup page, the options page and the Runs page (`console-log.txt` in the
 evidence directory; a `console.error` control is written first and the
@@ -220,10 +222,14 @@ or pages; 1 a job ended differently or such an entry was seen; 2 a config
 or extension problem (a stale cached worker, a page that did not load, a
 refused Start); 3 the profile is signed out or no browser could load the
 extension. The check
-does not see the service worker (its console is not part of the session
-log; the offline harness covers it) nor errors the extension catches
-itself (a failed tick or handler is logged at warning level with the
-`[MG Clicker]` prefix and can be read in `console-log.txt`).
+does not see the service worker's console (it is not part of the session
+log; the offline harness covers the worker), which is why the error-level
+check on the run log exists: a tick that threw, a handler that threw
+something other than a timeout, a worker message handler that threw or a
+failed delete each write an error-level line there (the content script's
+tick errors also reach the browser console through `console.error` with
+the `[MG Clicker]` prefix, as SEVERE entries). A handler timeout stays a
+warning: a slow page is retried, not an error.
 
 Browser attempts, in order: (a) `/usr/bin/google-chrome` with
 `--load-extension`, which branded Chrome 137+ ignores, so the script checks

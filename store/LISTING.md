@@ -7,7 +7,7 @@ listing tab and save the draft. (It was also rewritten on 2026-10-08 as a
 step-by-step walkthrough, same facts, same summary.)
 
 Every field of the developer dashboard, ready to paste. Replace `https://github.com/pepsi133/model-garden-clicker`
-with the public GitHub URL before pasting. Package version: 0.6.1
+with the public GitHub URL before pasting. Package version: 0.7.0
 (`extension/manifest.json`).
 
 ## Store listing tab

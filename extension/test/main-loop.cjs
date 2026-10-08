@@ -70,7 +70,7 @@ function boot(opts) {
     summary_ack: opts.summary || null
   };
   if (opts.running === false) state.running = false;
-  const results = [], logs = [], phases = [], updates = [], listeners = [], acks = [];
+  const results = [], logs = [], logEntries = [], phases = [], updates = [], listeners = [], acks = [];
   let gets = 0;
   let isWorkerTab = opts.workerTab !== false;
   env.win.chrome = {
@@ -88,7 +88,7 @@ function boot(opts) {
         else if (m.type === env.K.MSG.JOB_UPDATE) { updates.push(m.fields); Object.assign(state.queue[0], m.fields); }
         else if (m.type === env.K.MSG.JOB_RESULT) { results.push(m); state.current.phase = "finished"; if (m.stopAfter === true) state.stop_requested = true; }
         else if (m.type === env.K.MSG.STOP) { state.stop_requested = true; state.running = false; }
-        else if (m.type === env.K.MSG.LOG) logs.push(m.msg);
+        else if (m.type === env.K.MSG.LOG) { logs.push(m.msg); logEntries.push({ level: m.level, msg: m.msg }); }
         setTimeout(() => cb(reply), 1);
       }
     }
@@ -100,7 +100,7 @@ function boot(opts) {
   const ctx = env.dom.getInternalVMContext();
   for (const f of ["content/badge.js", "content/main.js"]) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   return {
-    env, state, results, logs, phases, updates, acks, gets: () => gets,
+    env, state, results, logs, logEntries, phases, updates, acks, gets: () => gets,
     fire: (changes) => { for (const fn of listeners) fn(changes, "local"); },
     badge: () => { const b = env.document.getElementById("mgc-badge"); return b ? b.textContent : null; },
     badgeVisible: () => { const b = env.document.getElementById("mgc-badge"); return !!b && b.style.display !== "none"; },
@@ -446,6 +446,60 @@ function boot(opts) {
     t.stop();
   }
 
+  console.log("--- (T7) a thrown handler error is an error-level log line; a timeout stays a warning; the loop's own catch reports at error level");
+  {
+    let calls = 0;
+    const t = boot({ handler: async () => { calls += 1; if (calls === 1) throw new TypeError("Cannot read properties of null (reading 'click')"); throw new t.env.D.TimeoutError("Enable button", 300); } });
+    await until(() => t.results.length > 0, 3000);
+    const errs = t.logEntries.filter((e) => /model attempt 1 failed: Cannot read properties of null/.test(e.msg));
+    const warns = t.logEntries.filter((e) => /model attempt [23] failed: timed out after 300 ms waiting for Enable button/.test(e.msg));
+    ok(errs.length === 1 && errs[0].level === "error", "(T7) a handler that throws a TypeError: its attempt line is logged at level error (the run log, the Runs page and the dry-run check see it)", JSON.stringify(errs));
+    ok(warns.length === 2 && warns.every((e) => e.level === "warn") && t.results[0].status === "failed", "(T7) a handler that times out: the attempt line stays a warning (a slow page, retried), the job still fails after three attempts", JSON.stringify(warns));
+    t.stop();
+  }
+  {
+    // The loop's own catch (tick): a storage read that throws is neither a handler nor a dialog error. It is
+    // reported at error level into the run log and with console.error into the browser console (a SEVERE
+    // entry the dry-run harness fails on), and the loop goes on at the next tick.
+    let calls = 0; let thrown = false;
+    const t = boot({ handler: async () => { calls += 1; return null; } });
+    const consoleErrors = [];
+    t.env.win.console.error = (...a) => consoleErrors.push(a.map((x) => (x && x.message) || String(x)).join(" "));
+    await until(() => calls === 1, 2000);
+    const realGet = t.env.win.chrome.storage.local.get;
+    t.env.win.chrome.storage.local.get = async (keys) => { if (!thrown) { thrown = true; throw new Error("storage exploded"); } return realGet(keys); };
+    await until(() => t.logEntries.some((e) => /tick error: storage exploded/.test(e.msg)), 2000);
+    const line = t.logEntries.find((e) => /tick error: storage exploded/.test(e.msg));
+    ok(line && line.level === "error" && line.msg === "tick error: storage exploded", "(T7) an exception the loop did not route (a storage read that threw) is an error-level run-log line", JSON.stringify(line));
+    ok(consoleErrors.some((m) => /\[MG Clicker\] tick error/.test(m) && /storage exploded/.test(m)), "(T7) and a console.error with the [MG Clicker] prefix (a SEVERE browser console entry)", consoleErrors.join(" | "));
+    await sleep(200);
+    ok(thrown && t.results.length === 0 && t.badgeVisible(), "(T7) the loop went on after it: no result, the badge still shows", `results=${t.results.length}`);
+    t.stop();
+  }
+
+  console.log("--- (T6) a known page's shell under a URL path the extension does not know: a clean halt naming the page and the path, nothing clicked");
+  {
+    const MOVED_URL = "https://console.cloud.google.com/vertex-ai/publishers/anthropic/model-garden/claude-haiku-4-5?project=proj-one";
+    let calls = 0;
+    const t = boot({ url: MOVED_URL, handler: async () => { calls += 1; return null; }, modelReady: 5000 });
+    let clicks = 0; t.env.S.model.enableButton().addEventListener("click", () => { clicks += 1; });
+    const t0 = Date.now();
+    await until(() => t.results.length > 0, 3000);
+    const r = t.results[0]; const ms = Date.now() - t0;
+    ok(calls === 0 && clicks === 0 && r && r.status === "failed" && ms >= 500 && ms < 2500 && /^the tab shows the model page \(its shell component is rendered\) at a URL path the extension does not know \(\/vertex-ai\/publishers\/anthropic\/model-garden\/claude-haiku-4-5\): either the tab was navigated by hand or the console changed its URL paths \(the path constants in common\/constants\.js; see docs\/MAINTENANCE\.md\); nothing was clicked$/.test(r.message),
+      "(T6) the model page's shell at a moved URL: failed after two polls (not the ten-minute watchdog, not model_ready_ms) naming the page and the path; no handler ran, Enable not clicked", `${JSON.stringify(r)} ${ms} ms calls=${calls} clicks=${clicks}`);
+    ok(t.phases.length === 0, "(T6) no phase was set", JSON.stringify(t.phases));
+    t.stop();
+  }
+  {
+    // control: a shell that is gone again after one poll (a route change's leftovers) is not judged.
+    const t = boot({ url: "https://console.cloud.google.com/vertex-ai/publishers/anthropic/model-garden/claude-haiku-4-5?project=proj-one", handler: async () => null, modelReady: 5000 });
+    setTimeout(() => { const stack = t.env.D.q("vai-model-garden-call-to-action-button-stack"); if (stack) stack.remove(); }, 100);
+    await sleep(1200);
+    ok(t.results.length === 0, "(T6) control: a shell that disappears within a poll is not judged (no result within 1.2 s)", JSON.stringify(t.results));
+    t.stop();
+  }
+
   console.log("--- timing from storage, timing marks, badge and the mirrored step line");
   {
     const t = boot({
@@ -563,6 +617,22 @@ function boot(opts) {
       const r = t.results[0];
       ok(r && r.status === "dry-run" && /checkbox ticked; Agree was not clicked; you stopped the run here/.test(r.message) && r.stopAfter === true && clicks === 0, "Stop on the dry-run panel: the job is reported dry-run with stopAfter, Agree never clicked", JSON.stringify(r));
       ok(t.logs.some((m) => /job 0 -> dry-run: .* \(run stops after this job\)/.test(m)), "the report log says the run stops after this job", t.logs.join(" | "));
+      t.stop();
+    }
+    {
+      // (T11) step_by_step flipped in storage while the Agree panel waits (the UI lock refuses it; devtools can):
+      // nothing clicks by itself, the panel keeps waiting, and a trusted Continue then clicks Agree exactly once.
+      const t = boot({ html: snap.html, forms: snap.forms, url: snap.url, live: true, stepByStep: true, job: { projectId: project, productId: PRODUCT } });
+      let clicks = 0; t.env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+      await until(() => panel(t) !== null, 4000);
+      ok(panel(t) !== null && t.results.length === 0 && clicks === 0, "(T11) live + step-by-step: the Agree panel waits");
+      t.state.settings.step_by_step = false;
+      await sleep(700);
+      ok(clicks === 0 && t.results.length === 0 && panel(t) !== null && !t.updates.some((u) => u.agreeClicked), "(T11) step_by_step flipped to false in storage mid-wait: the panel still waits, no click, nothing recorded, no result", `clicks=${clicks} ${JSON.stringify(t.results)}`);
+      E.trustedClick(cont(t));
+      await until(() => t.results.length > 0, 4000);
+      const r = t.results[0];
+      ok(clicks === 1 && r && r.status === "unverified" && /Agree clicked but no confirmation/.test(r.message) && t.updates.filter((u) => u.agreeClicked === true).length === 1, "(T11) a trusted Continue then clicks Agree exactly once, recorded first (one click at most, the right wording)", `${JSON.stringify(r)} clicks=${clicks}`);
       t.stop();
     }
   }

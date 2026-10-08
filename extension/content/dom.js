@@ -208,10 +208,7 @@
   D.optionText = function (opt) {
     const primary = D.q(".cfc-select-option-primary", opt);
     if (primary) return D.text(primary);
-    if (typeof opt.innerText === "string") return D.norm(opt.innerText);
-    const clone = opt.cloneNode(true);
-    for (const hidden of D.qa(".cfc-select-option-collapsed, [style*='display: none'], [style*='display:none']", clone)) hidden.remove();
-    return D.text(clone);
+    return typeof opt.innerText === "string" ? D.norm(opt.innerText) : D.text(opt);
   };
 
   /** Options currently rendered in the body-level overlay container. */

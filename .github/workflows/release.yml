@@ -48,9 +48,13 @@ jobs:
         run: MGC_ALLOW_SKIP=1 sh extension/test/run.sh
 
       # The two dump-independent suites never skip, so CI proves them in full:
-      # a non-zero exit fails the step, and a non-zero "skipped" count in a
-      # suite's summary fails it too (the harness exits 0 on a skip, so the
-      # wrapper is what enforces "no skips", making the claim honest).
+      # a non-zero exit fails the step; a suite that prints no "CHECKS PASSED"
+      # summary line fails it (an await that never resolved, or a harness
+      # edited to drop its finish: the harness exit hooks catch that too,
+      # but the wrapper does not rely on them); and a non-zero "skipped"
+      # count in the summary fails it (both harnesses print the
+      # "(N passed, N failed, N skipped)" shape, so the count check is never
+      # vacuous).
       - name: Prove the dump-independent suites in full (no skips allowed)
         run: |
           cd extension/test
@@ -58,8 +62,10 @@ jobs:
             if out=$(node "$t" 2>&1); then rc=0; else rc=$?; fi
             printf '%s\n' "$out"
             if [ "$rc" != 0 ]; then echo "FAIL: $t exited $rc" >&2; exit 1; fi
+            printf '%s\n' "$out" | grep -q "CHECKS PASSED (" || { echo "FAIL: $t printed no summary line" >&2; exit 1; }
             skipped=$(printf '%s\n' "$out" | sed -n 's/.*, \([0-9][0-9]*\) skipped.*/\1/p' | tail -n 1)
-            if [ -n "$skipped" ] && [ "$skipped" != 0 ]; then
+            if [ -z "$skipped" ]; then echo "FAIL: $t printed no skipped count in its summary line" >&2; exit 1; fi
+            if [ "$skipped" != 0 ]; then
               echo "FAIL: $t skipped $skipped check(s); the dump-independent suites must run in full" >&2
               exit 1
             fi

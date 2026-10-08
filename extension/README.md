@@ -110,8 +110,9 @@ by its tab id). The geometry is checked in headless Chrome by
    separated by commas or new lines. Slugs are the last path segment of a
    model's Model Garden URL, for example `claude-haiku-4-5`.
    The **Include pairs already done in earlier runs** box (a per-run choice:
-   it starts unchecked on every popup open and is cleared after a successful
-   Start, so one tick cannot quietly stay on) controls the cross-run guard:
+   it starts unchecked on every popup open and every Start click spends it,
+   whether the run starts, is refused or its confirmation is cancelled, so
+   one tick cannot quietly stay on) controls the cross-run guard:
    with it unchecked, a project and model pair that an earlier run recorded
    as done, or as unverified with Agree already clicked, is created as
    `skipped` in the new queue (the message names the earlier run) so the
@@ -121,13 +122,18 @@ by its tab id). The geometry is checked in headless Chrome by
    skipped because the model was already enabled, is never skipped by this
    guard. This is separate from, and in addition to, the model page's own
    already-enabled check, which still runs for every job.
-   The guard's only memory is the run records shown on the Runs page, so a
-   run that is deleted, purged or pruned by "Runs to keep", or a record that
-   could not be written, is forgotten: such a pair is no longer recognised as
-   already done. If the run-log database cannot be read at Start the guard is
-   off for that run and a warning line is written to the log; the model
-   page's own enabled-state check still runs. The guard is a safety net, not
-   the only check.
+   The guard has two memories: the run records shown on the Runs page and
+   the previous run's results as the popup still shows them (its queue in
+   the extension's storage, which "clear" under the results empties). A run
+   that is deleted, purged or pruned by "Runs to keep", or a record that
+   could not be written, is forgotten by the first; the second remembers
+   the one run before this Start only. If the run-log database cannot be
+   opened at Start, a full run is refused with a message that says so (the
+   Runs page shows the database error; a dry run is still possible) and a
+   dry run starts with a warning line in the log, guarded by the previous
+   run's results alone. With the box ticked the log says once that the
+   guard is off for that run. The guard is a safety net, not the only
+   check.
 5. Click **Start** (a dry run starts at once; only a full run asks for a
    confirmation). The extension opens one tab and works through every
    project and model pair in order. A dark badge in the tab's bottom-right
@@ -174,8 +180,8 @@ every line of every run is kept in full on the Runs page (below).
 ## The Runs page: full per-run logs
 
 Every log line the extension writes while a run is active (from the
-worker, the content script in the console tab and the extension's own
-pages) is also appended, without any cap, to a record of that run in the
+worker and from the content script in the console tab) is also appended,
+without any cap, to a record of that run in the
 extension's IndexedDB, next to the run's id, its start and end, the mode
 (dry run or full run), whether step-by-step confirmation was on, the job
 list and the result of every job. The service worker is the only writer;
@@ -212,7 +218,12 @@ The log text holds what the popup's log holds, in full: step names,
 timings, the option texts the console offered and, on a failure, the name
 of a rejected questionnaire field and the value the console rejected. The
 questionnaire values are not written to it otherwise. The project IDs and
-model names of the jobs are in it, since the jobs are named by them.
+model names of the jobs are in it, since the jobs are named by them. Every
+error the extension catches (a page-loop tick that threw, a handler that
+threw something other than a timeout, a worker message that failed, a
+delete that failed) is in it as an `[error]` line, so a run whose log has
+none swallowed nothing; a slow page that timed out and was retried is a
+`[warn]` line.
 
 Retention: when a run starts, the oldest records beyond **Runs to keep**
 are deleted. The setting is in the **Logs** section of the options page
@@ -507,7 +518,15 @@ through a link with the `download` attribute, not the `downloads` API.
 ## Development
 
 Selector details, the offline tests, the headless layout probe of the popup
-and the end-to-end dry run are described in `python/README.md`.
+and the end-to-end dry run are described in `python/README.md`. When a
+console locator no longer matches, the job fails with a message that names
+the page and the locators that were tried (`docs/MAINTENANCE.md` is the
+repair guide); the model page's Enable and the questionnaire's Next are
+only ever looked for inside their own component (the call-to-action
+stack, the questionnaire footer), never by their text anywhere on the
+page, and a page whose shell renders under a URL path the extension does
+not know fails after two polls naming the page and the path instead of
+waiting for the watchdog.
 
 ## Icon and theme
 

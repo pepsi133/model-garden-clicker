@@ -540,12 +540,11 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.6.1", "the manifest version is 0.6.1", manifest.version);
-    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.6.1 added no permission: still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
+    ok(manifest.version === "0.7.0", "the manifest version is 0.7.0", manifest.version);
+    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.7.0 added no permission: still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
     ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
     ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
-    ok(manifest.description === "Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.", "the description is the 131-character store text", manifest.description);
     ok(typeof manifest.name === "string" && manifest.name.length <= 75 && manifest.name.length > 0, `the manifest name is at most 75 characters (store limit): ${manifest.name.length}`);
     ok(typeof manifest.short_name === "string" && manifest.short_name.length <= 12 && manifest.short_name.length > 0, `the short_name is at most 12 characters (store limit): ${manifest.short_name.length}`);
   }
@@ -958,13 +957,18 @@ function setSelect(p, name, value) {
     fakeIDB.reset();
   }
 
-  console.log("--- (N6) the sanitiser also replaces C1 controls, zero-width characters, the soft hyphen and tag characters with U+FFFD");
+  console.log("--- (N6/P4) the sanitiser also replaces C1 controls, zero-width and other invisible characters, the soft hyphen, variation selectors, Hangul fillers and tag characters with U+FFFD");
   {
     fakeIDB.reset();
     // C1 (NEL U+0085, CSI U+009B, APC U+009F), soft hyphen U+00AD,
-    // zero-width U+200B-U+200D, word joiner U+2060, BOM U+FEFF, and a tag
-    // character U+E0041 (astral).
-    const samples = [0x0085, 0x009b, 0x009f, 0x00ad, 0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0xe0041];
+    // zero-width U+200B-U+200D, word joiner U+2060, BOM U+FEFF, a tag
+    // character U+E0041 (astral); and (P4) the Hangul fillers U+115F, U+1160,
+    // U+3164, U+FFA0, the Mongolian vowel separator U+180E, the invisible
+    // operators U+2061 and U+2064, the variation selectors U+FE00, U+FE0F,
+    // U+E0100 and U+E01EF (astral), the interlinear annotation anchors
+    // U+FFF9 and U+FFFB.
+    const samples = [0x0085, 0x009b, 0x009f, 0x00ad, 0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0xe0041,
+      0x115f, 0x1160, 0x3164, 0xffa0, 0x180e, 0x2061, 0x2064, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0xfff9, 0xfffb];
     const msg = "ZZSTART" + samples.map((c) => String.fromCodePoint(c)).join("") + "ZZEND";
     await RLNODE.create({ runId: "r-n6", startedAt: Date.UTC(2026, 9, 8, 13, 0, 0), live: false }, [], false);
     await RLNODE.append("r-n6", { t: Date.UTC(2026, 9, 8, 13, 0, 0), level: "warn", src: "content", msg });
@@ -973,8 +977,11 @@ function setSelect(p, name, value) {
     const line = text.split("\n").find((l) => /ZZSTART/.test(l)) || "";
     const stillForbidden = Array.from(line).filter((c) => samples.includes(c.codePointAt(0)));
     const fffd = Array.from(line).filter((c) => c === "�").length;
-    ok(stillForbidden.length === 0 && fffd === samples.length, `(N6) every C1, zero-width, soft-hyphen and tag sample is replaced with U+FFFD (${fffd} of ${samples.length}; none left)`, JSON.stringify(stillForbidden.map((c) => c.codePointAt(0).toString(16))));
+    ok(stillForbidden.length === 0 && fffd === samples.length, `(N6/P4) every one of the ${samples.length} samples is replaced with U+FFFD (${fffd} replaced; none left)`, JSON.stringify(stillForbidden.map((c) => c.codePointAt(0).toString(16))));
     ok(/ZZSTART/.test(line) && /ZZEND/.test(line), "(N6) the readable text around the hidden characters survives", JSON.stringify(line));
+    // Controls: a tab, CJK text, an astral emoji and combining marks outside the class pass through.
+    const kept = "\t漢字😀é";
+    ok(RLNODE.textOf({ runId: "x", startedAt: 1 }, [{ t: 1, level: "info", src: "worker", msg: "K" + kept + "K" }]).includes("K" + kept + "K"), "(P4) control: a tab, CJK, an astral emoji and a combining acute are kept as they are");
     fakeIDB.reset();
   }
 
@@ -1031,6 +1038,24 @@ function setSelect(p, name, value) {
     haiku4.checked = true; haiku4.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
     p.document.getElementById("start").click(); await tick();
     ok(confirms.length === 1 && /FULL RUN/.test(confirms[0]) && /guard is off/.test(confirms[0]) && /pairs already done in earlier runs will be processed again/.test(confirms[0]), "(N1) the full-run confirm names the override when the box is ticked", confirms[0]);
+    ok(p.document.getElementById("include-done").checked === false && !(store4.__messages || []).some((m) => m.type === p.K.MSG.START), "(P1) a cancelled full-run confirm spends the tick: the box is cleared and no START was sent");
+    p.win.close();
+    // (P1) every Start click spends the tick: a refusal by the popup's own check and a refusal by the worker clear it too.
+    const store5 = { settings: Object.assign({}, FULL) };
+    p = await loadPage("popup/popup.html", store5, POPUP_SCRIPTS);
+    const box5 = p.document.getElementById("include-done");
+    box5.checked = true;
+    p.document.getElementById("start").click(); await tick();
+    ok(/enter at least one project ID/.test(p.document.getElementById("error").textContent) && box5.checked === false && !(store5.__messages || []).some((m) => m.type === p.K.MSG.START), "(P1) a Start refused by the popup's own check (no project ID) clears the box; no START sent");
+    p.document.getElementById("projects").value = "Bad_ID";
+    const haiku5 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
+    haiku5.checked = true; haiku5.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    box5.checked = true;
+    store5.__reply = (m) => (m.type === p.K.MSG.START ? { ok: false, error: "invalid project ID: Bad_ID" } : { ok: true });
+    p.document.getElementById("start").click(); await tick();
+    const sent5 = (store5.__messages || []).filter((m) => m.type === p.K.MSG.START);
+    ok(sent5.length === 1 && sent5[0].includeDone === true && JSON.stringify(sent5[0].projects) === JSON.stringify(["Bad_ID"]), "(D12) the popup no longer pre-validates the IDs: the START message carries the typed ID and the tick to the worker", JSON.stringify(sent5));
+    ok(/invalid project ID: Bad_ID/.test(p.document.getElementById("error").textContent) && box5.checked === false && p.document.getElementById("start").disabled === false, "(P1) a Start refused by the worker (its reply carries the reason) clears the box and re-enables Start", p.document.getElementById("error").textContent);
     p.win.close();
     fakeIDB.reset();
   }

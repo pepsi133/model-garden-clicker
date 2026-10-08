@@ -73,13 +73,13 @@
   }
 
   /** The current step line: the wait in progress with its elapsed/timeout, else the named action. */
-  B.stepLine = function () {
+  function stepLine() {
     const D = globalThis.MGC_DOM;
     const w = D && D.currentWait;
     if (w) return `waiting for ${w.what} · ${Math.floor((Date.now() - w.since) / 1000)} s / ${Math.round(w.timeout / 1000)} s`;
     if (action) return action;
     return info && info.note ? info.note : "idle";
-  };
+  }
 
   function render() {
     if (!info) return;
@@ -88,7 +88,7 @@
     const job = `job ${info.jobIndex + 1}/${info.total} · ${info.projectId} · ${info.modelSlug}`;
     const elapsed = info.jobStartedAt ? ` · ${mmss(Date.now() - info.jobStartedAt)}` : "";
     const line1 = `MG Clicker [${info.mode || "?"}] ${job}${elapsed}`;
-    const line2 = `step: ${B.stepLine()}`;
+    const line2 = `step: ${stepLine()}`;
     const next = info.nextJob ? `next job: ${info.nextJob.projectId} · ${info.nextJob.modelSlug}` : "next job: none (last job)";
     const line3 = `then: ${info.plan || "-"} · ${next}`;
     text.textContent = `${line1}\n${line2}\n${line3}`;
@@ -275,9 +275,7 @@
   };
 
   /** Re-render now (the page loop calls it when a wait starts or ends). */
-  B.refresh = function () {
-    render();
-  };
+  B.refresh = render;
 
   globalThis.MGC_BADGE = B;
 })();

@@ -139,11 +139,10 @@ async function settleMsUnsafe() {
 }
 
 function newRunId() {
-  if (globalThis.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return crypto.randomUUID();
 }
 
-/** slug -> display name from models.json, or {} when it cannot be read. */
+/** slug -> display name from models.json, or {} (with a warning line) when it cannot be read. */
 async function modelNames() {
   try {
     const res = await fetch(chrome.runtime.getURL("models.json"));
@@ -151,40 +150,50 @@ async function modelNames() {
     const names = {};
     for (const m of Array.isArray(list) ? list : []) if (m && m.slug && m.name) names[m.slug] = String(m.name);
     return names;
-  } catch (e) {
+  } catch (err) {
+    await appendLogUnsafe("warn", `could not read models.json (${err && err.message ? err.message : err}); the jobs are named by their slugs`);
     return {};
   }
 }
 
 /**
- * `live` is the mode the popup showed and, in live mode, had confirmed. It
- * must equal the stored setting at this instant: the run's snapshot is the
- * confirmed mode, never a value the options page wrote in between.
- */
-/**
  * The cross-run double-purchase guard: for every (project, model) pair in
- * the new queue, look at the stored run records; if an earlier run recorded
- * the pair as done (or unverified with Agree on record), mark the new job
- * skipped so the extension does not queue a purchase for a pair it may have
- * already bought. A dry-run or an already-enabled skip is not "done", so a
- * pair that was only dry-run is never skipped here. The user overrides the
- * whole guard with the popup's "Include pairs already done in earlier runs"
- * box (includeDone). This is independent of, and additional to, the model
- * page's own enabled-state check, which still runs for every job that is not
- * skipped here. Best effort: a database error leaves the queue untouched.
+ * the new queue, look at two sources of earlier results, the stored run
+ * records (common/runlog.js, newest first) and the previous run's queue
+ * still in chrome.storage (KEYS.QUEUE with KEYS.RUN for its start time,
+ * which a deleted, purged or pruned record, or a record that could not be
+ * written, cannot lose). If either recorded the pair as done (or unverified
+ * with Agree on record), the new job is created skipped so the extension
+ * does not queue a purchase for a pair it may have already bought. A dry-run
+ * or an already-enabled skip is not "done", so a pair that was only dry-run
+ * is never skipped here. The user overrides the whole guard with the popup's
+ * "Include pairs already done in earlier runs" box (includeDone). This is
+ * independent of, and additional to, the model page's own enabled-state
+ * check, which still runs for every job that is not skipped here.
+ *
+ * `live` is the mode of the run being started. The run records are read
+ * even with includeDone (so an unopenable database is found before any
+ * purchase is queued): in a full run that failure refuses the Start
+ * ({ refused }); in a dry run the previous queue is the only earlier-run
+ * memory and a warning says so. Returns { skipped, notes }: the notes
+ * ([level, message]) are logged by the caller once the run record exists,
+ * so they reach the Runs page as well as the popup log.
  */
-async function applyCrossRunGuardUnsafe(queue, includeDone) {
-  if (includeDone === true) return 0;
-  let prior;
+async function applyCrossRunGuardUnsafe(queue, { includeDone, live, prevQueue, prevRun }) {
+  const notes = [];
+  let prior = [];
   try {
     prior = await RL.list(); // newest first
-  } catch (e) {
-    // The guard's only memory is the run records; if they cannot be read the
-    // guard is off for this run. Say so once, in the log, so a silent failure
-    // never passes for a working guard. The model page's enabled-state check
-    // still runs for every job.
-    await appendLogUnsafe("warn", "cross-run guard off: could not read the run records; the model page's enabled-state check is the only guard this run");
-    return 0;
+  } catch (err) {
+    const why = err && err.name ? `${err.name}: ${err.message || ""}` : String(err);
+    if (live === true) {
+      return { refused: `full run refused: the run-record database could not be opened (${why}), so the cross-run double-purchase guard cannot check earlier runs and this run's record could not be kept; open the Runs page to see the database error, or start a dry run` };
+    }
+    notes.push(["warn", `cross-run guard: could not read the run records (${why}); the previous run's results in storage are the only earlier-run memory this run, and the model page's enabled-state check still runs`]);
+  }
+  if (includeDone === true) {
+    notes.push(["info", 'cross-run guard off for this run ("Include pairs already done in earlier runs" ticked): pairs done in earlier runs are processed again']);
+    return { skipped: 0, notes };
   }
   // Project IDs and model slugs are compared case-insensitively, the same way
   // isValidModelSlug accepts a slug, so a pair done under one spelling is
@@ -192,19 +201,26 @@ async function applyCrossRunGuardUnsafe(queue, includeDone) {
   const guardKey = (projectId, modelSlug) => `${String(projectId).toLowerCase()}\u0000${String(modelSlug).toLowerCase()}`;
   const doneBy = new Map(); // "project\0model" (lower-cased) -> { startedAt, status }
   let malformed = 0;
-  for (const rec of Array.isArray(prior) ? prior : []) {
-    for (const res of (rec && Array.isArray(rec.results) ? rec.results : [])) {
-      // A corrupted record (a null entry, a non-object, a missing field)
-      // must not throw at Start: skip it and count it for one warning line.
+  const takeResults = (results, startedAt) => {
+    for (const res of (Array.isArray(results) ? results : [])) {
+      // A corrupted entry (a null, a non-object, a missing field) must not
+      // throw at Start: skip it and count it for one warning line.
       if (!res || typeof res !== "object") { malformed += 1; continue; }
       const done = res.status === STATUS.DONE || (res.status === STATUS.UNVERIFIED && res.agreeClicked === true);
       if (!done) continue;
       const key = guardKey(res.projectId, res.modelSlug);
-      if (!doneBy.has(key)) doneBy.set(key, { startedAt: rec.startedAt, status: res.status });
+      if (!doneBy.has(key)) doneBy.set(key, { startedAt, status: res.status });
     }
+  };
+  // The previous run's queue first (the most recent results; the same run
+  // is in the records too when they could be written, with the same stamp).
+  takeResults(prevQueue, prevRun && typeof prevRun.startedAt === "number" ? prevRun.startedAt : null);
+  for (const rec of Array.isArray(prior) ? prior : []) {
+    if (!rec || typeof rec !== "object") { malformed += 1; continue; }
+    takeResults(rec.results, rec.startedAt);
   }
   if (malformed > 0) {
-    await appendLogUnsafe("warn", `cross-run guard: skipped ${malformed} malformed run record entr${malformed === 1 ? "y" : "ies"} while checking for already-done pairs`);
+    notes.push(["warn", `cross-run guard: skipped ${malformed} malformed run record entr${malformed === 1 ? "y" : "ies"} while checking for already-done pairs`]);
   }
   let skipped = 0;
   for (const job of queue) {
@@ -213,18 +229,24 @@ async function applyCrossRunGuardUnsafe(queue, includeDone) {
     const now = Date.now();
     Object.assign(job, {
       status: STATUS.SKIPPED,
-      message: `done in run ${RL.stamp(hit.startedAt)} (${hit.status})`,
+      message: `done in ${typeof hit.startedAt === "number" ? `run ${RL.stamp(hit.startedAt)}` : "the previous run"} (${hit.status})`,
       phase: PHASE.FINISHED,
       startedAt: now,
       finishedAt: now
     });
     skipped += 1;
   }
-  return skipped;
+  return { skipped, notes };
 }
 
+/**
+ * Start a run. `live` is the mode the popup showed and, in live mode, had
+ * confirmed. It must equal the stored setting at this instant: the run's
+ * snapshot is the confirmed mode, never a value the options page wrote in
+ * between.
+ */
 async function startRunUnsafe({ projects, models, live, includeDone }) {
-  const o = await get([KEYS.RUNNING, KEYS.SETTINGS]);
+  const o = await get([KEYS.RUNNING, KEYS.SETTINGS, KEYS.QUEUE, KEYS.RUN]);
   if (o[KEYS.RUNNING] === true) return { ok: false, error: "a run is already in progress" };
 
   const settings = Object.assign({}, K.DEFAULT_SETTINGS, o[KEYS.SETTINGS] || {});
@@ -257,9 +279,10 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
   }
   // Cross-run double-purchase guard: mark pairs already bought in an earlier
   // run as skipped before the queue is stored (so the record reflects it and
-  // the job is never navigated). Runs before create(), which reads the same
-  // records this guard just read.
-  const skippedByGuard = await applyCrossRunGuardUnsafe(queue, includeDone === true);
+  // the job is never navigated). Runs before anything is written, so a
+  // refusal (full run, unopenable database) leaves storage as it was.
+  const guard = await applyCrossRunGuardUnsafe(queue, { includeDone: includeDone === true, live, prevQueue: o[KEYS.QUEUE], prevRun: o[KEYS.RUN] });
+  if (guard.refused) return { ok: false, error: guard.refused };
 
   const run = { runId: newRunId(), live, startedAt: Date.now(), finishedAt: null, reason: null };
   await set({
@@ -279,10 +302,13 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
   const keepStored = await get(KEYS.RUNS_KEEP);
   // Prune to "runs to keep", but never delete this run's own record, whatever
   // a backwards clock did to the stored start times.
-  await runlogSafe(run.runId, "prune old run records", () => RL.prune(K.runsKeepFrom(keepStored[KEYS.RUNS_KEEP]), run.runId));
+  await runlogSafe(run.runId, "prune old run records", () => RL.prune(keepStored[KEYS.RUNS_KEEP], run.runId));
   await appendLogUnsafe("info", `run ${run.runId} started: ${projectIds.length} project(s) x ${modelSlugs.length} model(s) = ${queue.length} job(s), mode ${live ? "FULL RUN" : "DRY RUN"}${settings.step_by_step === true ? ", step-by-step confirmation on" : ""}`);
-  if (skippedByGuard > 0) {
-    await appendLogUnsafe("info", `cross-run guard: ${skippedByGuard} job(s) skipped as already done in an earlier run; tick "Include pairs already done in earlier runs" in the popup to re-run them`);
+  // The guard's notes (guard off, records unreadable, malformed entries) are
+  // logged now, with the record in place, so the Runs page carries them too.
+  for (const [level, note] of guard.notes) await appendLogUnsafe(level, note);
+  if (guard.skipped > 0) {
+    await appendLogUnsafe("info", `cross-run guard: ${guard.skipped} job(s) skipped as already done in an earlier run; tick "Include pairs already done in earlier runs" in the popup to re-run them`);
   }
   await advanceUnsafe();
   return { ok: true, jobs: queue.length, runId: run.runId };
@@ -615,7 +641,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
   };
 
-  handle().then(sendResponse, (err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
+  handle().then(sendResponse, (err) => {
+    const why = err && err.message ? err.message : String(err);
+    // An exception inside a handler is a bug: it reaches the run log at
+    // error level (the dry-run harness fails on it), then the reply.
+    log("error", `message ${msg.type} failed: ${why}`).catch(() => {}).then(() => sendResponse({ ok: false, error: why }));
+  });
   return true; // keep the channel open for the async response
 });
 
@@ -634,7 +665,9 @@ async function deleteRunLogUnsafe(runId, fromTab) {
     const existed = await RL.delete(runId);
     return existed ? { ok: true } : { ok: false, error: "no log for that run" };
   } catch (err) {
-    return { ok: false, error: `could not delete the run log: ${err && err.message ? err.message : err}` };
+    const why = `could not delete the run log: ${err && err.message ? err.message : err}`;
+    await appendLogUnsafe("error", why);
+    return { ok: false, error: why };
   }
 }
 
@@ -647,7 +680,9 @@ async function purgeRunLogsUnsafe(fromTab) {
     await appendLogUnsafe("info", `full run logs purged: ${deleted} deleted${current ? ", the run in progress kept" : ""}`);
     return { ok: true, deleted, kept: current ? 1 : 0 };
   } catch (err) {
-    return { ok: false, error: `could not purge the run logs: ${err && err.message ? err.message : err}` };
+    const why = `could not purge the run logs: ${err && err.message ? err.message : err}`;
+    await appendLogUnsafe("error", why);
+    return { ok: false, error: why };
   }
 }
 

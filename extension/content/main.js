@@ -50,7 +50,6 @@
   }
 
   function log(level, msg) {
-    try { console.debug("[MG Clicker]", level, msg); } catch (e) { /* ignore */ }
     return send({ type: MSG.LOG, level, msg, src: "content" });
   }
 
@@ -119,6 +118,7 @@
    */
   let boundJob = null; // "runId|jobIndex" of the first job this document saw as the worker tab
   let unknownSince = null; // first poll that found no known console page while the bound job was in phase navigate
+  let domKnownSince = null; // first poll that found a known page's shell in the body under a URL the extension does not know
 
   /* ---------------------------------------------------------- step mirror */
 
@@ -268,7 +268,7 @@
         await report(runId, jobIndex, STATUS.FAILED, `"Enable APIs" dialog: ${err.message}`);
         return;
       }
-      await log("warn", `job ${jobIndex}: dialog check failed: ${err.message}`);
+      await log("error", `job ${jobIndex}: dialog check failed: ${err.message}`);
       return;
     }
 
@@ -282,6 +282,22 @@
     }
     B.update(badgeInfo(st, jobIndex, mode, page, `phase ${st.current.phase}, page ${page}`));
     if (page === PAGE.UNKNOWN || !HANDLERS[page]) {
+      // The URL is not one the extension knows, but the body shows one of
+      // the three pages by its own shell component (selectors.js,
+      // detectPageByDom: the second locator, independent of the URL
+      // prefixes). Held for two polls, so a route change that leaves the
+      // previous page's shell behind for an instant is not judged, the job
+      // fails at once naming the page and the path instead of idling to
+      // the watchdog; nothing is ever acted on from the DOM alone.
+      const shown = S.detectPageByDom();
+      if (shown !== PAGE.UNKNOWN) {
+        if (domKnownSince === null) domKnownSince = Date.now();
+        else if (Date.now() - domKnownSince >= K.enabledConfirmMs()) {
+          await report(runId, jobIndex, STATUS.FAILED, `the tab shows the ${shown} page (its shell component is rendered) at a URL path the extension does not know (${location.pathname}): either the tab was navigated by hand or the console changed its URL paths (the path constants in common/constants.js; see docs/MAINTENANCE.md); nothing was clicked`);
+        }
+        return;
+      }
+      domKnownSince = null;
       // A project the console cannot open (no such project, no access, a
       // misspelt ID that passes the format check): the console leaves the
       // model page's URL for an error page or drops the route, so no known
@@ -297,6 +313,7 @@
       return;
     }
     unknownSince = null;
+    domKnownSince = null;
 
     const key = `${runId}|${jobIndex}|${page}`;
     if (handled.has(key)) return;
@@ -320,8 +337,11 @@
       } else if (D.isFatal(err)) {
         await report(runId, jobIndex, STATUS.FAILED, err.message);
       } else {
+        // A timeout is a slow page and is retried at warn level; any other
+        // error a handler throws is a bug or a changed page, retried too but
+        // logged at error level so the run log and the dry-run check see it.
         lastErrors.set(key, err.message);
-        await log("warn", `job ${jobIndex}: ${page} attempt ${n + 1} failed: ${err.message}`);
+        await log(err instanceof D.TimeoutError ? "warn" : "error", `job ${jobIndex}: ${page} attempt ${n + 1} failed: ${err.message}`);
       }
     } finally {
       B.step(null);
@@ -334,7 +354,11 @@
     try {
       await tickInner();
     } catch (err) {
-      try { console.warn("[MG Clicker] tick error", err); } catch (e) { /* ignore */ }
+      // An exception the loop itself did not route (a storage read that
+      // threw, a bug in the loop): to the browser console at error level
+      // (a SEVERE entry the dry-run harness fails on) and to the run log.
+      try { console.error("[MG Clicker] tick error", err); } catch (e) { /* ignore */ }
+      await log("error", `tick error: ${err && err.message ? err.message : err}`);
     } finally {
       busy = false;
       if (active) schedule();

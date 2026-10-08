@@ -217,6 +217,82 @@ withSnapshot(RUN_D, "07-post-agree-settled", ({ S }) => {
   ok(S.dialogs.visible().length === 1 && S.dialogs.visible()[0].title === f.title, "dialogs.visible() lists it with the same title");
 });
 
+/* ------------------------------------------------------------ (T6) second locators and the DOM-side page detector */
+
+withSnapshot(RUN_A, "01-model-page", ({ S, D, document: doc }) => {
+  console.log("--- (T6) model page: the Enable button's second locator, no page-wide text fallback, the DOM-side page detector");
+  ok(S.detectPageByDom() === "model" && S.model.hasShell() && !S.questionnaire.hasShell() && !S.agreements.hasShell(), "detectPageByDom = model: the call-to-action stack is the shell; no questionnaire or agreements shell on this page");
+  const wrapper = D.q("vertex-ai-request-access-button");
+  const renamed = doc.createElement("vertex-ai-renamed-wrapper");
+  while (wrapper.firstChild) renamed.appendChild(wrapper.firstChild);
+  wrapper.replaceWith(renamed);
+  const btn = S.model.enableButton();
+  ok(!!btn && D.text(btn) === "Enable" && !!btn.closest("vai-model-garden-call-to-action-button-stack") && !D.q("vertex-ai-request-access-button"), "with the wrapper tag renamed, Enable is found by the second locator: the button reading Enable inside the call-to-action stack");
+  doc.body.insertAdjacentHTML("beforeend", '<div class="banner"><button> Enable </button></div>');
+  ok(S.model.enableButton() === btn, "a stray Enable button elsewhere on the page is never the one while the stack's is there");
+  const stack = D.q("vai-model-garden-call-to-action-button-stack");
+  const renamedStack = doc.createElement("vai-renamed-stack");
+  while (stack.firstChild) renamedStack.appendChild(stack.firstChild);
+  stack.replaceWith(renamedStack);
+  ok(S.model.enableButton() === null && S.model.hasShell() === false && S.detectPageByDom() === "unknown", "with the stack renamed too: null (the banner's Enable is never clicked, T7), no shell, page unknown by DOM");
+});
+
+withSnapshot(RUN_A, "02-after-enable", ({ S, D, document: doc }) => {
+  console.log("--- (T6) questionnaire: Next scoped to the footer, no page-wide text fallback, the DOM-side page detector");
+  ok(S.detectPageByDom() === "questionnaire" && S.questionnaire.hasShell() && !S.model.hasShell() && !S.agreements.hasShell(), "detectPageByDom = questionnaire: raf-form RequestAccessFormGroup / the footer are the shell");
+  const next = S.questionnaire.nextButton();
+  D.q("cfc-panel-footer.mg-questionnaire-footer").classList.remove("mg-questionnaire-footer");
+  ok(S.questionnaire.nextButton() === next, "with the footer tag's class gone, Next is still found through the inner .mg-questionnaire-footer element");
+  for (const el of D.qa(".mg-questionnaire-footer")) el.classList.remove("mg-questionnaire-footer");
+  doc.body.insertAdjacentHTML("beforeend", '<div class="onboarding-popover"><button> Next </button></div>');
+  ok(S.questionnaire.nextButton() === null, "with every footer class gone, Next is null although a popover offers a Next (T7: no page-wide text fallback)");
+  ok(S.questionnaire.hasShell() === true, "the questionnaire shell is still detected through raf-form");
+  D.q('raf-form[raf-entry-name="RequestAccessFormGroup"]').setAttribute("raf-entry-name", "RenamedGroup");
+  ok(S.questionnaire.hasShell() === false && S.detectPageByDom() === "unknown", "with the raf-form entry renamed too: no shell, page unknown by DOM");
+});
+
+withSnapshot(RUN_A, "04-agreements", ({ S, D, document: doc }) => {
+  console.log("--- (T6) agreements: the terms checkbox's three locators, the Agree button's two, the DOM-side page detector");
+  ok(S.detectPageByDom() === "agreements" && S.agreements.hasShell() && !S.model.hasShell() && !S.questionnaire.hasShell(), "detectPageByDom = agreements: billing-integrated-ai-agreements-body / mp-agreements-tos are the shell (the footer class in a stylesheet is not an element)");
+  const cb = S.agreements.termsCheckbox();
+  cb.classList.remove("p6ntest-mp-agreements-body-tos-checkbox");
+  ok(S.agreements.termsCheckbox() === cb, "with Google's test hook class gone, the checkbox is found through mp-agreements-tos (second locator)");
+  const tos = D.q("mp-agreements-tos");
+  const tosRenamed = doc.createElement("mp-renamed-tos");
+  while (tos.firstChild) tosRenamed.appendChild(tos.firstChild);
+  tos.replaceWith(tosRenamed);
+  ok(S.agreements.termsCheckbox() === cb, "with mp-agreements-tos renamed too, the checkbox is the only mat-checkbox inside billing-integrated-ai-agreements-body (third locator)");
+  D.q("billing-integrated-ai-agreements-body").insertAdjacentHTML("beforeend", '<mat-checkbox class="newsletter"><label><input type="checkbox"> Email me offers</label></mat-checkbox>');
+  ok(S.agreements.termsCheckbox() === null, "a second mat-checkbox in the body makes the third locator refuse (null): the handler then halts naming the locators instead of ticking a guess");
+  doc.querySelector("mat-checkbox.newsletter").remove();
+  ok(S.agreements.termsCheckbox() === cb, "control: with the second box gone the third locator finds it again");
+  const agree = S.agreements.agreeButton();
+  agree.removeAttribute("data-prober");
+  ok(S.agreements.agreeButton() === agree && S.agreements.hasAgreeButton() === true, "with data-prober gone, Agree is found by its aria-label (second locator)");
+  agree.removeAttribute("aria-label");
+  ok(S.agreements.agreeButton() === null && S.agreements.hasAgreeButton() === false, "with both hooks gone, Agree is null: no text-based locator exists for the one button that purchases");
+  ok(S.agreements.hasShell() === true, "the agreements shell is still detected through the body component");
+});
+
+withSnapshot(RUN_B, "01-model-page-api-dialog", ({ S, document: doc }) => {
+  console.log('--- (T6) dialogs: the Material container counts, a non-modal role="dialog" does not, an aria-modal="true" one does and is named');
+  const vis = S.dialogs.visible();
+  ok(vis.length === 1 && vis[0].element === "mat-dialog-container" && vis[0].title === "Enable APIs", 'the real "Enable APIs" dialog is visible and named mat-dialog-container', JSON.stringify(vis.map((v) => [v.element, v.title])));
+  doc.body.insertAdjacentHTML("beforeend", '<div role="dialog" aria-modal="false" id="drawer"><h2>What is new</h2></div><cfc-side-panel role="dialog" id="help"><h2>Help</h2></cfc-side-panel>');
+  ok(S.dialogs.visible().length === 1 && S.dialogs.all().length === 1, 'a non-modal role="dialog" div and a side panel without aria-modal are not dialogs: visible() and all() still list the one container');
+  doc.body.insertAdjacentHTML("beforeend", '<div role="dialog" aria-modal="true" id="survey"><h2>Survey</h2></div>');
+  const now = S.dialogs.visible();
+  ok(now.length === 2 && now[1].element === 'div[role="dialog"]' && now[1].title === "Survey", 'an aria-modal="true" role="dialog" element is a dialog, named div[role="dialog"]', JSON.stringify(now.map((v) => v.element)));
+});
+
+(function blankDetector() {
+  const env = E.makeEnv({ url: "https://console.cloud.google.com/" });
+  ok(env.S.detectPageByDom() === "unknown" && !env.S.model.hasShell() && !env.S.questionnaire.hasShell() && !env.S.agreements.hasShell(), "detectPageByDom = unknown on a blank page (no shell at all)");
+  env.document.body.innerHTML = '<billing-integrated-ai-agreements-body></billing-integrated-ai-agreements-body><raf-form raf-entry-name="RequestAccessFormGroup"></raf-form>';
+  ok(env.S.detectPageByDom() === "unknown" && env.S.agreements.hasShell() && env.S.questionnaire.hasShell(), "two shells at once (a route change's leftovers) are unknown, never a page to act on");
+  env.win.close();
+})();
+
 /* ------------------------------------------------------------ dom.js on synthetic markup */
 
 (function domHelpers() {

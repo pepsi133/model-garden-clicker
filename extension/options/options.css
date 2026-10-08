@@ -1,0 +1,24 @@
+body { max-width: 640px; margin: 24px auto; padding: 0 16px; font: var(--mgc-font); font-size: 14px; line-height: 1.5; }
+header { display: flex; align-items: center; gap: 12px; }
+h1 { font-size: 20px; margin: 0; }
+.note { color: var(--mgc-muted); }
+fieldset { border: 1px solid var(--mgc-border); background: var(--mgc-surface); border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; }
+legend { font-weight: 600; padding: 0 6px; }
+label, .choice { display: block; margin: 10px 0; font-weight: 600; }
+.choice .label { display: block; }
+label input[type="text"], label input[type="url"], label input[type="email"], .choice input[type="text"], .choice select, textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px; font: 13px system-ui, sans-serif; font-weight: 400; }
+.choice input[hidden] { display: none; }
+small { display: block; font-weight: 400; color: var(--mgc-muted); }
+code { font: 12px var(--mgc-mono); }
+.radio span { display: block; font-weight: 600; margin-top: 10px; }
+.radio label { display: inline-block; margin: 4px 16px 4px 0; font-weight: 400; }
+fieldset.mode-box { border-color: var(--mgc-accent-dark); }
+fieldset.advanced textarea { font: 12px var(--mgc-mono); }
+label.check { font-size: 15px; }
+.explain { margin: 2px 0 14px 24px; color: var(--mgc-muted); }
+.warning { padding: 10px 12px; margin: 0 0 14px; }
+.actions { display: flex; align-items: center; gap: 12px; }
+button { padding: 8px 20px; font-size: 14px; }
+.saved { color: var(--mgc-ok); font-weight: 600; }
+.error { font-weight: bold; }
+p.error { padding: 6px 10px; }

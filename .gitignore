@@ -1,0 +1,35 @@
+# Python
+python/.venv/
+python/venv/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local state of the Selenium harness: browser profile, personal config, recon dumps
+python/.chrome-profile/
+python/config.local.json
+*.local.json
+python/recon/
+python/recon*/
+
+# Node
+extension/test/node_modules/
+extension/test/package-lock.json
+node_modules/
+package-lock.json
+
+# Build output
+dist/
+
+# Editors, OS, environment
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+.env
+.env.*
+.idea/
+.vscode/
+.claude/settings.local.json

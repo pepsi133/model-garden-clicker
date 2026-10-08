@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Model Garden Clicker options</title>
+  <link rel="stylesheet" href="../common/theme.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header>
+    <img class="photo" src="../icons/avatar96.png" alt="">
+    <h1>Model Garden Clicker options</h1>
+  </header>
+  <p class="note">These values are typed into the Model Garden questionnaire for every project. They are stored only in this browser's local extension storage (chrome.storage.local) and are never synced or sent anywhere by the extension.</p>
+
+  <form id="form" novalidate>
+    <fieldset>
+      <legend>Questionnaire</legend>
+      <label>Business name <input name="business_name" type="text" required></label>
+      <label>Business website <input name="business_website" type="url" placeholder="https://example.com" required></label>
+      <label>Contact email <input name="contact_email" type="email" required></label>
+
+      <div class="choice" data-field="headquarters">
+        <span class="label">Headquarters country</span>
+        <input name="headquarters" type="text" autocomplete="off">
+        <small>Pick the option as the console lists it. "Other" lets you type the exact text of a console option that is not in the list.</small>
+      </div>
+      <div class="choice" data-field="industry">
+        <span class="label">Industry</span>
+        <input name="industry" type="text" autocomplete="off">
+        <small>Pick the option as the console lists it, or "Other" to type the exact console option.</small>
+      </div>
+      <div class="choice" data-field="intended_users">
+        <span class="label">Intended users</span>
+        <input name="intended_users" type="text" autocomplete="off">
+        <small>Pick the option as the console lists it, or "Other" to type the exact console option.</small>
+      </div>
+
+      <label>Use cases <textarea name="use_cases" rows="3" required></textarea></label>
+      <div class="radio">
+        <span>Does your use involve additional requirements under the Acceptable Use Policy?</span>
+        <label><input type="radio" name="aup_additional_requirements" value="no" checked> No</label>
+        <label><input type="radio" name="aup_additional_requirements" value="yes"> Yes</label>
+      </div>
+      <label id="aup-details-wrap" hidden>Additional details (required when the answer is Yes) <textarea name="aup_details" rows="2"></textarea>
+        <small>Typed into the console's "If yes, please describe how you plan to meet the additional requirements" field. Ignored when the answer is No.</small></label>
+    </fieldset>
+
+    <fieldset class="mode-box">
+      <legend>Mode</legend>
+      <label class="check"><input type="checkbox" name="dry_run" checked> <strong>DRY RUN</strong></label>
+      <p class="explain">While this box is ticked the extension fills the forms but never approves or enables anything, and stops on the Agreements page. Unticked means a full run: the extension clicks Agree, which makes purchases that bill the project.</p>
+      <div id="full-run-warning" class="warning" hidden>Full run: every queued project and model will be purchased and billed. The popup asks once more before a full run starts.</div>
+
+      <label class="check"><input type="checkbox" name="step_by_step"> <strong>Step-by-step confirmation</strong></label>
+      <p class="explain">The extension fills each page and then waits for you: a panel in the page offers Continue and Stop before Next and before Agree (in a dry run, Next job and Stop once the checkbox is ticked). If you click the console's own button yourself, the extension notices and continues. The popup's header shows this as "slow mode" (on) or "kubardy mode" (off) and can toggle it too.</p>
+    </fieldset>
+
+    <fieldset class="advanced">
+      <legend>Advanced</legend>
+      <p class="note">Timeouts and poll intervals as JSON. Milliseconds unless the key ends in <code>_min</code>. Keys: <code id="timing-keys"></code>. The values are checked on Save; a missing key keeps its default. See extension/README.md for what each one bounds.</p>
+      <label>Timing <textarea name="timing_json" rows="8" spellcheck="false"></textarea></label>
+      <p id="timing-error" class="error" hidden></p>
+      <button type="button" id="timing-reset">Reset to defaults</button>
+    </fieldset>
+
+    <div class="actions">
+      <button type="submit" class="primary">Save</button>
+      <span id="saved" class="saved" hidden>Saved.</span>
+    </div>
+  </form>
+
+  <script src="../common/constants.js"></script>
+  <script src="../common/option-lists.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

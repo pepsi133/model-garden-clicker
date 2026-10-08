@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Model Garden Clicker",
+  "short_name": "MG Clicker",
+  "version": "0.3.0",
+  "description": "Enables Anthropic Claude models in the Cloud console Model Garden for many projects, one job at a time, from your own signed-in browser.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://console.cloud.google.com/*"],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Model Garden Clicker",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://console.cloud.google.com/*"],
+      "run_at": "document_end",
+      "js": [
+        "common/constants.js",
+        "content/dom.js",
+        "content/selectors.js",
+        "content/badge.js",
+        "content/actions.js",
+        "content/main.js"
+      ]
+    }
+  ]
+}

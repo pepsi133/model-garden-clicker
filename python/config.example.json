@@ -1,0 +1,11 @@
+{
+  "business_name": "Example Co",
+  "business_website": "https://example.com",
+  "contact_email": "you@example.com",
+  "headquarters": "Germany",
+  "industry": "Education",
+  "intended_users": "Internal employees",
+  "use_cases": "internal evaluation",
+  "aup_additional_requirements": "no",
+  "aup_details": ""
+}

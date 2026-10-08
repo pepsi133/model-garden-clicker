@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches the manifest version
+        run: |
+          version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' extension/manifest.json | head -1)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "manifest version $version does not match tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - name: Build the extension zip
+        run: sh scripts/build-extension-zip.sh
+
+      - name: Create the GitHub release and attach the zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/model-garden-clicker-*.zip \
+            --title "Model Garden Clicker $GITHUB_REF_NAME" \
+            --notes "Chrome extension package for manual upload to the Chrome Web Store dashboard. See extension/README.md."

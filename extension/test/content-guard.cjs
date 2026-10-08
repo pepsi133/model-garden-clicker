@@ -1,0 +1,461 @@
+/*
+ * The Agree guard. Proves that no code path except clickAgreeGuarded() can
+ * click the Agree button, and that clickAgreeGuarded() refuses unless every
+ * condition holds (re-read from storage and from the page), using the real
+ * Agreements page dumps when they are present (run A, see lib/env.cjs).
+ *
+ * Covers: dry run / stopped / wrong job / wrong phase; the page identity
+ * (another project, another vendor's agreements path, another product id,
+ * a page that does not name the model); the live-mode snapshot taken at
+ * Start; a stale run id; that Agree is clicked at most once per job; that
+ * the handler reads the model name from the rendered Purchase summary (a
+ * body that renders after the route change is waited for, a rendered body
+ * naming another model is fatal after the wait); and that a dialog open
+ * before the click refuses it while the post-Agree wait accepts only a
+ * dialog that appeared after the click and, for success, names the model.
+ * (S1) With step-by-step on, the guard also needs a trusted Continue for
+ * this job's Agree step recorded within the last five minutes.
+ */
+"use strict";
+const E = require("./lib/env.cjs");
+const { ok, skip } = E;
+
+const RUN_ID = "run-1";
+const PRODUCT = "anthropic/anthropic-867.cloudpartnerservices.goog"; // claude-haiku-4-5 (docs/dom-map.md)
+const AGREEMENTS_PATH = `/marketplace/agreements/${PRODUCT}`;
+const BLANK_URL = `https://console.cloud.google.com${AGREEMENTS_PATH}?project=proj-one`;
+
+function expectThrow(fn, name, label) {
+  try { fn(); } catch (e) { return ok(e.name === name, `${label} -> ${e.name}: ${e.message.slice(0, 90)}`, e.name); }
+  return ok(false, label + " did not throw");
+}
+
+/** Storage state as the guard reads it: every flag set for a live click on job 0 of RUN_ID. */
+function liveState(projectId, extra) {
+  const job = Object.assign({ projectId, modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5", productId: PRODUCT, agreeClicked: false }, extra && extra.job);
+  return Object.assign({
+    running: true,
+    stopRequested: false,
+    settings: { live_mode: true },
+    run: { runId: RUN_ID, live: true },
+    current: { jobIndex: 0, phase: "agreements" },
+    queue: [job]
+  }, extra && extra.state);
+}
+
+/** A ctx whose refresh() returns `state`; updateJob records into state.queue and `updates`. */
+function mk(state, updates, runId) {
+  return {
+    runId: runId === undefined ? RUN_ID : runId,
+    jobIndex: 0,
+    refresh: async () => state,
+    updateJob: async (fields) => { Object.assign(state.queue[0], fields); if (updates) updates.push(fields); return { ok: true }; },
+    log: () => {}, mark: () => {}, step: () => {}
+  };
+}
+
+async function refused(env, state, name, label, opts) {
+  const o = opts || {};
+  try { await env.A.clickAgreeGuarded(mk(state, null, o.runId)); ok(false, label + " did not throw"); }
+  catch (e) { ok(e.name === name && (!o.re || o.re.test(e.message)), `${label} -> ${e.name}: ${e.message.slice(0, 90)}`, e.name + ": " + e.message); }
+}
+
+const blank = E.makeEnv({ url: BLANK_URL });
+const { D, S, A } = blank;
+console.log("--- static guard");
+ok(S.detectPage() === "agreements", "detectPage = agreements on the Anthropic agreements URL");
+ok(S.agreements.agreeButton() === null, "agreeButton null on a blank page (no throw)");
+expectThrow(() => D.click({ textContent: "I agree", isConnected: true }), "ForbiddenClickError", "D.click refuses agree text");
+expectThrow(() => D.click({ textContent: "Agree", isConnected: true }), "ForbiddenClickError", "D.click refuses Agree");
+expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "ForbiddenClickError", "D.click refuses padded upper-case AGREE");
+
+(async () => {
+  console.log("--- clickAgreeGuarded refusals on a blank page (no checkbox, no button)");
+  const P = "proj-one";
+  await refused(blank, liveState(P, { state: { settings: { live_mode: false } } }), "ForbiddenClickError", "guard: live_mode false now", { re: /live_mode/ });
+  await refused(blank, liveState(P, { state: { run: { runId: RUN_ID, live: false } } }), "ForbiddenClickError", "guard (F2): run started in dry-run mode, setting flipped to live later", { re: /dry-run mode/ });
+  await refused(blank, liveState(P, { state: { running: false } }), "ForbiddenClickError", "guard: not running");
+  await refused(blank, liveState(P, { state: { stopRequested: true } }), "StoppedError", "guard: stop requested");
+  await refused(blank, liveState(P, { state: { run: { runId: "run-2", live: true } } }), "StoppedError", "guard (F3): storage holds a newer run id", { re: /no longer the current run/ });
+  await refused(blank, liveState(P), "StoppedError", "guard (F3): ctx without a run id", { runId: null });
+  await refused(blank, liveState(P, { state: { current: { jobIndex: 1, phase: "agreements" } } }), "ForbiddenClickError", "guard: wrong job");
+  await refused(blank, liveState(P, { state: { current: { jobIndex: 0, phase: "questionnaire" } } }), "ForbiddenClickError", "guard: wrong phase");
+  await refused(blank, liveState(P, { job: { agreeClicked: true } }), "ForbiddenClickError", "guard (F6): agreeClicked already recorded on the job", { re: /already clicked/ });
+  await refused(blank, liveState("proj-two"), "ForbiddenClickError", "guard (F1): URL project differs from the job's project", { re: /not the job's project/ });
+  await refused(blank, liveState(P, { job: { productId: "anthropic/anthropic-884.cloudpartnerservices.goog" } }), "ForbiddenClickError", "guard (F1): URL product id differs from the job's product id", { re: /not the job's product/ });
+  await refused(blank, liveState(P, { job: { productId: null } }), "ForbiddenClickError", "guard (F1): no product id recorded on the job", { re: /no Marketplace product id/ });
+  // A page whose SKU rows name another model (row format from docs/dom-map.md, "Purchase summary").
+  const skuRow = (name) => `<h2>Purchase summary</h2><button class="cfc-tiered-table-entry">${name} - Batch Cache Read Tokens - global</button>`;
+  blank.document.body.innerHTML = skuRow("Claude Sonnet 4 6");
+  await refused(blank, liveState(P), "ForbiddenClickError", "guard (F1): page naming another model (Claude Sonnet 4 6) refused for a claude-haiku-4-5 job", { re: /does not name/ });
+  blank.document.body.innerHTML = "";
+
+  console.log("--- (N1) model-name match is token-bounded with an exact version");
+  // Each pair in both directions: the shorter version must not match the longer one's page and the reverse.
+  const pairs = [
+    ["claude-sonnet-5", "Claude Sonnet 5", "claude-sonnet-5-5", "Claude Sonnet 5.5", "Claude Sonnet 5 5"],
+    ["claude-opus-5", "Claude Opus 5", "claude-opus-5-5", "Claude Opus 5.5", "Claude Opus 5 5"],
+    ["claude-fable-5", "Claude Fable 5", "claude-fable-5-1", "Claude Fable 5.1", "Claude Fable 5 1"]
+  ];
+  for (const [shortSlug, shortName, longSlug, longName, longRow] of pairs) {
+    const shortRow = shortName;
+    blank.document.body.innerHTML = skuRow(longRow);
+    ok(!S.agreements.mentionsModel(shortSlug) && !S.agreements.mentionsModel(shortName), `${shortSlug} / "${shortName}" NOT named by a "${longRow}" page`);
+    ok(S.agreements.mentionsModel(longSlug) && S.agreements.mentionsModel(longName), `${longSlug} / "${longName}" named by a "${longRow}" page`);
+    await refused(blank, liveState(P, { job: { modelSlug: shortSlug, modelName: shortName } }), "ForbiddenClickError", `guard: ${shortSlug} job on the ${longName} page`, { re: /does not name/ });
+    blank.document.body.innerHTML = skuRow(shortRow);
+    ok(!S.agreements.mentionsModel(longSlug) && !S.agreements.mentionsModel(longName), `${longSlug} / "${longName}" NOT named by a "${shortRow}" page`);
+    ok(S.agreements.mentionsModel(shortSlug) && S.agreements.mentionsModel(shortName), `${shortSlug} / "${shortName}" named by a "${shortRow}" page`);
+    await refused(blank, liveState(P, { job: { modelSlug: longSlug, modelName: longName } }), "ForbiddenClickError", `guard: ${longSlug} job on the ${shortName} page`, { re: /does not name/ });
+  }
+  blank.document.body.innerHTML = skuRow("Claude Sonnet 5 5") + skuRow("Claude Sonnet 5");
+  ok(S.agreements.mentionsModel("claude-sonnet-5") && S.agreements.mentionsModel("claude-sonnet-5-5"), "a page listing both versions names both (each row ends its own version)");
+  blank.document.body.innerHTML = "<p>claudesonnet5</p>";
+  ok(!S.agreements.mentionsModel("claude-sonnet-5"), "run-together text without token boundaries is not a match");
+  blank.document.body.innerHTML = "";
+
+  const other = E.makeEnv({ url: `https://console.cloud.google.com/marketplace/agreements/other-vendor/expensive-saas.cloudpartnerservices.goog?project=${P}` });
+  ok(other.S.detectPage() === "unknown", "detectPage = unknown on another vendor's agreements URL");
+  await refused(other, liveState(P, { job: { productId: "other-vendor/expensive-saas.cloudpartnerservices.goog" } }), "ForbiddenClickError", "guard (F1): another vendor's agreements path refused even when the product id matches", { re: /not an Anthropic/ });
+  other.win.close();
+
+  // Real page, box unticked (04): every flag set, still refused.
+  const unticked = E.envFromSnapshot("A", "04-agreements");
+  if (!unticked) skip("guard on 04-agreements", "recon dump not present");
+  else {
+    console.log("--- clickAgreeGuarded on the real 04-agreements page (box unticked)");
+    const project = new URL(unticked.snapshot.url).searchParams.get("project");
+    let clicks = 0;
+    unticked.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+    ok(unticked.S.agreements.identity().productId === PRODUCT, "agreements identity reads the product id from the URL", JSON.stringify(unticked.S.agreements.identity()));
+    ok(unticked.S.agreements.mentionsModel("claude-haiku-4-5") && unticked.S.agreements.mentionsModel("Claude Haiku 4.5"), "page names the model (slug and display name)");
+    ok(!unticked.S.agreements.mentionsModel("claude-sonnet-4-6"), "page does not name another model");
+    await refused(unticked, liveState(project), "ForbiddenClickError", "refused with the checkbox reason", { re: /checkbox/ });
+    ok(clicks === 0, "Agree received no click");
+    unticked.win.close();
+  }
+
+  // Real page, box ticked (05): dry run refused; identity refusals; live mode with every flag set clicks exactly once.
+  const snap05 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+  if (!snap05) skip("guard on 05-agreements-checked", "recon dump not present");
+  else {
+    const project = new URL(snap05.url).searchParams.get("project");
+    const serve = (url) => { const env = E.makeEnv({ html: snap05.html, url }); env.rehydrated = E.rehydrate(env.document, snap05.forms); return env; };
+    const armed = (env) => { let n = 0; env.S.agreements.agreeButton().addEventListener("click", () => { n += 1; }); return () => n; };
+
+    console.log("--- (F1) the real 05 page served under another project");
+    let env = serve(`https://console.cloud.google.com${AGREEMENTS_PATH}?project=some-other-project`);
+    let clicks = armed(env);
+    ok(env.D.isCheckboxChecked(env.S.agreements.termsCheckbox()), "terms checkbox verified checked");
+    await refused(env, liveState(project), "ForbiddenClickError", "refused: page project is not the job's", { re: /not the job's project/ });
+    ok(clicks() === 0, "Agree received no click");
+    env.win.close();
+
+    console.log("--- (F1) the real 05 page served under another vendor's agreements path");
+    env = serve(`https://console.cloud.google.com/marketplace/agreements/other-vendor/expensive-saas.cloudpartnerservices.goog?project=${project}`);
+    clicks = armed(env);
+    ok(env.S.detectPage() === "unknown", "detectPage = unknown");
+    await refused(env, liveState(project), "ForbiddenClickError", "refused: not an Anthropic agreements page", { re: /not an Anthropic/ });
+    ok(clicks() === 0, "Agree received no click");
+    env.win.close();
+
+    console.log("--- (F1) the real 05 page served under another Anthropic product id");
+    env = serve(`https://console.cloud.google.com/marketplace/agreements/anthropic/anthropic-884.cloudpartnerservices.goog?project=${project}`);
+    clicks = armed(env);
+    await refused(env, liveState(project), "ForbiddenClickError", "refused: page product is not the job's product", { re: /not the job's product/ });
+    ok(clicks() === 0, "Agree received no click");
+    env.win.close();
+
+    console.log("--- (F1) the real 05 page, job for another model with the same product id");
+    env = serve(snap05.url);
+    clicks = armed(env);
+    await refused(env, liveState(project, { job: { modelSlug: "claude-sonnet-4-6", modelName: "Claude Sonnet 4.6" } }), "ForbiddenClickError", "refused: page does not name the job's model", { re: /does not name/ });
+    ok(clicks() === 0, "Agree received no click");
+    env.win.close();
+
+    console.log("--- clickAgreeGuarded on the real 05-agreements-checked page at its own URL");
+    env = serve(snap05.url);
+    clicks = armed(env);
+    await refused(env, liveState(project, { state: { settings: { live_mode: false } } }), "ForbiddenClickError", "dry run refused", { re: /live_mode/ });
+    await refused(env, liveState(project, { state: { run: { runId: RUN_ID, live: false } } }), "ForbiddenClickError", "(F2) run snapshot says dry run: refused although the setting is live now", { re: /dry-run/ });
+    await refused(env, liveState(project, { state: { stopRequested: true } }), "StoppedError", "live but stop requested -> StoppedError");
+    await refused(env, liveState(project, { state: { run: { runId: "run-9", live: true } } }), "StoppedError", "(F3) stale run id -> StoppedError");
+    ok(clicks() === 0, "no click so far");
+
+    const state = liveState(project);
+    const updates = [];
+    const logs = [];
+    const ctx = mk(state, updates);
+    ctx.log = (m) => logs.push(m);
+    await env.A.clickAgreeGuarded(ctx);
+    ok(clicks() === 1, "live mode with every condition met: Agree clicked exactly once (jsdom, nothing left the test)", clicks());
+    ok(updates.length === 1 && updates[0].agreeClicked === true && state.queue[0].agreeClicked === true, "the click was recorded on the job before it happened", JSON.stringify(updates));
+    ok(logs.some((m) => /LIVE: clicking Agree/.test(m)), "the click was logged as LIVE");
+
+    console.log("--- (F6) a second call for the same job never clicks again");
+    await refused(env, state, "ForbiddenClickError", "second call with agreeClicked recorded", { re: /already clicked/ });
+    const fresh = liveState(project); // storage flag lost: the content script's own memory still refuses
+    await refused(env, fresh, "ForbiddenClickError", "second call even if storage no longer shows the flag", { re: /already clicked/ });
+    ok(clicks() === 1, "Agree click count still 1");
+
+    console.log("--- (N3) state that changes during the record round trip is seen before the click");
+    // One window for every case (jsdom keeps closed windows of this 4 MB page
+    // in memory); each case uses its own run id so the guard's per-tab memory
+    // of recorded clicks does not short-circuit it, and undoes its mutation.
+    const e3 = serve(snap05.url);
+    const clicks3 = armed(e3);
+    const realIdentity = e3.S.agreements.identity;
+    let n3 = 0;
+    const during = async (label, mutate, name, re) => {
+      const rid = `run-n3-${++n3}`;
+      const st = liveState(project, { state: { run: { runId: rid, live: true } } });
+      const cx = mk(st, null, rid);
+      let undo = null;
+      cx.updateJob = async (f) => { Object.assign(st.queue[0], f); undo = mutate(e3, st) || null; return { ok: true }; };
+      try { await e3.A.clickAgreeGuarded(cx); ok(false, label + " did not throw"); }
+      catch (err) { ok(err.name === name && re.test(err.message), `${label} -> ${err.name}: ${err.message.slice(0, 90)}`, err.name + ": " + err.message); }
+      ok(clicks3() === 0, `${label}: Agree received no click`);
+      e3.S.agreements.identity = realIdentity;
+      if (undo) undo();
+    };
+    await during("stop requested during the record", (e, st) => { st.stopRequested = true; }, "StoppedError", /stop/);
+    await during("run replaced during the record", (e, st) => { st.run = { runId: "run-2", live: true }; }, "StoppedError", /no longer the current run/);
+    await during("live mode switched off during the record", (e, st) => { st.settings.live_mode = false; }, "ForbiddenClickError", /live_mode/);
+    await during("record lost (storage shows no agreeClicked) after an ok reply", (e, st) => { st.queue[0].agreeClicked = false; }, "ForbiddenClickError", /not on record/);
+    await during("page re-rendered for another product during the record", (e) => {
+      e.S.agreements.identity = () => ({ anthropic: true, productId: "anthropic/anthropic-884.cloudpartnerservices.goog", projectId: project });
+    }, "ForbiddenClickError", /not the job's product/);
+    await during("page re-rendered under another project during the record", (e) => {
+      e.S.agreements.identity = () => ({ anthropic: true, productId: PRODUCT, projectId: "someone-else" });
+    }, "ForbiddenClickError", /not the job's project/);
+    await during("Agree button node replaced during the record", (e) => {
+      const old = e.S.agreements.agreeButton(); const clone = old.cloneNode(true); old.parentNode.replaceChild(clone, old);
+      return () => { clone.parentNode.replaceChild(old, clone); };
+    }, "ForbiddenClickError", /changed between the check and the click/);
+    await during("terms checkbox unticked during the record", (e) => {
+      const input = e.D.q('input[type="checkbox"]', e.S.agreements.termsCheckbox()); input.checked = false;
+      return () => { input.checked = true; };
+    }, "ForbiddenClickError", /checkbox/);
+    // Positive control for the same window: with nothing changing during the record, the click happens once.
+    {
+      const rid = `run-n3-${++n3}`;
+      const st = liveState(project, { state: { run: { runId: rid, live: true } } });
+      await e3.A.clickAgreeGuarded(mk(st, null, rid));
+      ok(clicks3() === 1, "control: same window, nothing changed during the record -> Agree clicked once", clicks3());
+    }
+    e3.win.close();
+
+    console.log("--- (F6) a job whose updateJob is refused by the worker does not click");
+    const env2 = serve(snap05.url);
+    const clicks2 = armed(env2);
+    const ctx2 = mk(liveState(project), null, "run-7");
+    ctx2.updateJob = async () => ({ ok: false, error: "not the current run" });
+    // run-7 is unknown to env2's local memory, and the state carries run-7 so the run-id check passes
+    ctx2.refresh = async () => liveState(project, { state: { run: { runId: "run-7", live: true } } });
+    try { await env2.A.clickAgreeGuarded(ctx2); ok(false, "did not throw"); }
+    catch (e) { ok(e.name === "ForbiddenClickError" && /could not record/.test(e.message), `refused -> ${e.message.slice(0, 80)}`, e.message); }
+    ok(clicks2() === 0, "Agree received no click when the record was refused");
+    env2.win.close();
+    env.win.close();
+  }
+
+  // Dry-run handler never reaches the guard: handleAgreements on 04 ends with dry-run and the box ticked.
+  const dry = E.envFromSnapshot("A", "04-agreements");
+  if (!dry) skip("handleAgreements dry run on 04-agreements", "recon dump not present");
+  else {
+    console.log("--- handleAgreements (dry run) on the real 04-agreements page");
+    const project = new URL(dry.snapshot.url).searchParams.get("project");
+    let clicks = 0;
+    dry.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+    const phases = [], logs = [];
+    const state = liveState(project, { state: { settings: { live_mode: false }, run: { runId: RUN_ID, live: false } } });
+    const ctx = Object.assign(mk(state), { settings: { live_mode: false }, log: (m) => logs.push(m), setPhase: async (p) => phases.push(p), assertMayAct: async () => {} });
+    const result = await dry.A.handleAgreements(ctx);
+    ok(result && result.status === "dry-run", "result status is dry-run", JSON.stringify(result));
+    ok(dry.D.isCheckboxChecked(dry.S.agreements.termsCheckbox()), "terms checkbox ticked by the handler");
+    ok(clicks === 0, "Agree never clicked in a dry run");
+    ok(phases.join() === "agreements", "phase set to agreements");
+    dry.win.close();
+  }
+
+  // (N6) the dry-run handler runs the same identity checks as the guard before it touches the checkbox.
+  const snap04 = E.readSnapshot(E.findRun("A") || "", "04-agreements");
+  if (!snap04) skip("handleAgreements dry run identity on 04-agreements", "recon dump not present");
+  else {
+    console.log("--- (N6) handleAgreements (dry run) refuses a page that is not the job's");
+    const project = new URL(snap04.url).searchParams.get("project");
+    const e6 = E.makeEnv({ html: snap04.html, url: snap04.url }); E.rehydrate(e6.document, snap04.forms);
+    e6.K.TIMEOUTS.AGREEMENTS_READY = 300; e6.K.URL_POLL_MS = 20;
+    let clicks6 = 0; e6.S.agreements.agreeButton().addEventListener("click", () => { clicks6 += 1; });
+    const dryFails = async (label, url, jobExtra, re) => {
+      e6.dom.reconfigure({ url });
+      const state = liveState(project, { job: jobExtra, state: { settings: { live_mode: false }, run: { runId: RUN_ID, live: false } } });
+      const ctx = Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: false }, setPhase: async () => {}, assertMayAct: async () => {} });
+      let result = null, err = null;
+      try { result = await e6.A.handleAgreements(ctx); } catch (x) { err = x; }
+      ok(!result && err && e6.D.isFatal(err) && /not the job's Agreements page/.test(err.message) && re.test(err.message), `${label} -> fatal, not dry-run: ${err ? err.message.slice(0, 100) : JSON.stringify(result)}`, err ? err.message : JSON.stringify(result));
+      ok(!e6.D.isCheckboxChecked(e6.S.agreements.termsCheckbox()) && clicks6 === 0, `${label}: checkbox left unticked, Agree not clicked`);
+    };
+    await dryFails("job's product id is another Anthropic product (884 on the 867 page)", snap04.url, { productId: "anthropic/anthropic-884.cloudpartnerservices.goog" }, /not the job's product/);
+    await dryFails("no product id recorded on the job", snap04.url, { productId: null }, /no Marketplace product id/);
+    await dryFails("page served under another project", `https://console.cloud.google.com${AGREEMENTS_PATH}?project=some-other-project`, {}, /not the job's project/);
+    const t6 = Date.now();
+    await dryFails("job for a model the page does not name", snap04.url, { modelSlug: "claude-sonnet-4-6", modelName: "Claude Sonnet 4.6" }, /does not name/);
+    ok(Date.now() - t6 >= 300, "the name mismatch is decided after the full agreements_ready wait (the summary could still render)", `${Date.now() - t6} ms`);
+    e6.win.close();
+  }
+
+  // (R1) the model name is read from the rendered Purchase summary: the URL
+  // flips to the agreements route seconds before the SKU rows render, so the
+  // handler waits for checkbox + Agree button + model name together.
+  console.log("--- (R1) handleAgreements waits for the rendered Purchase summary before judging the model name");
+  {
+    const RENDERED = '<h1>Agreements</h1><h2>Purchase summary</h2><table><tr><td>Claude Haiku 4 5 - Input Tokens - global</td></tr></table>' +
+      '<mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><input type="checkbox"></mat-checkbox>' +
+      '<button data-prober="cloud-marketplace-request-product"> Agree </button>';
+    const OTHER = RENDERED.replace("Claude Haiku 4 5", "Claude Sonnet 4 6");
+    const dryCtx = (env) => {
+      const state = liveState("proj-one", { state: { settings: { live_mode: false }, run: { runId: RUN_ID, live: false } } });
+      return Object.assign(mk(state), { job: state.queue[0], settings: { live_mode: false }, setPhase: async () => {}, assertMayAct: async () => {} });
+    };
+    const run = async (label, initialBody, renderHtml, renderAfterMs, url) => {
+      const env = E.makeEnv({ html: `<!doctype html><html><body>${initialBody}</body></html>`, url: url || BLANK_URL });
+      env.K.TIMEOUTS.AGREEMENTS_READY = 600; env.K.URL_POLL_MS = 20;
+      if (renderHtml !== null) setTimeout(() => { env.document.body.innerHTML = renderHtml; }, renderAfterMs);
+      const t0 = Date.now();
+      let result = null, err = null;
+      try { result = await env.A.handleAgreements(dryCtx(env)); } catch (e) { err = e; }
+      const ticked = env.D.isCheckboxChecked(env.S.agreements.termsCheckbox());
+      // isFatal is taken from this window: error classes differ per jsdom window.
+      const out = { result, err, ms: Date.now() - t0, ticked, fatal: !!err && env.D.isFatal(err) };
+      env.win.close();
+      return out;
+    };
+    let r = await run("rendered from the start", RENDERED, null, 0);
+    ok(r.result && r.result.status === "dry-run" && r.ticked && r.ms < 300, "summary rendered from the start: dry-run at once, box ticked", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms`);
+    r = await run("spinner", '<div class="spinner">Loading...</div>', RENDERED, 200);
+    ok(r.result && r.result.status === "dry-run" && r.ticked && r.ms >= 200, "spinner for 200 ms, then the summary: dry-run (no fatal on the spinner)", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms`);
+    r = await run("questionnaire leftovers", '<h1>Claude Haiku 4.5 enablement</h1><form raf-name="q"></form>', RENDERED, 200);
+    ok(r.result && r.result.status === "dry-run" && r.ms >= 200, "questionnaire text still in the body for 200 ms: not judged on it, dry-run once the summary renders", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms`);
+    r = await run("questionnaire leftovers, then another model", '<h1>Claude Haiku 4.5 enablement</h1>', OTHER, 200);
+    ok(!r.result && r.fatal && /does not name the job's model/.test(r.err.message) && r.ms >= 600 && !r.ticked,
+      "stale text names the model but the rendered summary names another: fatal after the full wait, box untouched (no pass on stale text)", r.err ? `${r.err.message.slice(0, 90)} ${r.ms} ms` : JSON.stringify(r.result));
+    r = await run("empty body", "", RENDERED, 200);
+    ok(r.result && r.result.status === "dry-run" && r.ms >= 200, "empty body for 200 ms, then the summary: dry-run", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms`);
+    r = await run("other model from the start", OTHER, null, 0);
+    ok(!r.result && r.fatal && /not the job's Agreements page: page does not name the job's model "Claude Haiku 4.5"/.test(r.err.message) && r.ms >= 600 && !r.ticked,
+      "summary naming another model: fatal after the full wait, box untouched", r.err ? `${r.err.message.slice(0, 100)} ${r.ms} ms` : JSON.stringify(r.result));
+    r = await run("checkbox never renders", '<h2>Purchase summary</h2><p>Claude Haiku 4 5 - Input Tokens</p>', null, 0);
+    ok(!r.result && r.err && r.err.name === "TimeoutError" && !r.fatal && /purchase summary naming the job's model, with the terms checkbox and the Agree button/.test(r.err.message),
+      "model named but no checkbox or Agree button: a plain timeout (retried by the loop), not fatal", r.err ? r.err.message : JSON.stringify(r.result));
+    r = await run("wrong project in the URL", RENDERED, null, 0, BLANK_URL.replace("proj-one", "someone-else"));
+    ok(!r.result && r.fatal && /not the job's project/.test(r.err.message) && r.ms < 200 && !r.ticked, "URL for another project: fatal at once, before any wait", r.err ? `${r.err.message.slice(0, 90)} ${r.ms} ms` : JSON.stringify(r.result));
+    r = await run("wrong product in the URL", RENDERED, null, 0, BLANK_URL.replace("anthropic-867", "anthropic-884"));
+    ok(!r.result && r.fatal && /not the job's product/.test(r.err.message) && r.ms < 200, "URL for another product: fatal at once, before any wait", r.err ? `${r.err.message.slice(0, 90)} ${r.ms} ms` : JSON.stringify(r.result));
+  }
+
+  // (R2) dialogs around the live click, on the real ticked page.
+  const snapR2 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+  if (!snapR2) skip("dialogs around the live click on 05-agreements-checked", "recon dump not present");
+  else {
+    console.log("--- (R2) a dialog open before the click refuses it; the post-Agree wait accepts only a dialog that appeared after the click");
+    const project = new URL(snapR2.url).searchParams.get("project");
+    const ERROR_OPEN = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"><h1 matdialogtitle>Something went wrong</h1><div matdialogcontent>Could not load billing accounts. Try again.</div></mat-dialog-container></div>';
+    const API_OPEN = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><apis-enabler><h1 matdialogtitle> Enable APIs </h1><div matdialogcontent>The Agent Platform API must be enabled to use this page.</div><button> Enable </button></apis-enabler></mat-dialog-container></div>';
+    const success = (name, hidden) => `<div class="cdk-overlay-container"><mat-dialog-container role="dialog"${hidden ? ' style="display: none;"' : ""}><mp-consent-complete-dialog><h1 matdialogtitle>Successfully purchased ${name}</h1></mp-consent-complete-dialog></mat-dialog-container></div>`;
+    const failure = (hidden) => `<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"${hidden ? ' style="display: none;"' : ""}><behavior-failure-dialog><h1 matdialogtitle>Action Required: Choose Different Billing Account</h1><div matdialogcontent>This billing account cannot buy.</div></behavior-failure-dialog></mat-dialog-container></div>`;
+    let n = 0;
+    const live = async (label, beforeHtml, afterHtml) => {
+      const env = E.makeEnv({ html: snapR2.html, url: snapR2.url }); E.rehydrate(env.document, snapR2.forms);
+      env.K.TIMEOUTS.CONFIRM = 400; env.K.URL_POLL_MS = 20;
+      const rid = `run-r2-${++n}`;
+      const state = liveState(project, { state: { run: { runId: rid, live: true } } });
+      const ctx = Object.assign(mk(state, null, rid), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+      const logs = []; ctx.log = (m) => logs.push(m);
+      let clicks = 0;
+      env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; if (afterHtml) env.document.body.insertAdjacentHTML("beforeend", afterHtml); });
+      if (beforeHtml) env.document.body.insertAdjacentHTML("beforeend", beforeHtml);
+      const t0 = Date.now();
+      let result = null, err = null;
+      try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
+      const out = { result, err, clicks, logs, ms: Date.now() - t0, recorded: state.queue[0].agreeClicked === true };
+      env.win.close();
+      return out;
+    };
+    let r = await live("control", "", success("Claude Haiku 4.5", false));
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms < 300, "control: no dialog before, the success dialog naming the model appears after the click: one click, done", r.err ? r.err.message : `${JSON.stringify(r.result)} clicks=${r.clicks}`);
+    r = await live("error open", ERROR_OPEN, null);
+    ok(r.clicks === 0 && !r.recorded && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Something went wrong: Could not load billing accounts/.test(r.err.message),
+      "an unrelated error dialog open before the click: refused with the dialog's text, nothing recorded, no click", r.err ? r.err.message : JSON.stringify(r.result));
+    r = await live("Enable APIs open", API_OPEN, null);
+    ok(r.clicks === 0 && r.err && r.err.name === "ForbiddenClickError" && /a console dialog is open: Enable APIs/.test(r.err.message), 'the "Enable APIs" dialog open before the click: refused, no click', r.err ? r.err.message : JSON.stringify(r.result));
+    r = await live("success for the model open", success("Claude Haiku 4.5", false), null);
+    ok(r.clicks === 0 && r.err && r.err.name === "ForbiddenClickError" && /Successfully purchased Claude Haiku 4.5/.test(r.err.message), "a success dialog naming the model already open: refused (it is not this click's outcome), no click", r.err ? r.err.message : JSON.stringify(r.result));
+    r = await live("hidden stale success", success("Claude Haiku 4.5", true), null);
+    ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.ms >= 400, "a hidden (closing) success dialog naming the model from before the click is not accepted: unverified after confirm_ms", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms`);
+    r = await live("hidden stale error", failure(true), null);
+    ok(r.clicks === 1 && r.result && r.result.status === "unverified", "a hidden error dialog from before the click is not accepted: unverified", r.err ? r.err.message : JSON.stringify(r.result));
+    r = await live("new success for another model", "", success("Claude Sonnet 4.6", false));
+    ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.logs.some((m) => /ignoring a confirmation dialog that does not name the job's model "Claude Haiku 4.5": "Successfully purchased Claude Sonnet 4.6"/.test(m)),
+      "a success dialog that appears after the click but names another model: logged and ignored, unverified", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.logs.join(" | ")}`);
+    r = await live("new success, exact version", "", success("Claude Haiku 4.55", false) + success("Claude Haiku 4.5", false));
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.logs.some((m) => /ignoring a confirmation dialog .*"Successfully purchased Claude Haiku 4.55"/.test(m)), "two new success dialogs, the longer version first: it is logged and skipped, the exact version counts (done)", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.logs.join(" | ")}`);
+    r = await live("new error", "", failure(false));
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(r.result.message),
+      "an error dialog that appears after the click: failed with its title and text", r.err ? r.err.message : JSON.stringify(r.result));
+  }
+
+  // (F6) the live handler on a job already marked agreeClicked returns unverified without touching the button.
+  const again = E.envFromSnapshot("A", "05-agreements-checked");
+  if (!again) skip("handleAgreements re-entry on 05-agreements-checked", "recon dump not present");
+  else {
+    console.log("--- (F6) handleAgreements (live) re-entered after the click was recorded");
+    const project = new URL(again.snapshot.url).searchParams.get("project");
+    let clicks = 0;
+    again.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+    const state = liveState(project, { job: { agreeClicked: true } });
+    const ctx = Object.assign(mk(state), { settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+    const result = await again.A.handleAgreements(ctx);
+    ok(result && result.status === "unverified" && /already clicked/.test(result.message), "re-entry reports unverified", JSON.stringify(result));
+    ok(clicks === 0, "Agree not clicked on re-entry");
+    again.win.close();
+  }
+
+
+  // (S1) step-by-step: the guard needs a trusted Continue for this job's Agree step, recorded by this content script recently.
+  if (!snap05) skip("step-by-step guard on 05-agreements-checked", "recon dump not present");
+  else {
+    console.log("--- (S1) step-by-step: the guard requires a recent trusted Continue for this job's Agree step");
+    const project = new URL(snap05.url).searchParams.get("project");
+    const env = E.makeEnv({ html: snap05.html, url: snap05.url }); E.rehydrate(env.document, snap05.forms);
+    let clicks = 0; env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+    const st = () => liveState(project, { state: { settings: { live_mode: true, step_by_step: true } } });
+    await refused(env, st(), "ForbiddenClickError", "step-by-step on, nothing recorded", { re: /no trusted Continue was recorded for this job's Agree step/ });
+    ok(env.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: false }) === false && env.A.continueAge(RUN_ID, 0, "agree") === null, "an untrusted event (isTrusted false) records nothing");
+    ok(env.A.recordContinue(RUN_ID, 0, "agree", {}) === false && env.A.recordContinue(RUN_ID, 0, "agree", null) === false && env.A.continueAge(RUN_ID, 0, "agree") === null, "an event without isTrusted, or no event, records nothing");
+    await refused(env, st(), "ForbiddenClickError", "still refused after the untrusted attempts", { re: /no trusted Continue/ });
+    ok(env.A.recordContinue(RUN_ID, 0, "next", { isTrusted: true }) === true && env.A.continueAge(RUN_ID, 0, "next") !== null, "a trusted Continue for the Next step is recorded");
+    await refused(env, st(), "ForbiddenClickError", "a Continue for Next does not satisfy the Agree step", { re: /no trusted Continue/ });
+    ok(env.A.recordContinue("run-other", 0, "agree", { isTrusted: true }) === true && env.A.recordContinue(RUN_ID, 1, "agree", { isTrusted: true }) === true, "trusted Continues for another run and another job are recorded under their own keys");
+    await refused(env, st(), "ForbiddenClickError", "they do not satisfy this run's job 0", { re: /no trusted Continue/ });
+    ok(clicks === 0, "Agree received no click so far");
+    // An old record: the trusted Continue is older than CONTINUE_MAX_AGE_MS.
+    const realNow = env.win.Date.now;
+    ok(env.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a trusted Continue for Agree is recorded");
+    env.win.Date.now = () => realNow() + env.K.CONTINUE_MAX_AGE_MS + 1000;
+    await refused(env, st(), "ForbiddenClickError", "a trusted Continue older than 5 minutes is refused", { re: /is 30\d s old \(limit 300 s\)/ });
+    env.win.Date.now = realNow;
+    ok(clicks === 0, "Agree received no click with the stale record");
+    // With step-by-step off the record is not needed (control), and with it on a fresh record lets the click through once.
+    ok(env.K.CONTINUE_MAX_AGE_MS === 300000, "the Continue limit is 5 minutes");
+    ok(env.A.recordContinue(RUN_ID, 0, "agree", { isTrusted: true }) === true, "a fresh trusted Continue for Agree is recorded");
+    const state = st(); const updates = [];
+    await env.A.clickAgreeGuarded(mk(state, updates));
+    ok(clicks === 1 && state.queue[0].agreeClicked === true, "with a fresh trusted Continue every other condition met: Agree clicked exactly once", clicks);
+    env.win.close();
+  }
+
+  console.log("url:", blank.K.modelUrl("proj-one", "claude-haiku-4-5"));
+  blank.win.close();
+  E.finish("content guard");
+})();

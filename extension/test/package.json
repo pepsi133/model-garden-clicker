@@ -1,0 +1,12 @@
+{
+  "name": "model-garden-clicker-tests",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Node test harnesses for the extension: service worker, content guard, dialog step and selectors against saved console pages.",
+  "scripts": {
+    "test": "sh run.sh"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.2"
+  }
+}

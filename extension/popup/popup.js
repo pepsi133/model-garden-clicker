@@ -188,7 +188,6 @@
         projects: $("projects") ? $("projects").value : "",
         models: Array.from(document.querySelectorAll("#models input:checked")).map((cb) => cb.value),
         extra: $("extra-models") ? $("extra-models").value : "",
-        includeDone: $("include-done") ? $("include-done").checked === true : false,
         version: manifestVersion
       }
     });
@@ -343,7 +342,12 @@
     const freshVersion = ps.version !== manifestVersion;
     setIf("projects", (el) => { el.value = ps.projects || ""; });
     setIf("extra-models", (el) => { el.value = ps.extra || ""; });
-    setIf("include-done", (el) => { el.checked = ps.includeDone === true; el.addEventListener("change", savePopupState); });
+    // The "Include pairs already done in earlier runs" box is a per-run
+    // choice, not a saved setting: it starts unchecked on every popup open
+    // (a stored legacy includeDone is ignored) and is cleared after a
+    // successful Start, so one tick cannot silently disable the cross-run
+    // guard for every later run.
+    setIf("include-done", (el) => { el.checked = false; });
     const models = await loadModels();
     if ($("models")) renderModels(models, freshVersion ? null : (Array.isArray(ps.models) ? ps.models : null));
     // Record the version marker (and the reset selection) so the reset happens
@@ -383,17 +387,24 @@
       const missing = K.missingSettings(settings);
       if (missing.length) return showError(`fill these options first: ${labels(missing)}`);
       const live = settings.live_mode === true;
+      // The box is read now so the full-run confirmation can name the override.
+      const includeDone = $("include-done") ? $("include-done").checked === true : false;
       // Only a full run asks for a confirmation; a dry run starts at once.
       if (live) {
-        const ok = confirm(`FULL RUN: this will click Agree and make purchases that bill the project for ${projects.length * models.length} project/model pair(s). Continue?`);
+        let msg = `FULL RUN: this will click Agree and make purchases that bill the project for ${projects.length * models.length} project/model pair(s).`;
+        if (includeDone) msg += ` The cross-run guard is off: pairs already done in earlier runs will be processed again.`;
+        msg += ` Continue?`;
+        const ok = confirm(msg);
         if (!ok) return;
       }
       setIf("start", (el) => { el.disabled = true; });
       // The mode shown (and, for a full run, confirmed) travels with the
       // request; the worker refuses to start if the setting changed in between.
-      const includeDone = $("include-done") ? $("include-done").checked === true : false;
       const reply = await send({ type: MSG.START, projects, models, live, includeDone });
       if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); setIf("start", (el) => { el.disabled = false; }); }
+      // The include-done override lasts one Start: clear it once the run began
+      // so it is never carried into a later run unnoticed.
+      else setIf("include-done", (el) => { el.checked = false; });
       render();
     });
 

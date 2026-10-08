@@ -601,6 +601,53 @@ r = await msg(START(["guard-done", "guard-unv-click"], ["claude-haiku-4-5"], fal
 assert(r.ok === true && store.running === false && store.current === null && tabs.size === tabsBefore, "24c a queue of only already-done pairs finishes at Start with no console navigation (U10)");
 assert(store.queue.every((j) => j.status === "skipped"), "24c every job of that run is skipped");
 r = await msg({ type: K.MSG.STOP }); await settle();
+// 24d. (N4) a malformed run record (a null entry, a missing-field entry) must
+//      not throw at Start: the guard skips the bad entries with one warning
+//      and the valid pairs still work. The good "guard-done" pair is still
+//      skipped from the well-formed entry alongside the malformed ones.
+//      RL.update's resultOf sanitiser would turn a null into {}, so the raw
+//      null is written straight into the store (a corrupted record: devtools,
+//      or a future schema).
+fakeIDB.reset();
+await RL.create({ runId: "g-bad", startedAt: GSTAMP, live: true }, [], false);
+await new Promise((resolve, reject) => {
+  const req = fakeIDB.open(RL.DB_NAME, RL.DB_VERSION);
+  req.onsuccess = () => {
+    const db = req.result;
+    const tx = db.transaction(RL.STORE, "readwrite");
+    const st = tx.objectStore(RL.STORE);
+    const g = st.get("g-bad");
+    g.onsuccess = () => {
+      const rec = g.result;
+      rec.finishedAt = GSTAMP + 1000; rec.reason = "all jobs processed";
+      rec.results = [
+        null,
+        { status: "done" }, // missing projectId/modelSlug: tolerated, matches nothing real
+        { projectId: "guard-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true }
+      ];
+      st.put(rec);
+    };
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => reject(tx.error);
+  };
+  req.onerror = () => reject(req.error);
+});
+r = await msg(START(["guard-done", "guard-fresh"], ["claude-haiku-4-5"], false, false)); await settle();
+assert(r.ok === true, "24d Start does not throw on a record whose results hold a null entry (N4): " + JSON.stringify(r));
+assert(store.queue[0].status === "skipped" && store.queue[1].status !== "skipped", "24d the well-formed done pair is still skipped; a fresh pair runs (N4)");
+assert(store.log.filter((l) => /malformed run record/.test(l.msg)).length === 1, "24d exactly one warning line names the malformed entries (N4)");
+r = await msg({ type: K.MSG.STOP }); await settle();
+// 24e. (N3) model slugs compare case-insensitively, the same way
+//      isValidModelSlug accepts them: a pair recorded under the lower-case
+//      slug is skipped when queued as the mixed-case "Claude-Haiku-4-5".
+fakeIDB.reset();
+await RL.create({ runId: "g-case", startedAt: GSTAMP, live: true }, [], false);
+await RL.update("g-case", { finishedAt: GSTAMP + 1000, reason: "all jobs processed", results: [
+  { projectId: "guard-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true }
+] });
+r = await msg(START(["guard-done"], ["Claude-Haiku-4-5"], false, false)); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped", "24e a pair recorded under the lower-case slug is skipped when queued mixed-case Claude-Haiku-4-5 (N3): " + store.queue[0].status);
+r = await msg({ type: K.MSG.STOP }); await settle();
 
 // 25. (U5) prune never deletes the run in progress, and an append to a
 //     missing record warns once in the capped log.

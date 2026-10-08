@@ -47,13 +47,23 @@ jobs:
       - name: Run the offline test suite (dump-based checks reduced)
         run: MGC_ALLOW_SKIP=1 sh extension/test/run.sh
 
-      # The two dump-independent suites never skip, so CI proves them in full,
-      # strictly (no MGC_ALLOW_SKIP): a skip or a failure fails the release.
-      - name: Prove the dump-independent suites in full
+      # The two dump-independent suites never skip, so CI proves them in full:
+      # a non-zero exit fails the step, and a non-zero "skipped" count in a
+      # suite's summary fails it too (the harness exits 0 on a skip, so the
+      # wrapper is what enforces "no skips", making the claim honest).
+      - name: Prove the dump-independent suites in full (no skips allowed)
         run: |
           cd extension/test
-          node worker-harness.mjs
-          node ui-pages.cjs
+          for t in worker-harness.mjs ui-pages.cjs; do
+            if out=$(node "$t" 2>&1); then rc=0; else rc=$?; fi
+            printf '%s\n' "$out"
+            if [ "$rc" != 0 ]; then echo "FAIL: $t exited $rc" >&2; exit 1; fi
+            skipped=$(printf '%s\n' "$out" | sed -n 's/.*, \([0-9][0-9]*\) skipped.*/\1/p' | tail -n 1)
+            if [ -n "$skipped" ] && [ "$skipped" != 0 ]; then
+              echo "FAIL: $t skipped $skipped check(s); the dump-independent suites must run in full" >&2
+              exit 1
+            fi
+          done
 
       - name: Build the extension zip
         run: sh scripts/build-extension-zip.sh

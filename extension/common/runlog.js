@@ -81,8 +81,15 @@
    * escape, a NUL or a right-to-left override into a terminal or an editor.
    * Applied to a message that has already had its newlines folded, so the
    * only structural whitespace left to keep is the tab.
+   *
+   * Beyond C0, DEL and the bidi controls this also covers the C1 range
+   * (U+0080-U+009F, e.g. NEL and the 8-bit CSI), the soft hyphen (U+00AD),
+   * the zero-width characters (U+200B-U+200D, word joiner U+2060, BOM/ZWNBSP
+   * U+FEFF) and the tag characters (U+E0000-U+E007F), which hide or reshape
+   * text in an editor or terminal. The "u" flag is needed for the astral
+   * tag-character range.
    */
-  var CONTROL_AND_BIDI = new RegExp("[\\u0000-\\u0008\\u000b-\\u001f\\u007f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]", "g");
+  var CONTROL_AND_BIDI = new RegExp("[\\u0000-\\u0008\\u000b-\\u001f\\u007f\\u0080-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060\\u2066-\\u2069\\ufeff\\u{e0000}-\\u{e007f}]", "gu");
   function clean(s) {
     return fold(s).replace(CONTROL_AND_BIDI, "\ufffd");
   }
@@ -114,18 +121,32 @@
         if (oldVersion >= 1 && oldVersion < 2 && tx) {
           const runs = tx.objectStore(L.STORE);
           const lines = tx.objectStore(L.LINES);
+          let dropped = 0; // malformed v1 lines skipped across the whole migration
           const cur = runs.openCursor();
           cur.onsuccess = () => {
             const c = cur.result;
-            if (!c) return;
+            if (!c) {
+              // One warning for the whole migration; a bad line must never
+              // abort the versionchange and brick every later open.
+              if (dropped > 0) { try { console.warn(`[MG Clicker] run log migration: dropped ${dropped} malformed log line(s)`); } catch (e) { /* ignore */ } }
+              return;
+            }
             const rec = c.value;
             const embedded = Array.isArray(rec.lines) ? rec.lines : [];
             let bytes = 0;
-            embedded.forEach((l, seq) => {
-              lines.put({ runId: rec.runId, seq, t: l.t, level: l.level, src: l.src, msg: l.msg });
-              bytes += lineBytes(l);
+            let seq = 0; // the surviving lines stay contiguous from 0
+            embedded.forEach((l) => {
+              // A non-object or otherwise malformed line is skipped, not
+              // migrated: it would throw inside this event handler and, in
+              // Chrome, abort the versionchange transaction.
+              if (!l || typeof l !== "object") { dropped += 1; return; }
+              try {
+                lines.put({ runId: rec.runId, seq, t: l.t, level: l.level, src: l.src, msg: l.msg });
+                bytes += lineBytes(l);
+                seq += 1;
+              } catch (e) { dropped += 1; }
             });
-            rec.lineCount = embedded.length;
+            rec.lineCount = seq;
             rec.byteCount = bytes;
             delete rec.lines;
             c.update(rec);

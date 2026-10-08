@@ -109,16 +109,25 @@ by its tab id). The geometry is checked in headless Chrome by
    Add any other model slugs in the extra field,
    separated by commas or new lines. Slugs are the last path segment of a
    model's Model Garden URL, for example `claude-haiku-4-5`.
-   The **Include pairs already done in earlier runs** box (unchecked by
-   default) controls the cross-run guard: with it unchecked, a project and
-   model pair that an earlier run recorded as done, or as unverified with
-   Agree already clicked, is created as `skipped` in the new queue (the
-   message names the earlier run) so the extension does not line up a
-   purchase for a pair it may already have bought. Tick the box to run those
-   pairs anyway. A pair that was only dry-run, or skipped because the model
-   was already enabled, is never skipped by this guard. This is separate
-   from, and in addition to, the model page's own already-enabled check,
-   which still runs for every job.
+   The **Include pairs already done in earlier runs** box (a per-run choice:
+   it starts unchecked on every popup open and is cleared after a successful
+   Start, so one tick cannot quietly stay on) controls the cross-run guard:
+   with it unchecked, a project and model pair that an earlier run recorded
+   as done, or as unverified with Agree already clicked, is created as
+   `skipped` in the new queue (the message names the earlier run) so the
+   extension does not line up a purchase for a pair it may already have
+   bought. Tick the box to run those pairs anyway; a full run then confirms
+   that the guard is off for that run. A pair that was only dry-run, or
+   skipped because the model was already enabled, is never skipped by this
+   guard. This is separate from, and in addition to, the model page's own
+   already-enabled check, which still runs for every job.
+   The guard's only memory is the run records shown on the Runs page, so a
+   run that is deleted, purged or pruned by "Runs to keep", or a record that
+   could not be written, is forgotten: such a pair is no longer recognised as
+   already done. If the run-log database cannot be read at Start the guard is
+   off for that run and a warning line is written to the log; the model
+   page's own enabled-state check still runs. The guard is a safety net, not
+   the only check.
 5. Click **Start** (a dry run starts at once; only a full run asks for a
    confirmation). The extension opens one tab and works through every
    project and model pair in order. A dark badge in the tab's bottom-right

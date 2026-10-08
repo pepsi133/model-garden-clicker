@@ -53,7 +53,7 @@ The popup lists one row per job. **Open in a tab** shows the same page in a norm
 | `dry-run` | Stopped on the Agreements page with the checkbox ticked; Agree not clicked. |
 | `done` | Full run: Agree clicked and the console's "Successfully purchased" dialog seen. |
 | `unverified` | Full run: Agree clicked, no confirmation seen in time. Check that project by hand. |
-| `skipped` | The model was already enabled in that project. |
+| `skipped` | The model was already enabled in that project, or an earlier run recorded the pair as done. |
 | `failed` | The reason is in the message: a rejected field, a page that was not the job's, a timeout, a console error dialog. |
 | `stopped` | You pressed Stop, or the extension was reloaded during the run. |
 

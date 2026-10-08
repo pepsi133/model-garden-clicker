@@ -540,8 +540,8 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.6.0", "the manifest version is 0.6.0", manifest.version);
-    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.6.0 added no permission: still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
+    ok(manifest.version === "0.6.1", "the manifest version is 0.6.1", manifest.version);
+    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.6.1 added no permission: still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
     ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
     ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
@@ -921,6 +921,63 @@ function setSelect(p, name, value) {
     fakeIDB.reset();
   }
 
+  console.log("--- (N5) the v1->v2 migration drops malformed lines (null, non-object) with one warning instead of aborting the versionchange");
+  {
+    fakeIDB.reset();
+    const warns = []; const origWarn = console.warn; console.warn = (...a) => { warns.push(a.join(" ")); };
+    try {
+      const good0 = { t: Date.UTC(2026, 9, 8, 12, 0, 0), level: "info", src: "worker", msg: "good line zero" };
+      const good2 = { t: Date.UTC(2026, 9, 8, 12, 0, 2), level: "info", src: "content", msg: "good line two" };
+      // A v1 lines array with a null and a bare string between two good lines.
+      const v1lines = [good0, null, "a bare string line", good2];
+      const v1rec = { runId: "v1bad", startedAt: Date.UTC(2026, 9, 8, 12, 0, 0), finishedAt: Date.UTC(2026, 9, 8, 12, 0, 3), live: false, stepByStep: false, reason: "all jobs processed",
+        jobs: [{ projectId: "proj-bad", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5" }],
+        results: [{ projectId: "proj-bad", modelSlug: "claude-haiku-4-5", status: "dry-run", message: "checkbox ticked" }],
+        lines: v1lines };
+      await new Promise((resolve, reject) => {
+        const req = fakeIDB.open("mgc-runs", 1);
+        req.onupgradeneeded = () => req.result.createObjectStore("runs", { keyPath: "runId" });
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction("runs", "readwrite");
+          tx.objectStore("runs").put(v1rec);
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = () => reject(tx.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+      // The first v2 access runs the migration; it must resolve (not abort).
+      const rec = await RLNODE.get("v1bad");
+      const lines = await RLNODE.readLines("v1bad");
+      const lineStore = fakeIDB.dump("mgc-runs", "lines").filter((l) => l.runId === "v1bad").sort((a, b) => a.seq - b.seq);
+      ok(rec && !("lines" in rec) && rec.lineCount === 2, "(N5) the upgrade completed and the record holds only the two good lines (the null and the string dropped)", JSON.stringify({ lineCount: rec && rec.lineCount, hasLines: rec && "lines" in rec }));
+      ok(lineStore.length === 2 && lineStore[0].seq === 0 && lineStore[1].seq === 1 && lineStore.map((l) => l.msg).join("|") === "good line zero|good line two", "(N5) the two surviving lines are contiguous from seq 0, in order, with the bad entries gone", JSON.stringify(lineStore.map((l) => [l.seq, l.msg])));
+      ok(lines.length === 2 && lines.map((l) => l.msg).join("|") === "good line zero|good line two", "(N5) readLines returns the two good lines");
+      ok(warns.some((w) => /migration/.test(w) && /dropped 2/.test(w)), "(N5) one warning names the dropped count", JSON.stringify(warns));
+    } finally { console.warn = origWarn; }
+    fakeIDB.reset();
+  }
+
+  console.log("--- (N6) the sanitiser also replaces C1 controls, zero-width characters, the soft hyphen and tag characters with U+FFFD");
+  {
+    fakeIDB.reset();
+    // C1 (NEL U+0085, CSI U+009B, APC U+009F), soft hyphen U+00AD,
+    // zero-width U+200B-U+200D, word joiner U+2060, BOM U+FEFF, and a tag
+    // character U+E0041 (astral).
+    const samples = [0x0085, 0x009b, 0x009f, 0x00ad, 0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0xe0041];
+    const msg = "ZZSTART" + samples.map((c) => String.fromCodePoint(c)).join("") + "ZZEND";
+    await RLNODE.create({ runId: "r-n6", startedAt: Date.UTC(2026, 9, 8, 13, 0, 0), live: false }, [], false);
+    await RLNODE.append("r-n6", { t: Date.UTC(2026, 9, 8, 13, 0, 0), level: "warn", src: "content", msg });
+    const rec = await RLNODE.get("r-n6");
+    const text = RLNODE.textOf(rec, await RLNODE.readLines("r-n6"));
+    const line = text.split("\n").find((l) => /ZZSTART/.test(l)) || "";
+    const stillForbidden = Array.from(line).filter((c) => samples.includes(c.codePointAt(0)));
+    const fffd = Array.from(line).filter((c) => c === "�").length;
+    ok(stillForbidden.length === 0 && fffd === samples.length, `(N6) every C1, zero-width, soft-hyphen and tag sample is replaced with U+FFFD (${fffd} of ${samples.length}; none left)`, JSON.stringify(stillForbidden.map((c) => c.codePointAt(0).toString(16))));
+    ok(/ZZSTART/.test(line) && /ZZEND/.test(line), "(N6) the readable text around the hidden characters survives", JSON.stringify(line));
+    fakeIDB.reset();
+  }
+
   console.log("--- (U3) first load of a new version resets the model selection to none, once; later loads keep it");
   {
     const models12 = JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")).map((m) => m.slug);
@@ -941,7 +998,9 @@ function setSelect(p, name, value) {
     ticked = Array.from(p.document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
     ok(JSON.stringify(ticked) === JSON.stringify([models12[0]]), "a later load at the same version keeps whatever the user picked (no second reset)", JSON.stringify(ticked));
     p.win.close();
-    // The include-done box defaults off and round-trips through popup_state.
+    // The include-done box is a per-run choice: it defaults off, is NOT
+    // written to popup_state, is still sent with Start, and is cleared after
+    // a successful Start.
     const store2 = { settings: Object.assign({}, FULL) };
     p = await loadPage("popup/popup.html", store2, POPUP_SCRIPTS);
     ok(p.document.getElementById("include-done") && p.document.getElementById("include-done").checked === false, 'the "Include pairs already done in earlier runs" box exists and is unchecked by default');
@@ -950,9 +1009,28 @@ function setSelect(p, name, value) {
     p.document.getElementById("projects").value = "proj-x";
     const haiku = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
     haiku.checked = true; haiku.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    ok(!("includeDone" in (store2.popup_state || {})), "(N1) ticking the box is NOT written to popup_state (it is a per-run choice, not a saved setting)", JSON.stringify(store2.popup_state));
     p.document.getElementById("start").click(); await tick();
     const startMsg = (store2.__messages || []).find((m) => m.type === p.K.MSG.START);
-    ok(store2.popup_state.includeDone === true && startMsg && startMsg.includeDone === true, "ticking the box stores includeDone and sends it with Start", JSON.stringify({ stored: store2.popup_state.includeDone, sent: startMsg && startMsg.includeDone }));
+    ok(startMsg && startMsg.includeDone === true, "(N1) ticking the box is still sent with Start", JSON.stringify({ sent: startMsg && startMsg.includeDone }));
+    ok(!("includeDone" in (store2.popup_state || {})) && box.checked === false, "(N1) after a successful Start the box state is not stored and the box is cleared", JSON.stringify({ stored: store2.popup_state.includeDone, boxChecked: box.checked }));
+    p.win.close();
+    // A stored legacy includeDone (from an older popup_state) is ignored: the
+    // box loads unchecked regardless.
+    const store3 = { settings: Object.assign({}, FULL), popup_state: { projects: "proj-y", models: [], extra: "", includeDone: true, version: MANIFEST_VERSION } };
+    p = await loadPage("popup/popup.html", store3, POPUP_SCRIPTS);
+    ok(p.document.getElementById("include-done").checked === false, "(N1) a stored legacy includeDone is ignored: the box loads unchecked");
+    p.win.close();
+    // The full-run confirmation names the override when the box is ticked.
+    const store4 = { settings: Object.assign({}, FULL, { live_mode: true }) };
+    p = await loadPage("popup/popup.html", store4, POPUP_SCRIPTS);
+    const confirms = []; p.win.confirm = (m) => { confirms.push(m); return false; };
+    p.document.getElementById("include-done").checked = true;
+    p.document.getElementById("projects").value = "proj-z";
+    const haiku4 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
+    haiku4.checked = true; haiku4.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    p.document.getElementById("start").click(); await tick();
+    ok(confirms.length === 1 && /FULL RUN/.test(confirms[0]) && /guard is off/.test(confirms[0]) && /pairs already done in earlier runs will be processed again/.test(confirms[0]), "(N1) the full-run confirm names the override when the box is ticked", confirms[0]);
     p.win.close();
     fakeIDB.reset();
   }

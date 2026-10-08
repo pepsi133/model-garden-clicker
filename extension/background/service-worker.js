@@ -179,20 +179,36 @@ async function applyCrossRunGuardUnsafe(queue, includeDone) {
   try {
     prior = await RL.list(); // newest first
   } catch (e) {
+    // The guard's only memory is the run records; if they cannot be read the
+    // guard is off for this run. Say so once, in the log, so a silent failure
+    // never passes for a working guard. The model page's enabled-state check
+    // still runs for every job.
+    await appendLogUnsafe("warn", "cross-run guard off: could not read the run records; the model page's enabled-state check is the only guard this run");
     return 0;
   }
-  const doneBy = new Map(); // "project\0model" -> { startedAt, status }
+  // Project IDs and model slugs are compared case-insensitively, the same way
+  // isValidModelSlug accepts a slug, so a pair done under one spelling is
+  // skipped under another (e.g. Claude-Haiku-4-5 vs claude-haiku-4-5).
+  const guardKey = (projectId, modelSlug) => `${String(projectId).toLowerCase()}\u0000${String(modelSlug).toLowerCase()}`;
+  const doneBy = new Map(); // "project\0model" (lower-cased) -> { startedAt, status }
+  let malformed = 0;
   for (const rec of Array.isArray(prior) ? prior : []) {
     for (const res of (rec && Array.isArray(rec.results) ? rec.results : [])) {
+      // A corrupted record (a null entry, a non-object, a missing field)
+      // must not throw at Start: skip it and count it for one warning line.
+      if (!res || typeof res !== "object") { malformed += 1; continue; }
       const done = res.status === STATUS.DONE || (res.status === STATUS.UNVERIFIED && res.agreeClicked === true);
       if (!done) continue;
-      const key = `${res.projectId}\u0000${res.modelSlug}`;
+      const key = guardKey(res.projectId, res.modelSlug);
       if (!doneBy.has(key)) doneBy.set(key, { startedAt: rec.startedAt, status: res.status });
     }
   }
+  if (malformed > 0) {
+    await appendLogUnsafe("warn", `cross-run guard: skipped ${malformed} malformed run record entr${malformed === 1 ? "y" : "ies"} while checking for already-done pairs`);
+  }
   let skipped = 0;
   for (const job of queue) {
-    const hit = doneBy.get(`${job.projectId}\u0000${job.modelSlug}`);
+    const hit = doneBy.get(guardKey(job.projectId, job.modelSlug));
     if (!hit) continue;
     const now = Date.now();
     Object.assign(job, {

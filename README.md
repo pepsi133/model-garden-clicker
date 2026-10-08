@@ -146,6 +146,10 @@ model-garden-clicker/
 
 The console DOM was recorded on 2026-10-07. Selectors can break when Google changes the console pages; a locator that no longer matches makes the job fail cleanly instead of guessing. [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md) is the repair guide: record the new pages with the harness, compare them with `docs/dom-map.md`, update `extension/content/selectors.js`, run the offline suite against the new dumps, run one browser dry run, bump the version and tag.
 
+## Changelog
+
+Every version's changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## License
 
 This repository uses the Apache License, Version 2.0. Read `LICENSE` for the full text. Model Garden Clicker is an independent tool and is not affiliated with, endorsed by or supported by Google or Anthropic.

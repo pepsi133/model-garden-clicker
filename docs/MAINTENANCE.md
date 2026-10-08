@@ -325,13 +325,15 @@ workflow refuses a tag that does not match the manifest.
 
 1. Set `"version"` in `extension/manifest.json` to the next number.
 2. Update "Package version" at the top of `store/LISTING.md`.
-3. Run `sh extension/test/run.sh` once more.
-4. Check `git status --short`: nothing under `python/recon/`,
+3. Add a `## [<version>] - <date>` section to `CHANGELOG.md`. The release
+   workflow uses it as the release notes and fails when it is missing.
+4. Run `sh extension/test/run.sh` once more.
+5. Check `git status --short`: nothing under `python/recon/`,
    `python/.chrome-profile/` or `python/config.local.json` may appear.
-5. Commit, tag and push:
+6. Commit, tag and push:
 
 ```sh
-git add extension docs store python/README.md
+git add CHANGELOG.md extension docs store python/README.md
 git commit -m "Repair the console selectors after the change of <date>"
 git tag v<version>
 git push origin main v<version>

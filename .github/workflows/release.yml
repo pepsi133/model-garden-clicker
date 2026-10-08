@@ -29,6 +29,21 @@ jobs:
             exit 1
           fi
 
+      # The release body is the tag's section of CHANGELOG.md; a tag without
+      # a section fails here, before anything is built.
+      - name: Extract the release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+
       # jsdom 30 (extension/test/package.json) runs on Node 22.22+ or 24.15+;
       # Node 20 fails at require time (undici's markAsUncloneable).
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -80,4 +95,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/model-garden-clicker-*.zip \
             --title "Model Garden Clicker $GITHUB_REF_NAME" \
-            --notes "Chrome extension package for manual upload to the Chrome Web Store dashboard. See extension/README.md."
+            --notes-file release-notes.md

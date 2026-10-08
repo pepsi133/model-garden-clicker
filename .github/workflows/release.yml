@@ -23,9 +23,11 @@ jobs:
             exit 1
           fi
 
+      # jsdom 30 (extension/test/package.json) runs on Node 22.22+ or 24.15+;
+      # Node 20 fails at require time (undici's markAsUncloneable).
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       # The offline suite must pass before anything is built. The recon dumps
       # are not in the repository, so the dump-based checks skip here;

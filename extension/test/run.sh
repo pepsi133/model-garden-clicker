@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs every extension test with node. Usage: sh extension/test/run.sh
-# Needs jsdom under extension/test/node_modules: cd extension/test && npm install
+# Needs Node 22 or newer and jsdom under extension/test/node_modules: cd extension/test && npm install
 # Exits non-zero when a file fails or when any check skipped (no recon dumps),
 # unless MGC_ALLOW_SKIP=1 accepts the skips (the release workflow does).
 set -u

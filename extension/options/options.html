@@ -26,7 +26,7 @@
         <pre class="badge-sketch">MG Clicker [DRY RUN] job 2/4 · my-project · claude-haiku-4-5 · 00:37
 step: waiting for Enable button · 12 s / 60 s
 then: click Enable, then the questionnaire · next job: my-project · claude-sonnet-4-6</pre></li>
-      <li><strong>Results.</strong> One row per job in the popup: <code>dry-run</code>, <code>done</code>, <code>unverified</code> (Agree clicked, no confirmation seen), <code>skipped</code> (already enabled), <code>failed</code> (with the reason) or <code>stopped</code>. The log keeps the last 50 lines.</li>
+      <li><strong>Results.</strong> One row per job in the popup: <code>dry-run</code>, <code>done</code>, <code>unverified</code> (Agree clicked, no confirmation seen), <code>skipped</code> (already enabled), <code>failed</code> (with the reason) or <code>stopped</code>. The popup's log keeps the last 50 lines; every run's full log is on the Runs page (the popup's <strong>Runs</strong> link), where it can be downloaded as a text file.</li>
     </ol>
   </section>
 
@@ -83,6 +83,18 @@ then: click Enable, then the questionnaire · next job: my-project · claude-son
       <button type="button" id="timing-reset">Reset to defaults</button>
     </fieldset>
 
+    <fieldset class="logs">
+      <legend>Logs</legend>
+      <p class="note">Every run's full log (every line, not just the popup's last 50) is kept in this browser's local extension database and shown on the <a href="../runs/runs.html" id="runs-link" target="_blank" rel="noopener">Runs page</a>, where each one can be downloaded as a text file or deleted. When a run starts, older runs beyond this number are deleted.</p>
+      <label>Runs to keep <input name="runs_keep" type="number" min="1" max="500" step="1" required>
+        <small>Between 1 and 500; 50 by default.</small></label>
+      <p id="runs-keep-error" class="error" hidden></p>
+      <div class="purge-row">
+        <button type="button" id="purge-runs">Purge all</button>
+        <span id="purge-note" hidden></span>
+      </div>
+    </fieldset>
+
     <div class="actions">
       <button type="submit" class="primary">Save</button>
       <span id="saved" class="saved" hidden>Saved.</span>
@@ -91,6 +103,7 @@ then: click Enable, then the questionnaire · next job: my-project · claude-son
 
   <script src="../common/constants.js"></script>
   <script src="../common/option-lists.js"></script>
+  <script src="../common/runlog.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

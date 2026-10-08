@@ -109,14 +109,16 @@
     await send(msg);
   }
 
-  /** True when this document's script already reported another job of `runId`. */
-  function reportedOtherJob(runId, jobIndex) {
-    for (const key of reported) {
-      const [r, i] = key.split("|");
-      if (r === runId && Number(i) !== jobIndex) return true;
-    }
-    return false;
-  }
+  /*
+   * One document, one job. The worker's navigation brings a fresh document
+   * for every job, so the job this document first sees while it is the
+   * worker tab is the job it was created for; it never acts for another
+   * (the next job of the same project, recorded by the worker a few ms
+   * before its tabs.update lands, whether this document reported its own
+   * job or the watchdog ended it unreported).
+   */
+  let boundJob = null; // "runId|jobIndex" of the first job this document saw as the worker tab
+  let unknownSince = null; // first poll that found no known console page while the bound job was in phase navigate
 
   /* ---------------------------------------------------------- step mirror */
 
@@ -221,21 +223,24 @@
     const mode = st.run.live && st.settings.live_mode ? "FULL RUN" : "DRY RUN";
 
     if (st.stopRequested) { B.update(badgeInfo(st, jobIndex, mode, null, "stopping")); return; }
-    if (reported.has(`${runId}|${jobIndex}`) || st.current.phase === PHASE.FINISHED) {
+    const jobKey = `${runId}|${jobIndex}`;
+    if (boundJob === null) boundJob = jobKey;
+    if (reported.has(jobKey) || st.current.phase === PHASE.FINISHED) {
       B.update(badgeInfo(st, jobIndex, mode, null, "finished, waiting for next job"));
       return;
     }
 
-    // One document, one job. The worker records the next job (phase
-    // navigate) a few ms before its tabs.update lands, and storage.onChanged
-    // wakes this script at once: a document that already reported a job of
-    // this run is the finished job's page, still waiting to be navigated
-    // away, whatever its URL says (inside a project the next job's page
-    // has the same ?project=, and an enabled or ticked page would be
-    // judged for the wrong job). It only shows the badge; the worker's
-    // navigation always brings a fresh document, whose script judges the
-    // new URL, and if the navigation never lands the watchdog ends the job.
-    if (reportedOtherJob(runId, jobIndex)) {
+    // A job this document was not created for: the worker records the next
+    // job (phase navigate) a few ms before its tabs.update lands, and
+    // storage.onChanged wakes this script at once. This document is the
+    // previous job's page, still waiting to be navigated away, whatever
+    // its URL says (inside a project the next job's page has the same
+    // ?project=, and an enabled or ticked page would be judged for the
+    // wrong job), whether it reported that job or the watchdog ended it.
+    // It only shows the badge; the worker's navigation always brings a
+    // fresh document, whose script judges the new URL, and if the
+    // navigation never lands the watchdog ends the job.
+    if (boundJob !== jobKey) {
       B.update(badgeInfo(st, jobIndex, mode, null, "finished, waiting for the next job's page"));
       return;
     }
@@ -276,7 +281,22 @@
       return;
     }
     B.update(badgeInfo(st, jobIndex, mode, page, `phase ${st.current.phase}, page ${page}`));
-    if (page === PAGE.UNKNOWN || !HANDLERS[page]) return;
+    if (page === PAGE.UNKNOWN || !HANDLERS[page]) {
+      // A project the console cannot open (no such project, no access, a
+      // misspelt ID that passes the format check): the console leaves the
+      // model page's URL for an error page or drops the route, so no known
+      // page ever shows and nothing would end the job before the watchdog.
+      // In phase navigate (nothing of the flow has started) the job fails
+      // after the model-page wait instead, naming the project.
+      if (st.current.phase === PHASE.NAVIGATE) {
+        if (unknownSince === null) unknownSince = Date.now();
+        else if (Date.now() - unknownSince >= K.TIMEOUTS.MODEL_READY) {
+          await report(runId, jobIndex, STATUS.FAILED, `the console did not show a model page for project "${job.projectId}" within ${Math.round(K.TIMEOUTS.MODEL_READY / 1000)} s of the navigation (the tab shows ${location.pathname}): the project may not exist, you may lack access to it, or the ID may be misspelt`);
+        }
+      }
+      return;
+    }
+    unknownSince = null;
 
     const key = `${runId}|${jobIndex}|${page}`;
     if (handled.has(key)) return;

@@ -25,6 +25,7 @@ header .step-toggle { display: inline-flex; align-items: center; gap: 5px; paddi
 header .step-toggle .icon { flex: none; color: var(--mgc-accent-dark); }
 header .step-toggle[aria-pressed="true"] { border-color: var(--mgc-accent-dark); background: var(--mgc-neutral); }
 header .header-actions { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+header .header-links { display: flex; gap: 10px; }
 header .header-actions a { font-size: 12px; white-space: nowrap; }
 
 /* The inputs column never shrinks and never scrolls: every row keeps its

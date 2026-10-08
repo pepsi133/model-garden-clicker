@@ -13,7 +13,11 @@ inside any scroll region and do not overflow, the Start button and the
 status line are visible without scrolling, the results/log region keeps
 its floor, the page does not overflow 600 px, and exactly one step-by-step
 icon is displayed. It also loads extension/options/options.html with the
-same fake and checks that the form rendered.
+same fake and checks that the form rendered (the Logs section included),
+and extension/runs/runs.html at 900 x 700 and checks that its header, its
+three buttons and either its empty state or its database notice rendered
+(a file:// page may be refused IndexedDB; the page must say so in its
+notice, not throw).
 
 For every page it collects the browser console log (Selenium
 goog:loggingPrefs, browser ALL) and fails on any SEVERE entry, printing
@@ -22,7 +26,7 @@ has, or any other uncaught error during init and the first render, shows
 up here (popup.js guards its ids and only warns; the offline id-existence
 check in extension/test/ui-pages.cjs covers the popup).
 
-Run:  python/.venv/bin/python python/scripts/popup_layout.py [idle|running|error|options|all]
+Run:  python/.venv/bin/python python/scripts/popup_layout.py [idle|running|error|options|runs|all]
 
 Exit code 0 when every check holds, 1 otherwise. A screenshot per state is
 written to python/recon/popup-layout-<state>.png (gitignored).
@@ -57,7 +61,8 @@ STATES = {
     },
     "error": {"settings": {"business_name": ""}},
 }
-PAGES = list(STATES) + ["options"]
+PAGES = list(STATES) + ["options", "runs"]
+RUNS_W, RUNS_H = 900, 700
 FAKE_CHROME = """
 const store = %s;
 store.settings = Object.assign({business_name: 'b', business_website: 'https://b.example', contact_email: 'a@b.example', headquarters: 'x', industry: 'x',
@@ -85,7 +90,16 @@ return { rows, models: box('#models'), scroll: box('.scroll'), inputs: box('.inp
 OPTIONS_JS = """
 const form = document.getElementById('form');
 return { name: form.elements.business_name.value, industry: form.elements.industry_choice ? form.elements.industry_choice.tagName : null,
-  dry: form.elements.dry_run.checked, timing: form.elements.timing_json.value.length, keys: document.getElementById('timing-keys').textContent };
+  dry: form.elements.dry_run.checked, timing: form.elements.timing_json.value.length, keys: document.getElementById('timing-keys').textContent,
+  runsKeep: form.elements.runs_keep ? form.elements.runs_keep.value : null, purge: !!document.getElementById('purge-runs') };
+"""
+RUNS_JS = """
+const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && getComputedStyle(el).display !== 'none'; };
+return { title: document.title, h1: (document.querySelector('header h1') || {}).textContent || '', photo: !!document.querySelector('header img.photo'),
+  buttons: ['refresh', 'download-all', 'purge-all'].map((id) => !!document.getElementById(id)),
+  empty: shown('empty'), notice: shown('notice'), noticeText: document.getElementById('notice').textContent, table: shown('runs'),
+  keep: document.getElementById('keep').textContent, idb: typeof indexedDB, innerW: window.innerWidth, innerH: window.innerHeight,
+  docScrollW: document.documentElement.scrollWidth };
 """
 
 
@@ -97,10 +111,10 @@ def newest(pattern: str) -> str:
     return found[-1]
 
 
-def start(store: dict):
+def start(store: dict, size: tuple[int, int] = (POPUP_W, POPUP_H)):
     opts = Options()
     opts.binary_location = newest("~/.cache/selenium/chrome/linux64/*/chrome")
-    for arg in ("--headless=new", f"--window-size={POPUP_W},{POPUP_H}", "--allow-file-access-from-files", "--no-sandbox", "--disable-gpu"):
+    for arg in ("--headless=new", f"--window-size={size[0]},{size[1]}", "--allow-file-access-from-files", "--no-sandbox", "--disable-gpu"):
         opts.add_argument(arg)
     opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})
     driver = webdriver.Chrome(service=Service(newest("~/.cache/selenium/chromedriver/linux64/*/chromedriver")), options=opts)
@@ -214,8 +228,46 @@ def probe_options() -> bool:
         ("the questionnaire fields show the stored values", r["name"] == "b"),
         ("the industry dropdown was built from option-lists.js", r["industry"] == "SELECT"),
         ("the DRY RUN box is ticked and the timing JSON is prefilled with its keys listed", r["dry"] is True and r["timing"] > 20 and "watchdog_min" in r["keys"]),
+        ("the Logs section shows Runs to keep (default 50) and its Purge all button", r["runsKeep"] == "50" and r["purge"] is True),
     ]
-    print(f"state options: name={r['name']!r} industry control={r['industry']} dry_run={r['dry']} timing chars={r['timing']}")
+    print(f"state options: name={r['name']!r} industry control={r['industry']} dry_run={r['dry']} timing chars={r['timing']} runs_keep={r['runsKeep']!r}")
+    ok = console_ok
+    for label, good in checks:
+        print(f"  {'PASS' if good else 'FAIL'} {label}")
+        ok = ok and good
+    return ok
+
+
+def probe_runs() -> bool:
+    """runs.html at 900 x 700 with the fake chrome: the page renders and the console stays clean.
+
+    A file:// page may be refused IndexedDB (an opaque origin); the page
+    then shows its database notice instead of the list. Either the empty
+    state or that notice must be visible, never an uncaught error.
+    """
+    driver = start({"runs_keep": 25}, (RUNS_W, RUNS_H))
+    try:
+        driver.get(f"file://{EXTENSION_DIR}/runs/runs.html")
+        inner_w, inner_h = driver.execute_script("return [window.innerWidth, window.innerHeight]")
+        if (inner_w, inner_h) != (RUNS_W, RUNS_H):
+            driver.set_window_size(RUNS_W + (RUNS_W - inner_w), RUNS_H + (RUNS_H - inner_h))
+            time.sleep(0.3)
+        time.sleep(1.0)
+        r = driver.execute_script(RUNS_JS)
+        RECON_DIR.mkdir(parents=True, exist_ok=True)
+        driver.save_screenshot(str(RECON_DIR / "popup-layout-runs.png"))
+        console_ok = console_check(driver, "runs.html")
+    finally:
+        driver.quit()
+    checks = [
+        (f"viewport is {RUNS_W} x {RUNS_H} and the page does not overflow its width", r["innerW"] == RUNS_W and r["innerH"] == RUNS_H and r["docScrollW"] <= RUNS_W),
+        ("the title, the header with the avatar and the three buttons (Refresh, Download all, Purge all) rendered",
+         r["title"] == "Model Garden Clicker runs" and r["h1"] == "Model Garden Clicker runs" and r["photo"] is True and all(r["buttons"])),
+        ("the intro shows the stored Runs to keep (25)", r["keep"] == "25"),
+        ("either the empty state (database open, no runs) or the database notice is shown, and the table is hidden",
+         (r["empty"] != r["notice"]) and r["table"] is False and (not r["notice"] or "run log database" in r["noticeText"])),
+    ]
+    print(f"state runs: indexedDB={r['idb']} empty={r['empty']} notice={r['notice']} ({r['noticeText'][:80]!r}) keep={r['keep']!r} buttons={r['buttons']} document width {r['docScrollW']} in {r['innerW']} x {r['innerH']}")
     ok = console_ok
     for label, good in checks:
         print(f"  {'PASS' if good else 'FAIL'} {label}")
@@ -229,7 +281,7 @@ def main() -> int:
     if any(p not in PAGES for p in pages):
         print(f"unknown state; use one of {', '.join(PAGES)} or all")
         return 2
-    results = [probe_options() if p == "options" else probe(p) for p in pages]
+    results = [probe_options() if p == "options" else probe_runs() if p == "runs" else probe(p) for p in pages]
     return 0 if all(results) else 1
 
 

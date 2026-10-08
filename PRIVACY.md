@@ -15,13 +15,20 @@ what the extension handles and where it keeps it.
 - The project IDs and model names you paste into the popup, the job queue,
   the result of each job and a log of the last steps. On a failure the log can
   hold the name of a questionnaire field and the value the console rejected.
+- A full log of each run (every line of the log above, with the run's
+  start, end, mode, job list and results), kept for the last 50 runs by
+  default (the "Runs to keep" setting) and shown on the extension's Runs
+  page, where it can be saved as a text file on your computer or deleted.
 - Mode settings (dry run, step-by-step confirmation) and timing settings.
 
 ## Where it is stored
 
 All of it is kept in the local extension storage of your own browser
-(`chrome.storage.local`). It is not synced to a Google account or to any
-other account, and it never leaves your browser through the extension.
+(`chrome.storage.local`, and the extension's own local IndexedDB for the
+full per-run logs). It is not synced to a Google account or to any other
+account, and it never leaves your browser through the extension. A log
+file you download from the Runs page is written where your browser saves
+downloads and is yours to keep or delete.
 
 ## What is transmitted
 
@@ -38,10 +45,14 @@ It does not record your browsing, and it has access to no site other than
 
 ## How to delete the data
 
-Removing the extension deletes its storage. Open `chrome://extensions`, find
-Model Garden Clicker and click Remove. The options page has no separate
-"clear storage" button; the "clear" link in the popup removes the results
-table only.
+Removing the extension deletes its storage, the per-run logs included.
+Open `chrome://extensions`, find Model Garden Clicker and click Remove. The
+"clear" link in the popup removes the results table and the popup's log
+only; the per-run logs are deleted one at a time on the Runs page
+(Delete) or all at once with Purge all there or in the Logs section of
+the options page. The questionnaire values and the settings have no clear
+button of their own; they stay until you overwrite them on the options
+page or remove the extension.
 
 ## Changes
 

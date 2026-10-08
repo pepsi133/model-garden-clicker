@@ -1,7 +1,10 @@
-// Fake chrome API, then drive the service worker through a run.
+// Fake chrome API (and a fake IndexedDB for the per-run logs), then drive the service worker through a run.
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import path from "node:path";
 const EXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const fakeIDB = createRequire(import.meta.url)("./lib/fake-idb.cjs");
+globalThis.indexedDB = fakeIDB;
 const store = {};
 const listeners = { message: [], alarm: [], removed: [], installed: [], startup: [] };
 const events = [];
@@ -49,6 +52,9 @@ function msg(m, tabId, sender) {
 const TAB_PAGE = (id) => ({ tab: { id }, url: "chrome-extension://x/popup/popup.html?tab=1" });
 const settle = () => new Promise((r) => setTimeout(r, 10));
 let n = 0;
+let finished = false;
+// A stalled await (a transaction that never completes, say) must not read as a pass: node would exit 0 with no summary line.
+process.on("exit", (code) => { if (!finished && code === 0) { console.log(`FAIL the worker harness ended without its summary line after ${n} checks; an await never resolved`); process.exitCode = 1; } });
 function assert(c, m) { if (!c) { console.error("FAIL:", m, JSON.stringify(store, null, 1)); process.exit(1); } n++; console.log("ok  ", m); }
 const runId = () => store.run && store.run.runId;
 /** A START message as the popup sends it: with the mode it showed (the stored setting unless overridden). */
@@ -271,6 +277,41 @@ alarm = null;
 await import(pathToFileURL(path.join(EXT, "background/service-worker.js")).href + "?instance=5"); await settle(); await settle();
 assert(store.running === false && store.queue[0].status === "unverified" && /Agree was clicked/.test(store.queue[0].message) && /check manually/.test(store.queue[0].message), "no alarm after a recorded Agree click: job unverified, run stopped (N2): " + store.queue[0].message);
 
+// 16c. (S2) a reload (onInstalled) with Agree already clicked: the job ends unverified with the reason, never stopped
+const lastInstalled = () => listeners.installed[listeners.installed.length - 1]();
+const lastStartup = () => listeners.startup[listeners.startup.length - 1]();
+r = await msg(START(["proj-one", "proj-two"], ["claude-haiku-4-5"])); await settle();
+const t7b = store.tab_id; const R7b = runId();
+r = await msg({ type: K.MSG.SET_PHASE, runId: R7b, jobIndex: 0, phase: "agreements" }, t7b);
+r = await msg({ type: K.MSG.JOB_UPDATE, runId: R7b, jobIndex: 0, fields: { agreeClicked: true } }, t7b);
+lastInstalled(); await settle(); await settle();
+assert(store.running === false && store.current === null && store.queue[0].status === "unverified" && store.queue[0].message === "Agree was clicked but the extension was reloaded; no confirmation observed; check manually" && store.queue[1].status === "pending" && store.run.runId === R7b && store.run.reason === "extension was reloaded",
+  "a reload (onInstalled) after a recorded Agree click: job unverified with the reason, later jobs pending, run closed with the reason (S2): " + store.queue[0].message);
+assert(tabs.get(t7b) === K.modelUrl("proj-one", "claude-haiku-4-5"), "the tab was not navigated to the next job after the reload (S2)");
+// 16d. the same on a browser restart (onStartup)
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+const t7c = store.tab_id; const R7c = runId();
+r = await msg({ type: K.MSG.SET_PHASE, runId: R7c, jobIndex: 0, phase: "agreements" }, t7c);
+r = await msg({ type: K.MSG.JOB_UPDATE, runId: R7c, jobIndex: 0, fields: { agreeClicked: true } }, t7c);
+lastStartup(); await settle(); await settle();
+assert(store.running === false && store.queue[0].status === "unverified" && store.queue[0].message === "Agree was clicked but the browser was restarted; no confirmation observed; check manually" && store.run.reason === "browser was restarted",
+  "a browser restart (onStartup) after a recorded Agree click: job unverified with the reason, run stopped (S2): " + store.queue[0].message);
+// 16e. control: a reload with no click on record still marks the job stopped
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+const t7d = store.tab_id; const R7d = runId();
+r = await msg({ type: K.MSG.SET_PHASE, runId: R7d, jobIndex: 0, phase: "agreements" }, t7d);
+lastInstalled(); await settle(); await settle();
+assert(store.running === false && store.queue[0].status === "stopped" && store.queue[0].message === "extension was reloaded" && store.queue[0].agreeClicked === false, "control: a reload with no Agree click on record marks the job stopped (S2)");
+// 16f. Stop (the popup) after a recorded click: unverified too; the content script's late result is dropped with the run
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+const t7e = store.tab_id; const R7e = runId();
+r = await msg({ type: K.MSG.SET_PHASE, runId: R7e, jobIndex: 0, phase: "agreements" }, t7e);
+r = await msg({ type: K.MSG.JOB_UPDATE, runId: R7e, jobIndex: 0, fields: { agreeClicked: true } }, t7e);
+r = await msg({ type: K.MSG.STOP }); await settle();
+assert(store.running === false && store.queue[0].status === "unverified" && store.queue[0].message === "Agree was clicked but the run was stopped by user; no confirmation observed; check manually", "Stop after a recorded Agree click: the job is unverified, not stopped (S2): " + store.queue[0].message);
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R7e, jobIndex: 0, status: "done", message: "late" }, t7e); await settle();
+assert(r.ok === false && store.queue[0].status === "unverified", "a result for that job after the run ended is refused; the job stays unverified (S2)");
+
 // 17. a job message pre-checked under one run cannot land on the next run's job of the same index (N4)
 r = await msg(START(["proj-one", "proj-two"], ["claude-haiku-4-5"])); await settle();
 const t8 = store.tab_id; const R8 = runId();
@@ -401,4 +442,119 @@ r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
 r = await msg({ type: K.MSG.JOB_RESULT, runId: runId(), jobIndex: 0, status: "skipped", message: "z" }, store.tab_id); await settle();
 r = await msg({ type: K.MSG.SUMMARY_ACK, runId: runId() }); assert(r.ok === true && store.summary_ack.ack === true, "OK from the action popup (no sender.tab) acknowledges it");
 
+// 23. (L1) the full per-run log in IndexedDB: one record per run, written by the worker only, with the metadata,
+//     the job list, the results and every log line (uncapped); the storage log and its cap are untouched
+const RL = globalThis.MGC_RUNLOG;
+const records = () => fakeIDB.dump(RL.DB_NAME, RL.STORE).sort((a, b) => b.startedAt - a.startedAt);
+const RLAST = runId();
+let rec = records().find((x) => x.runId === RLAST);
+assert(RL && RL.DB_NAME === "mgc-runs" && RL.STORE === "runs", "common/runlog.js is loaded by the worker: database mgc-runs, store runs");
+assert(!!rec && rec.runId === RLAST && rec.startedAt === store.run.startedAt && rec.finishedAt === store.run.finishedAt && rec.reason === "all jobs processed" && rec.live === false && rec.stepByStep === false, "the finished run has a record with its id, start, end, reason and mode snapshot (L1): " + JSON.stringify(rec && { runId: rec.runId, reason: rec.reason, live: rec.live }));
+assert(Array.isArray(rec.jobs) && rec.jobs.length === 1 && rec.jobs[0].projectId === "proj-one" && rec.jobs[0].modelSlug === "claude-haiku-4-5" && Object.keys(rec.jobs[0]).sort().join() === "modelName,modelSlug,projectId", "the record carries the job list (project, model, name only)");
+assert(Array.isArray(rec.results) && rec.results.length === 1 && rec.results[0].status === "skipped" && rec.results[0].message === "z" && rec.results[0].finishedAt > 0 && !("phase" in rec.results[0]) && !("step" in rec.results[0]), "the record carries the per-job results (status, message, times; no phase or step fields): " + JSON.stringify(rec.results[0]));
+const recLines = rec.lines.map((l) => l.msg);
+assert(recLines.length >= 4 && /^run .* started: 1 project\(s\)/.test(recLines[0]) && /^job 0: navigating/.test(recLines[1]) && /^job 0: skipped - z$/.test(recLines[2]) && recLines[recLines.length - 1] === "run finished: all jobs processed", "the record's lines run from the start line to the 'run finished' line (written after RUNNING went false): " + JSON.stringify(recLines));
+assert(rec.lines.every((l) => typeof l.t === "number" && typeof l.level === "string" && typeof l.src === "string" && typeof l.msg === "string") && rec.lines.every((l) => l.src === "worker"), "every line has t, level, src and msg; these are the worker's");
+assert(!rec.lines.some((l) => /summary acknowledged/.test(l.msg)), "a line logged after the run ended (the summary OK) is not in the record");
+assert(store.log.length === K.LOG_CAP && store.log.some((l) => /summary acknowledged/.test(l.msg)), "the storage log is still the capped one and still receives every line");
+assert(fakeIDB.openCount > 0 && fakeIDB.openCount === fakeIDB.closeCount, `no long-lived database handle: every open was closed (${fakeIDB.openCount} opens, ${fakeIDB.closeCount} closes)`);
+r = await msg({ type: K.MSG.LOG, level: "warn", msg: "ui line after the run" }, null, TAB_PAGE(556));
+assert(!records().find((x) => x.runId === RLAST).lines.some((l) => /ui line after the run/.test(l.msg)), "MSG.LOG with no run in progress goes to the storage log only");
+
+// 23b. content and ui lines land in the record with their source; a fresh worker instance (restart mid-settle) keeps
+//      appending to the same record, and the results follow every job
+K.JOB_SETTLE_MS = 5000;
+r = await msg(START(["proj-one", "proj-two"], ["claude-haiku-4-5"])); await settle();
+const R23 = runId(); const t23 = store.tab_id;
+r = await msg({ type: K.MSG.LOG, level: "info", msg: "model page detected +1200ms" }, t23);
+r = await msg({ type: K.MSG.LOG, level: "debug", msg: "popup says hi" }, null, TAB_PAGE(557));
+rec = records().find((x) => x.runId === R23);
+assert(!!rec && rec.finishedAt === null && rec.reason === null && rec.results.length === 2 && rec.results.every((j) => j.status === "running" || j.status === "pending"), "a run in progress has an open record (no end, no reason) with the results as they stand");
+assert(rec.lines.some((l) => l.src === "content" && l.level === "info" && l.msg === "model page detected +1200ms") && rec.lines.some((l) => l.src === "ui" && l.msg === "popup says hi"), "content and ui lines are appended with their source and level");
+pending = msg({ type: K.MSG.JOB_RESULT, runId: R23, jobIndex: 0, status: "dry-run", message: "checkbox ticked" }, t23); await settle();
+rec = records().find((x) => x.runId === R23);
+assert(rec.results[0].status === "dry-run" && rec.results[0].message === "checkbox ticked" && rec.results[1].status === "pending", "a job result is written to the record's results at once (before the next job starts)");
+const linesBeforeRestart = rec.lines.length;
+await import(pathToFileURL(path.join(EXT, "background/service-worker.js")).href + "?instance=9"); await settle(); await settle();
+rec = records().find((x) => x.runId === R23);
+assert(store.current.jobIndex === 1 && rec.lines.length > linesBeforeRestart && rec.lines.some((l) => /worker restarted between jobs; advancing/.test(l.msg)) && rec.lines.some((l) => /job 1: navigating/.test(l.msg)), "a fresh worker instance appends to the same record (no handle survived; the database is opened per write) (L1)");
+K.JOB_SETTLE_MS = 0;
+await pending; await settle();
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R23, jobIndex: 1, status: "skipped", message: "already enabled" }, t23); await settle();
+rec = records().find((x) => x.runId === R23);
+assert(store.running === false && rec.finishedAt > 0 && rec.reason === "all jobs processed" && rec.results.map((j) => j.status).join() === "dry-run,skipped" && rec.lines[rec.lines.length - 1].msg === "run finished: all jobs processed", "the record is closed with the end, the reason, both results and the final line");
+assert(records().filter((x) => x.runId === R23).length === 1 && records().filter((x) => x.runId === RLAST).length === 1, "records accumulate, one per run, the earlier one untouched");
+assert(fakeIDB.openCount === fakeIDB.closeCount, "still no open handle after the restart and the second run");
+
+// 23c. (L2) a quota error on the full log never fails a job: one warning line in the storage log, the run goes on
+r = await msg(START(["proj-one", "proj-two"], ["claude-haiku-4-5"])); await settle();
+const R23c = runId(); const t23c = store.tab_id;
+assert(!!records().find((x) => x.runId === R23c), "control: the run's record was created while the database had room");
+fakeIDB.quota = true;
+const warnsBefore = store.log.filter((l) => /full run log: could not/.test(l.msg)).length;
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R23c, jobIndex: 0, status: "dry-run", message: "ticked under quota" }, t23c); await settle();
+assert(r.ok === true && store.queue[0].status === "dry-run" && store.queue[0].message === "ticked under quota" && store.current.jobIndex === 1 && store.running === true, "with the database full the job result is recorded in storage and the run advances to job 1 (L2)");
+const quotaWarnings = store.log.filter((l) => /full run log: could not .* \(QuotaExceededError/.test(l.msg));
+assert(quotaWarnings.length === warnsBefore + 1 && /the run continues/.test(quotaWarnings[quotaWarnings.length - 1].msg), "exactly one warning line about the quota in the storage log: " + (quotaWarnings[quotaWarnings.length - 1] || {}).msg);
+r = await msg({ type: K.MSG.LOG, level: "info", msg: "line while full" }, t23c);
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R23c, jobIndex: 1, status: "skipped", message: "y" }, t23c); await settle();
+assert(store.running === false && store.run.reason === "all jobs processed" && store.queue[1].status === "skipped" && store.log.filter((l) => /full run log: could not/.test(l.msg)).length === warnsBefore + 1, "later failures are silent (still one warning); the run finished normally");
+rec = records().find((x) => x.runId === R23c);
+assert(!!rec && rec.finishedAt === null && !rec.lines.some((l) => /line while full/.test(l.msg)) && rec.results[0].status !== "dry-run", "the record stayed as it was before the quota hit (not closed, no later lines)");
+fakeIDB.quota = false;
+fakeIDB.openError = "database cannot be opened";
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+assert(r.ok === true && store.running === true && store.log.filter((l) => /full run log: could not create the run record \(UnknownError/.test(l.msg)).length === 1, "a database that cannot be opened at Start: the run starts anyway, one warning line (L2)");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: runId(), jobIndex: 0, status: "dry-run", message: "x" }, store.tab_id); await settle();
+assert(store.running === false && store.queue[0].status === "dry-run" && store.log.filter((l) => /full run log: could not/.test(l.msg)).length === warnsBefore + 2, "that run finished with its result and no further warning");
+fakeIDB.openError = null;
+assert(fakeIDB.openCount === fakeIDB.closeCount, "no handle left open by the failed writes");
+
+// 23d. (L3) retention: when a run starts, the oldest records beyond KEYS.RUNS_KEEP (default 50, bounds 1-500) are deleted
+assert(K.RUNS_KEEP_DEFAULT === 50 && K.RUNS_KEEP_BOUNDS[0] === 1 && K.RUNS_KEEP_BOUNDS[1] === 500 && K.runsKeepFrom(undefined) === 50 && K.runsKeepFrom(0) === 50 && K.runsKeepFrom(501) === 50 && K.runsKeepFrom(2.5) === 50 && K.runsKeepFrom("7") === 50 && K.runsKeepFrom(7) === 7 && K.runsKeepFrom(500) === 500, "runsKeepFrom: default 50, integers within 1-500 only");
+assert(K.KEYS.RUNS_KEEP === "runs_keep", "KEYS.RUNS_KEEP is runs_keep");
+store.runs_keep = 3;
+const beforePrune = records().length;
+assert(beforePrune >= 4, `control: ${beforePrune} records exist before the pruning run`);
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+const R23d = runId();
+let kept = records();
+assert(kept.length === 3 && kept[0].runId === R23d && kept.every((x, i) => i === 0 || x.startedAt <= kept[i - 1].startedAt), "with runs_keep 3 a new Start keeps the 3 newest records, the new run included (L3): " + kept.map((x) => x.runId).join(","));
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R23d, jobIndex: 0, status: "dry-run", message: "x" }, store.tab_id); await settle();
+store.runs_keep = "lots";
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+assert(records().length === 4, "an invalid runs_keep falls back to the default (50): nothing pruned at 4 records");
+r = await msg({ type: K.MSG.STOP }); await settle();
+delete store.runs_keep;
+
+// 23e. (L4) delete and purge: from the extension's own pages only, never the run in progress; all through the worker
+r = await msg(START(["proj-one"], ["claude-haiku-4-5"])); await settle();
+const R23e = runId(); const t23e = store.tab_id;
+const older = records().find((x) => x.runId !== R23e).runId;
+r = await msg({ type: K.MSG.RUNS_DELETE, runId: older }, t23e);
+assert(r.ok === false && /own pages/.test(r.error) && records().some((x) => x.runId === older), "RUNS_DELETE from a content script is refused (L4)");
+r = await msg({ type: K.MSG.RUNS_DELETE, runId: R23e }, null, TAB_PAGE(558));
+assert(r.ok === false && /in progress/.test(r.error) && records().some((x) => x.runId === R23e), "RUNS_DELETE of the run in progress is refused (L4)");
+r = await msg({ type: K.MSG.RUNS_DELETE, runId: older }, null, TAB_PAGE(558));
+assert(r.ok === true && !records().some((x) => x.runId === older), "RUNS_DELETE of an older run from the runs page deletes its record (L4)");
+r = await msg({ type: K.MSG.RUNS_DELETE, runId: older });
+assert(r.ok === false && /no log/.test(r.error), "deleting it again: no log for that run");
+r = await msg({ type: K.MSG.RUNS_DELETE });
+assert(r.ok === false && /no run id/.test(r.error), "RUNS_DELETE without an id is refused");
+r = await msg({ type: K.MSG.RUNS_PURGE }, t23e);
+assert(r.ok === false && records().length >= 2, "RUNS_PURGE from a content script is refused");
+const nBefore = records().length;
+r = await msg({ type: K.MSG.RUNS_PURGE });
+assert(r.ok === true && r.deleted === nBefore - 1 && r.kept === 1 && records().length === 1 && records()[0].runId === R23e, "RUNS_PURGE during a run deletes every other record and keeps the run in progress (L4): " + JSON.stringify(r));
+assert(records()[0].lines.some((l) => /full run logs purged: \d+ deleted, the run in progress kept/.test(l.msg)), "the purge is logged into the run in progress");
+r = await msg({ type: K.MSG.STOP }); await settle();
+r = await msg({ type: K.MSG.RUNS_PURGE }, null, TAB_PAGE(559));
+assert(r.ok === true && r.deleted === 1 && r.kept === 0 && records().length === 0, "RUNS_PURGE with no run in progress deletes everything (L4)");
+r = await msg({ type: K.MSG.RUNS_PURGE });
+assert(r.ok === true && r.deleted === 0, "purging an empty database is ok with 0 deleted");
+assert(fakeIDB.openCount === fakeIDB.closeCount, "every open closed after delete and purge");
+r = await msg({ type: K.MSG.VERSION });
+assert(r.messages.includes("mgc:runs-delete") && r.messages.includes("mgc:runs-purge") && r.keys.includes("runs_keep"), "VERSION reports the new message types and the runs_keep key");
+
+finished = true;
 console.log(`ALL WORKER CHECKS PASSED (${n} passed)`);

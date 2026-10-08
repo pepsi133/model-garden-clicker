@@ -1,0 +1,23 @@
+/* The Runs page: a list of every run's full log, newest first, with a
+ * download and a delete per run. Colours come from common/theme.css. */
+body { max-width: 900px; margin: 24px auto; padding: 0 16px; font: var(--mgc-font); font-size: 14px; line-height: 1.5; }
+header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+header .title { min-width: 0; flex: 1 1 auto; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.note { color: var(--mgc-muted); font-size: 13px; }
+header .header-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; flex: none; }
+button { padding: 6px 14px; font-size: 13px; white-space: nowrap; }
+.empty { padding: 16px; background: var(--mgc-surface); border: 1px solid var(--mgc-border); border-radius: 6px; color: var(--mgc-muted); }
+.error { margin: 0 0 12px; padding: 8px 10px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--mgc-surface); border: 1px solid var(--mgc-border); border-radius: 6px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--mgc-border); vertical-align: top; }
+th { background: var(--mgc-neutral); font-weight: 600; }
+td.counts, td.log { font-family: var(--mgc-mono); font-size: 12px; white-space: nowrap; }
+td.counts { white-space: normal; }
+td.mode .live { color: var(--mgc-warn); font-weight: 700; }
+td.mode .sbs { color: var(--mgc-muted); font-size: 12px; }
+td.started .progress { color: var(--mgc-info); font-size: 12px; }
+td.started .reason { display: block; color: var(--mgc-muted); font-size: 12px; }
+td.actions { white-space: nowrap; }
+td.actions button { padding: 3px 10px; font-size: 12px; margin-right: 6px; }

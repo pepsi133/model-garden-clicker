@@ -6,8 +6,9 @@ inside your own signed-in browser. There is no build step: the folder you are
 reading is the extension.
 
 Everything the extension stores (questionnaire values, the job queue, results
-and the log) lives only in this browser's local extension storage. Nothing is
-synced to an account and nothing is sent anywhere by the extension itself.
+and the log) lives only in this browser's local extension storage, and the
+full per-run logs in the extension's local IndexedDB. Nothing is synced to
+an account and nothing is sent anywhere by the extension itself.
 
 ## Load the extension
 
@@ -99,14 +100,18 @@ by its tab id). The geometry is checked in headless Chrome by
 1. Sign in to the Cloud console in this Chrome profile.
 2. Click the extension icon. The banner must read **MODE: DRY RUN**.
 3. Paste project IDs into the text area, one per line.
-4. Tick the models you want. Add any other model slugs in the extra field,
+4. Tick the models you want. No model is ticked when the popup is first
+   opened; the selection you make is kept in the extension's local storage
+   and shown again next time, as are the project IDs and the extra slugs.
+   Add any other model slugs in the extra field,
    separated by commas or new lines. Slugs are the last path segment of a
    model's Model Garden URL, for example `claude-haiku-4-5`.
 5. Click **Start** (a dry run starts at once; only a full run asks for a
    confirmation). The extension opens one tab and works through every
    project and model pair in order. A dark badge in the tab's bottom-right
-   corner (at most 40 % of the window wide, so it stays clear of the
-   console's own Next and Agree buttons at the bottom left) shows, updated
+   corner (at most 520 px and 40 % of the window wide: in a window at
+   least about 600 px wide it stays clear of the console's own Next and
+   Agree buttons at the bottom left) shows, updated
    every second: job N of M with the project and
    model and the job's elapsed time; the current step with its elapsed
    seconds and timeout (what the extension is waiting for or doing); what
@@ -115,11 +120,12 @@ by its tab id). The geometry is checked in headless Chrome by
    alone while a run is active: the extension refuses to act on a page that
    is not the job's project, the model page is checked against the job's
    model slug before anything is decided on it, and a job whose page
-   changed under it is marked `failed`. One document acts for one job: the
-   finished job's page, in the instant before the tab is navigated to the
-   next job, never judges or clicks for that next job, whatever project or
-   model it shows; the navigation always brings a fresh page, and if it
-   never lands the watchdog ends the job.
+   changed under it is marked `failed`. A page never acts for a job it did
+   not start: the previous job's page, in the instant before the tab is
+   navigated to the next job, never judges or clicks for that next job,
+   whatever project or model it shows, whether it reported its own job or
+   the watchdog ended that job unreported; the navigation always brings a
+   fresh page, and if it never lands the watchdog ends the job.
 6. In a dry run the extension clicks Enable as soon as the button is present
    and enabled and no "Enable APIs" dialog is showing, fills the
    questionnaire, clicks Next, checks that the Agreements page is the job's
@@ -140,6 +146,59 @@ the tab), so the time from Start to the Enable click and from Next to the
 checkbox tick can be read from it. It also records the option texts of
 every dropdown the questionnaire offered (`select "headquarters" offers
 182 options: ...`); that is where `common/option-lists.js` comes from.
+The popup shows the last 50 lines and its storage keeps the last 500;
+every line of every run is kept in full on the Runs page (below).
+
+## The Runs page: full per-run logs
+
+Every log line the extension writes while a run is active (from the
+worker, the content script in the console tab and the extension's own
+pages) is also appended, without any cap, to a record of that run in the
+extension's IndexedDB, next to the run's id, its start and end, the mode
+(dry run or full run), whether step-by-step confirmation was on, the job
+list and the result of every job. The service worker is the only writer;
+it opens the database for every write and closes it again, so a worker
+that Chrome stops and restarts in the middle of a run keeps appending to
+the same record. A database error (the quota exhausted, the database
+unopenable) is reported once per run with a line in the popup's log and
+the run goes on without the full log: the full log never fails a job.
+
+The **Runs** link in the popup's header (next to **Open in a tab**) opens
+the Runs page in a tab. It lists the runs newest first with the start and
+end, the mode, the number of jobs, the counts (done, dry-run, skipped,
+failed, unverified, stopped) and the size of the log, and offers per run:
+
+- **Download log**: saves the run as a plain-text file named
+  `model-garden-clicker-run-<YYYYMMDD-HHMMSS>.txt` (the start, in local
+  time). The file is built in memory and saved through a link with the
+  `download` attribute, so no permission is needed. It opens with a header
+  block (run id, start and end as ISO timestamps, mode, step-by-step,
+  reason the run ended, job count with the counts, line count), then the
+  job results as a plain-text table, then one line per log entry:
+  `<ISO timestamp> <source> [<level>] <message>`, where the source is
+  `worker`, `content` or `ui`.
+- **Delete**: removes that run's record after a confirmation. The run in
+  progress cannot be deleted.
+
+At the top, **Download all** saves every run in one text file
+(`model-garden-clicker-runs-<now>.txt`), each under its own header,
+newest first, and **Purge all** deletes every record after a confirmation
+that states how many runs there are (a run in progress keeps its record).
+Deleting goes through the worker, like every other write.
+
+The log text holds what the popup's log holds, in full: step names,
+timings, the option texts the console offered and, on a failure, the name
+of a rejected questionnaire field and the value the console rejected. The
+questionnaire values are not written to it otherwise. The project IDs and
+model names of the jobs are in it, since the jobs are named by them.
+
+Retention: when a run starts, the oldest records beyond **Runs to keep**
+are deleted. The setting is in the **Logs** section of the options page
+(default 50, between 1 and 500; Save refuses anything else). That section
+has the same **Purge all** button. Everything stays in this browser's
+local extension database; nothing is synced or sent anywhere, and the
+manifest asks for no new permission for any of this (no `downloads`, no
+`unlimitedStorage`; see "Permissions").
 
 Some model pages need a manual step before Enable works (an additional
 consent checkbox; see `docs/BACKLOG.md`). The extension never clicks a
@@ -173,10 +232,23 @@ Enable button) must hold for two poll intervals and at least 500 ms first
 (`poll_ms` is 250 by default), because the console can render that link a
 poll before the Enable button.
 
-Disabling the extension, reloading it or restarting Chrome during a run
-ends the run: it never resumes on its own. The job that was in progress is
-marked `stopped` (or `unverified` if Agree had already been clicked); the
-rest stay `pending`. Start again to continue.
+A project the console cannot open (no such project, no access, a misspelt
+ID that passes the format check) does not wait for the watchdog. When the
+console leaves the model page's URL for a page the extension does not
+know, the job is marked `failed` after `model_ready_ms` with a message
+naming the project and the path the tab shows; when the console keeps the
+model page's URL but renders no model page at all, the model-page wait
+names the project the same way and the job fails after its three
+attempts (3 x `model_ready_ms`).
+
+Reloading the extension or restarting Chrome during a run ends the run:
+it never resumes on its own. Disabling and re-enabling it ends the run
+too, except for a job that was waiting for your Continue, which keeps
+waiting until you press Stop (see "Step-by-step confirmation"). However
+the run ended, the job that was in progress is marked `stopped`, or
+`unverified` if Agree had already been clicked (the purchase may have gone
+through: check that project by hand); the rest stay `pending`. Start again
+to continue.
 
 When a run ends, for any reason (all jobs processed, Stop, a failure, a
 lost tab), the badge in the worker tab turns into an end-of-run summary:
@@ -225,8 +297,10 @@ summary of the step and two buttons:
 
 Only a click or keyboard activation that the browser marks as trusted
 (`event.isTrusted`: a real pointer click, Enter or Space on the focused
-button, or an automation driver) counts on these buttons; clicks dispatched
-by page script are ignored and logged. The Agree guard additionally
+button, or an automation driver) counts on **Continue** and **Next job**;
+clicks dispatched by page script are ignored and logged. **Stop** takes
+any click: a script-dispatched Stop can only end the run, which is
+harmless. The Agree guard additionally
 requires that such a Continue was recorded for this job's Agree step within
 the last five minutes.
 
@@ -307,7 +381,18 @@ is active.
    `unverified` means Agree was clicked but no such dialog appeared within
    `confirm_ms` (default 60 seconds; check that project by hand). A refusal
    by the console, for example a billing account that cannot buy, is
-   reported as `failed` with the console's message.
+   reported as `failed` with the console's message. Only the console's
+   refusal dialog counts as a refusal: the shape recorded in
+   `docs/dom-map.md` (a `behavior-failure-dialog`, or a dialog whose title
+   or text carries the recorded wording about a billing account that
+   cannot purchase). Any other error dialog that opens after the click is
+   not taken as the outcome, because a transient error next to a purchase
+   that goes through would report the purchase as failed: the extension
+   logs it and keeps waiting for the confirmation for `agree_grace_ms`
+   (default 15 seconds), during which a "Successfully purchased" dialog
+   still makes the job `done`; if that dialog is still open when the grace
+   ends, or it closed by itself and nothing else appeared within
+   `confirm_ms`, the job is `unverified` with the dialog's text.
 
 A full run accepts the publisher's terms and enables billing-relevant
 products in every project you queue. Tick **DRY RUN** again when you are
@@ -338,6 +423,7 @@ every use and fall back to the constants when nothing is stored.
 | `nav_ms` | 45000 | 1000-600000 | URL change after Enable or Next. |
 | `agreements_ready_ms` | 45000 | 1000-600000 | Purchase summary naming the model, terms checkbox and Agree button rendered on the Agreements page. |
 | `confirm_ms` | 60000 | 1000-600000 | Full run only: success or error dialog after Agree; used in full only when no dialog appears. |
+| `agree_grace_ms` | 15000 | 1000-600000 | Full run only: after an error dialog that is not the console's refusal, how long a success dialog may still arrive before the job is `unverified`; bounded by `confirm_ms`. |
 | `poll_ms` | 250 | 50-5000 | Poll interval of the page loop and of every wait above. |
 | `settle_ms` | 0 | 0-60000 | Pause between a job's result and the next job's navigation. |
 | `watchdog_min` | 10 | 1-60 | Per-phase watchdog (minutes); a phase without a result in that time fails the job. |
@@ -350,15 +436,17 @@ every use and fall back to the constants when nothing is stored.
 | `models.json` | Model list shown in the popup (from `docs/models.md`); replace it to change the list. |
 | `common/constants.js` | Storage keys, phases, statuses, time budget and its validation, required-settings check, URL builder. Shared by every part. |
 | `common/option-lists.js` | The questionnaire dropdown option texts for the options page. |
-| `common/theme.css` | The palette (CSS variables) shared by the popup and the options page; see "Theme". |
-| `background/service-worker.js` | Queue, worker tab, run identity, watchdog alarm, all storage writes. |
+| `common/runlog.js` | The per-run logs in IndexedDB: the record shape, one-transaction reads and writes, retention, the plain-text format and file names. |
+| `common/theme.css` | The palette (CSS variables) shared by the popup, the options page and the Runs page; see "Theme". |
+| `background/service-worker.js` | Queue, worker tab, run identity, watchdog alarm, all storage writes, the only writer of the per-run logs. |
 | `content/dom.js` | Generic Angular Material helpers; refuses to click anything containing "agree". |
 | `content/selectors.js` | Every console DOM locator and URL check, written from `docs/dom-map.md`. |
 | `content/badge.js` | Floating status badge (job, step with timeout, plan, next job), the step-by-step panel and the end-of-run summary. |
 | `content/actions.js` | Per-page handlers, the step-by-step wait and `clickAgreeGuarded()`, the only function that clicks Agree. |
 | `content/main.js` | Page loop: detects the page and runs the handler. |
-| `popup/` | Start/stop UI (popup and tab layouts), mode banner, missing-options notice, step mirror, results table and log. |
-| `options/` | Questionnaire values (dropdowns with "Other"), the DRY RUN and step-by-step boxes and the advanced timing JSON. |
+| `popup/` | Start/stop UI (popup and tab layouts), mode banner, missing-options notice, step mirror, results table, the last 50 log lines and the link to the Runs page. |
+| `options/` | Questionnaire values (dropdowns with "Other"), the DRY RUN and step-by-step boxes, the advanced timing JSON and the Logs section (Runs to keep, Purge all). |
+| `runs/` | The Runs page: every run's full log, newest first, with Download log, Delete, Download all and Purge all. |
 | `icons/` | Toolbar icons, the 96 px header avatar (`avatar96.png`) and the 512 px master the sizes are made from (`icon-master.png`, kept in the repository, left out of the release zip). |
 | `test/` | Offline tests; see `python/README.md` (developer manual). |
 
@@ -389,7 +477,10 @@ extension storage) and `alarms` (the watchdog), plus host access to
 tab. It does not ask for the `tabs` permission: the install prompt lists
 only "Read and change your data on console.cloud.google.com", never
 browsing history. Opening, navigating and watching the worker tab needs no
-further permission.
+further permission. The per-run logs need none either: IndexedDB is
+available to an extension without a permission (and without
+`unlimitedStorage`, under the normal origin quota), and a log is saved
+through a link with the `download` attribute, not the `downloads` API.
 
 ## Development
 

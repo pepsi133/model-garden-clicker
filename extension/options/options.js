@@ -128,8 +128,61 @@
 
   /* ---------------------------------------------------------- load / save */
 
+  /* ---------------------------------------------------------- logs */
+
+  const RL = globalThis.MGC_RUNLOG;
+
+  /** The "Runs to keep" field: { ok, value } or { ok: false, error }. */
+  function parseRunsKeep() {
+    const raw = String(form.elements.runs_keep.value || "").trim();
+    const [lo, hi] = K.RUNS_KEEP_BOUNDS;
+    const n = /^-?\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(n) || n < lo || n > hi) return { ok: false, error: `Runs to keep must be a whole number between ${lo} and ${hi}.` };
+    return { ok: true, value: n };
+  }
+
+  function runsKeepError(text) {
+    const el = document.getElementById("runs-keep-error");
+    el.textContent = text;
+    el.hidden = !text;
+  }
+
+  function purgeNote(text, isError) {
+    const el = document.getElementById("purge-note");
+    el.textContent = text;
+    el.className = isError ? "error" : "saved";
+    el.hidden = !text;
+  }
+
+  /** Purge all: the count comes from the database, the confirm states it, the worker deletes. */
+  async function purgeRuns() {
+    purgeNote("");
+    let n = 0;
+    try {
+      n = await RL.count();
+    } catch (err) {
+      purgeNote(`Could not count the runs: ${err && err.message ? err.message : err}`, true);
+      return;
+    }
+    if (!n) { purgeNote("No run logs to delete.", false); return; }
+    if (!confirm(`Delete the full logs of all ${n} run(s)? The popup's results and its last 50 lines are not affected. A run in progress keeps its log.`)) return;
+    const r = await new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: K.MSG.RUNS_PURGE }, (reply) => {
+          if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+          else resolve(reply || { ok: false, error: "no reply from the worker" });
+        });
+      } catch (e) { resolve({ ok: false, error: e && e.message ? e.message : String(e) }); }
+    });
+    if (!r.ok) purgeNote(r.error || "Could not purge the run logs.", true);
+    else purgeNote(`${r.deleted} run log(s) deleted${r.kept ? "; the run in progress keeps its log" : ""}.`, false);
+  }
+
+  /* ---------------------------------------------------------- load / save */
+
   async function load() {
-    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.TIMING]);
+    const o = await chrome.storage.local.get([KEYS.SETTINGS, KEYS.TIMING, KEYS.RUNS_KEEP]);
+    form.elements.runs_keep.value = String(K.runsKeepFrom(o[KEYS.RUNS_KEEP]));
     const s = Object.assign({}, K.DEFAULT_SETTINGS, o[KEYS.SETTINGS] || {});
     for (const key of K.SETTINGS_FIELDS) {
       const els = form.elements[key];
@@ -181,6 +234,7 @@
 
   async function saveChecked() {
     timingError("");
+    runsKeepError("");
     const liveWanted = form.elements.dry_run.checked !== true;
     const stepWanted = form.elements.step_by_step.checked === true;
     const s = {};
@@ -202,6 +256,12 @@
       note("Not saved. See the Advanced section.", true);
       return;
     }
+    const runsKeep = parseRunsKeep();
+    if (!runsKeep.ok) {
+      runsKeepError(`Not saved: ${runsKeep.error}`);
+      note("Not saved. See the Logs section.", true);
+      return;
+    }
     // No confirm() here: the box's own wording carries the warning, and the
     // popup asks once more before a full run starts. The write goes through
     // MGC.saveSettings (shared with the popup's header toggles): the mode of
@@ -215,8 +275,9 @@
       note(r.error, true);
       return;
     }
-    await chrome.storage.local.set({ [KEYS.TIMING]: timing.value });
+    await chrome.storage.local.set({ [KEYS.TIMING]: timing.value, [KEYS.RUNS_KEEP]: runsKeep.value });
     form.elements.timing_json.value = timingText(timing.value);
+    form.elements.runs_keep.value = String(runsKeep.value);
     note("Saved.", false);
   }
 
@@ -236,6 +297,7 @@
       form.elements.timing_json.value = timingText(K.TIMING_DEFAULTS);
     });
     form.addEventListener("submit", save);
+    document.getElementById("purge-runs").addEventListener("click", purgeRuns);
     // The popup's header toggles write the same two settings: reflect them
     // here while this page is open (the questionnaire fields are left alone).
     if (chrome.storage && chrome.storage.onChanged) {

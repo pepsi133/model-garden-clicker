@@ -34,6 +34,7 @@ const vm = require("vm");
 const E = require("./lib/env.cjs");
 const { ok } = E;
 const { JSDOM } = require("jsdom");
+const fakeIDB = require("./lib/fake-idb.cjs");
 
 const FULL = { business_name: "b", business_website: "https://b.example", contact_email: "a@b.example", headquarters: "Elsewhere", industry: "Education", intended_users: "Internal employees", use_cases: "x", aup_additional_requirements: "no", aup_details: "", live_mode: false };
 
@@ -61,15 +62,21 @@ async function loadPage(rel, store, scripts, query) {
   const win = dom.window;
   win.chrome = fakeChrome(store);
   win.confirm = () => true;
+  win.indexedDB = fakeIDB; // the per-run logs (common/runlog.js); fakeIDB.reset() between pages that must start empty
+  win.Blob = Blob; // Node's Blob (jsdom's has no text()); a download's content is read back from it
+  win.URL.createObjectURL = (blob) => { (store.__blobs = store.__blobs || []).push(blob); return `blob:x/${store.__blobs.length}`; };
+  win.URL.revokeObjectURL = () => {};
+  win.HTMLAnchorElement.prototype.click = function () { (store.__downloads = store.__downloads || []).push({ href: this.href, download: this.download }); };
   win.fetch = async () => ({ json: async () => JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")) });
   const ctx = dom.getInternalVMContext();
   for (const f of scripts) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   await new Promise((r) => setTimeout(r, 30)); // DOMContentLoaded + async load()
-  return { dom, win, document: win.document, K: win.MGC, O: win.MGC_OPTIONS };
+  return { dom, win, document: win.document, K: win.MGC, O: win.MGC_OPTIONS, RL: win.MGC_RUNLOG };
 }
 
-const OPTIONS_SCRIPTS = ["common/constants.js", "common/option-lists.js", "options/options.js"];
+const OPTIONS_SCRIPTS = ["common/constants.js", "common/option-lists.js", "common/runlog.js", "options/options.js"];
 const POPUP_SCRIPTS = ["common/constants.js", "popup/popup.js"];
+const RUNS_SCRIPTS = ["common/constants.js", "common/runlog.js", "runs/runs.js"];
 const tick = () => new Promise((r) => setTimeout(r, 30));
 
 async function submit(p) {
@@ -193,8 +200,9 @@ function setSelect(p, name, value) {
     const form = p.document.getElementById("form");
     const ta = form.elements.timing_json;
     ok(JSON.stringify(JSON.parse(ta.value)) === JSON.stringify(K.TIMING_DEFAULTS), "textarea prefilled with the defaults from constants.js", ta.value);
-    ok(/model_ready_ms, api_dialog_close_ms, form_ready_ms, form_valid_ms, next_button_ms, nav_ms, agreements_ready_ms, confirm_ms, poll_ms, settle_ms, watchdog_min/.test(p.document.getElementById("timing-keys").textContent), "the key list is shown");
-    ok(K.TIMING_DEFAULTS.settle_ms === 0 && K.TIMING_DEFAULTS.poll_ms === 250 && K.TIMING_DEFAULTS.confirm_ms === 60000 && K.TIMING_DEFAULTS.watchdog_min === 10, "defaults: settle 0, poll 250 ms, confirm 60 s, watchdog 10 min", JSON.stringify(K.TIMING_DEFAULTS));
+    ok(/model_ready_ms, api_dialog_close_ms, form_ready_ms, form_valid_ms, next_button_ms, nav_ms, agreements_ready_ms, confirm_ms, agree_grace_ms, poll_ms, settle_ms, watchdog_min/.test(p.document.getElementById("timing-keys").textContent), "the key list is shown (agree_grace_ms included, T1)");
+    ok(K.TIMING_DEFAULTS.settle_ms === 0 && K.TIMING_DEFAULTS.poll_ms === 250 && K.TIMING_DEFAULTS.confirm_ms === 60000 && K.TIMING_DEFAULTS.agree_grace_ms === 15000 && K.TIMING_DEFAULTS.watchdog_min === 10, "defaults: settle 0, poll 250 ms, confirm 60 s, agree grace 15 s, watchdog 10 min", JSON.stringify(K.TIMING_DEFAULTS));
+    ok(JSON.stringify(K.TIMING_BOUNDS.agree_grace_ms) === "[1000,600000]" && K.validateTiming({ agree_grace_ms: 500 }).errors.some((e) => /agree_grace_ms must be between 1000 and 600000/.test(e)) && K.validateTiming({ agree_grace_ms: 20000 }).ok, "agree_grace_ms is bounded 1000-600000 and validated like the other keys (T1)");
     const advError = p.document.getElementById("timing-error");
     ok(advError && advError.closest("fieldset.advanced") && advError.hidden === true, "the Advanced section has its own error line, hidden until needed");
     setText(p, "timing_json", "{ not json");
@@ -356,7 +364,7 @@ function setSelect(p, name, value) {
 
   console.log("--- every element id popup.js and options.js reference exists in its HTML; a render survives a missing optional element");
   {
-    const pairs = [["popup/popup.js", "popup/popup.html"], ["options/options.js", "options/options.html"]];
+    const pairs = [["popup/popup.js", "popup/popup.html"], ["options/options.js", "options/options.html"], ["runs/runs.js", "runs/runs.html"]];
     for (const [js, htmlFile] of pairs) {
       const src = fs.readFileSync(path.join(E.EXT, js), "utf8");
       const page = new JSDOM(fs.readFileSync(path.join(E.EXT, htmlFile), "utf8")).window.document;
@@ -400,7 +408,7 @@ function setSelect(p, name, value) {
       summary_ack: { runId: "r-fin", tabId: 7, reason: "all jobs processed", ack: false }, log: [{ t: 1, level: "info", src: "worker", msg: "run finished: all jobs processed" }], current: null, stop_requested: false, timing: null };
     const states = { idle: { settings: Object.assign({}, FULL) }, "finished run": Object.assign({ settings: Object.assign({}, FULL) }, finishedRun) };
     for (const [stateName, base] of Object.entries(states)) {
-      for (const [rel, scripts] of [["popup/popup.html", POPUP_SCRIPTS], ["options/options.html", OPTIONS_SCRIPTS]]) {
+      for (const [rel, scripts] of [["popup/popup.html", POPUP_SCRIPTS], ["options/options.html", OPTIONS_SCRIPTS], ["runs/runs.html", RUNS_SCRIPTS]]) {
         const store = JSON.parse(JSON.stringify(base));
         const errors = [];
         const onRejection = (reason) => errors.push(`unhandled rejection: ${reason && reason.stack ? reason.stack.split("\n").slice(0, 2).join(" ") : reason}`);
@@ -411,6 +419,7 @@ function setSelect(p, name, value) {
         dom.window.addEventListener("error", (e) => errors.push(`window error: ${e.message}`));
         dom.window.chrome = fakeChrome(store);
         dom.window.confirm = () => true;
+        dom.window.indexedDB = fakeIDB; // empty at this point: the runs page must render its empty state
         dom.window.fetch = async () => ({ json: async () => JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")) });
         const ctx = dom.getInternalVMContext();
         try {
@@ -419,12 +428,41 @@ function setSelect(p, name, value) {
         await tick(); await tick(); await tick();
         process.off("unhandledRejection", onRejection);
         const d = dom.window.document;
-        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === 12 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
-          : d.getElementById("form").elements.business_name.value === "b" && d.getElementById("form").elements.industry_choice && d.getElementById("form").elements.industry_choice.value === "Education";
+        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === 12 && d.querySelectorAll("#models input:checked").length === 0 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
+          : rel.startsWith("runs") ? d.getElementById("empty").hidden === false && d.getElementById("notice").hidden === true && d.getElementById("keep").textContent === "50"
+          : d.getElementById("form").elements.business_name.value === "b" && d.getElementById("form").elements.industry_choice && d.getElementById("form").elements.industry_choice.value === "Education" && d.getElementById("form").elements.runs_keep.value === "50";
         ok(errors.length === 0 && rendered, `${rel} in the ${stateName} state: loaded, initialised and rendered with no thrown error and no unhandled rejection`, errors.join(" | ") || (rendered ? "" : "render check failed"));
         dom.window.close();
       }
     }
+  }
+
+  console.log("--- (T5) popup: no model is ticked by default; the last selection is remembered in storage.local");
+  {
+    const store = { settings: Object.assign({}, FULL), running: false };
+    let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    let d = p.document;
+    ok(d.querySelectorAll("#models input").length === 12 && d.querySelectorAll("#models input:checked").length === 0 && !store.popup_state, "first use (no popup_state): twelve models, none ticked, nothing stored yet", `${d.querySelectorAll("#models input:checked").length} ticked`);
+    d.getElementById("projects").value = "proj-one";
+    d.getElementById("start").click(); await tick();
+    ok(/select at least one model/.test(d.getElementById("error").textContent) && !(store.__messages || []).some((m) => m.type === p.K.MSG.START), "Start with nothing ticked is refused in the popup, no START message", d.getElementById("error").textContent);
+    const haiku = Array.from(d.querySelectorAll("#models input")).find((cb) => cb.value === "claude-haiku-4-5");
+    haiku.checked = true; haiku.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    ok(store.popup_state && JSON.stringify(store.popup_state.models) === JSON.stringify(["claude-haiku-4-5"]) && store.popup_state.projects === "proj-one", "ticking one model stores exactly that selection (with the project text) under popup_state", JSON.stringify(store.popup_state));
+    p.win.close();
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS); d = p.document;
+    const ticked = Array.from(d.querySelectorAll("#models input:checked")).map((cb) => cb.value);
+    ok(JSON.stringify(ticked) === JSON.stringify(["claude-haiku-4-5"]), "reopening the popup restores the one ticked model, the rest unticked", JSON.stringify(ticked));
+    // loadPage stubs HTMLAnchorElement.prototype.click (download capture), so the links get a dispatched click.
+    const clickLink = (id) => d.getElementById(id).dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    clickLink("models-all"); await tick();
+    ok(d.querySelectorAll("#models input:checked").length === 12 && store.popup_state.models.length === 12, "the all link ticks every model and stores it", JSON.stringify(store.popup_state.models));
+    clickLink("models-none"); await tick();
+    ok(d.querySelectorAll("#models input:checked").length === 0 && store.popup_state.models.length === 0, "the none link unticks every model and stores the empty selection", JSON.stringify(store.popup_state.models));
+    p.win.close();
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS); d = p.document;
+    ok(d.querySelectorAll("#models input:checked").length === 0, "a stored empty selection reopens with nothing ticked (never all)");
+    p.win.close();
   }
 
   console.log("--- popup: the end-of-run summary block (shown until OK, mirrored from the worker tab), in the tab layout");
@@ -478,7 +516,7 @@ function setSelect(p, name, value) {
     ok(!/chrome\.notifications/.test(shipped) && !/action\.openPopup/.test(shipped), "no chrome.notifications and no action.openPopup (the popup is never opened by the extension)");
     ok(!/"notifications"/.test(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8")), "the manifest asks for no notifications permission");
     const creates = Array.from(shipped.matchAll(/chrome\.tabs\.create\([^;]*\)/g)).map((m) => m[0]);
-    ok(creates.length === 2 && creates.filter((c) => /active:\s*true/.test(c)).length === 1, "tabs.create: the worker tab (opened in front right after Start) and the Open-in-a-tab page only", creates.join(" | "));
+    ok(creates.length === 3 && creates.filter((c) => /active:\s*true/.test(c)).length === 1 && creates.some((c) => /runs\/runs\.html/.test(c)), "tabs.create: the worker tab (opened in front right after Start), the Open-in-a-tab page and the Runs page only", creates.join(" | "));
   }
 
   console.log("--- manifest: permissions are storage and alarms only, host access is the console origin only");
@@ -492,7 +530,9 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.4.0", "the manifest version is 0.4.0", manifest.version);
+    ok(manifest.version === "0.5.0", "the manifest version is 0.5.0", manifest.version);
+    ok(!/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.5.0 added no permission: no downloads (the log is saved through an anchor), no unlimitedStorage (IndexedDB needs none), no notifications, no tabs", JSON.stringify(manifest.permissions));
+    ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
     ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
     ok(manifest.description === "Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.", "the description is the 131-character store text", manifest.description);
@@ -671,6 +711,189 @@ function setSelect(p, name, value) {
     const p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     ok(p.document.getElementById("log-details").open === false, "with no run active the log starts folded");
     p.win.close();
+  }
+
+  console.log('--- popup: the "Runs" link in the header, next to "Open in a tab"');
+  {
+    const store = { settings: Object.assign({}, FULL) };
+    const p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    const doc = p.document;
+    const runs = doc.getElementById("runs");
+    const openTab = doc.getElementById("open-tab");
+    ok(runs && runs.tagName === "A" && runs.closest("header") && runs.textContent === "Runs" && /full log/.test(runs.title), 'the header has a "Runs" link whose title names the full log', runs && runs.title);
+    ok(runs.parentElement === openTab.parentElement && runs.parentElement.classList.contains("header-links") && runs.nextElementSibling === openTab, 'it sits next to "Open in a tab" in the same header row');
+    store.__closed = false; p.win.close = () => { store.__closed = true; };
+    runs.dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true })); // (loadPage stubs HTMLAnchorElement.prototype.click to capture downloads)
+    ok(store.__tab === "chrome-extension://x/runs/runs.html" && store.__closed === false, "clicking it opens runs/runs.html in a new tab through chrome.tabs.create (the popup stays)", store.__tab);
+    const css = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
+    ok(/header \.header-links\s*\{[^}]*display:\s*flex/.test(css), "popup.css lays the two links out in a row");
+    p.win.close();
+  }
+
+  console.log("--- the Runs page: list newest first, download text format, delete and purge with confirm, no innerHTML");
+  const RUN_A = { runId: "run-a", startedAt: Date.UTC(2026, 9, 8, 10, 5, 0), finishedAt: Date.UTC(2026, 9, 8, 10, 9, 30), live: false, stepByStep: false, reason: "all jobs processed",
+    jobs: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5" }, { projectId: "proj-two", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5" }],
+    results: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5", status: "dry-run", message: "dry run: checkbox ticked", startedAt: Date.UTC(2026, 9, 8, 10, 5, 1), finishedAt: Date.UTC(2026, 9, 8, 10, 7, 0), productId: "anthropic/anthropic-867.cloudpartnerservices.goog", agreeClicked: false },
+      { projectId: "proj-two", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5", status: "skipped", message: "skipped: already enabled", startedAt: Date.UTC(2026, 9, 8, 10, 7, 1), finishedAt: Date.UTC(2026, 9, 8, 10, 9, 29), productId: null, agreeClicked: false }],
+    lines: [{ t: Date.UTC(2026, 9, 8, 10, 5, 0, 10), level: "info", src: "worker", msg: "run run-a started: 2 project(s) x 1 model(s) = 2 job(s), mode DRY RUN" },
+      { t: Date.UTC(2026, 9, 8, 10, 5, 2), level: "info", src: "content", msg: "model page detected +1200ms" },
+      { t: Date.UTC(2026, 9, 8, 10, 5, 3), level: "warn", src: "content", msg: "tick failed: TypeError: <script>alert(1)</script> & \"quoted\" text\nsecond line" },
+      { t: Date.UTC(2026, 9, 8, 10, 9, 30), level: "info", src: "worker", msg: "run finished: all jobs processed" }] };
+  const RUN_B = Object.assign({}, RUN_A, { runId: "run-b", startedAt: Date.UTC(2026, 9, 8, 12, 0, 0), finishedAt: Date.UTC(2026, 9, 8, 12, 3, 0), live: true, stepByStep: true, reason: "stopped by user",
+    results: [Object.assign({}, RUN_A.results[0], { status: "done", message: "Successfully purchased" }), Object.assign({}, RUN_A.results[1], { status: "stopped", message: "stopped by user" })],
+    lines: RUN_A.lines.slice(0, 2) });
+  const RUN_C = { runId: "run-c", startedAt: Date.UTC(2026, 9, 8, 13, 0, 0), finishedAt: null, live: false, stepByStep: false, reason: null, jobs: RUN_A.jobs, results: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "running" }, { projectId: "proj-two", modelSlug: "claude-haiku-4-5", status: "pending" }], lines: [RUN_A.lines[0]] };
+  async function seed(records) {
+    fakeIDB.reset();
+    const req = fakeIDB.open("mgc-runs", 1);
+    await new Promise((resolve) => { req.onupgradeneeded = () => req.result.createObjectStore("runs", { keyPath: "runId" }); req.onsuccess = resolve; });
+    const db = req.result;
+    const tx = db.transaction("runs", "readwrite");
+    for (const r of records) tx.objectStore("runs").put(r);
+    await new Promise((resolve) => { tx.oncomplete = resolve; });
+    db.close();
+  }
+  {
+    // Empty database.
+    await seed([]);
+    const store = { settings: Object.assign({}, FULL) };
+    const p = await loadPage("runs/runs.html", store, RUNS_SCRIPTS);
+    const doc = p.document;
+    ok(doc.title === "Model Garden Clicker runs" && /href="\.\.\/common\/theme\.css"/.test(fs.readFileSync(path.join(E.EXT, "runs/runs.html"), "utf8")) && doc.querySelector("header img.photo"), "runs.html: titled, links common/theme.css, shows the avatar in its header");
+    ok(doc.getElementById("empty").hidden === false && doc.getElementById("runs").hidden === true && doc.getElementById("purge-all").disabled === true && doc.getElementById("download-all").disabled === true, "with no records: the empty message shows, the table is hidden, Purge all and Download all are disabled");
+    ok(doc.getElementById("keep").textContent === "50", "the intro names the retention (default 50)");
+    ok(!/#[0-9a-f]{3,6}\b/i.test(fs.readFileSync(path.join(E.EXT, "runs/runs.css"), "utf8")), "runs.css carries no literal colours; every colour is a var(--mgc-*)");
+    p.win.close();
+  }
+  {
+    await seed([RUN_A, RUN_B, RUN_C]);
+    const store = { settings: Object.assign({}, FULL), running: true, run: { runId: "run-c", live: false, startedAt: RUN_C.startedAt }, runs_keep: 7 };
+    const p = await loadPage("runs/runs.html", store, RUNS_SCRIPTS);
+    const { document: doc, RL, K } = p;
+    const rows = Array.from(doc.querySelectorAll("#runs tbody tr"));
+    ok(rows.length === 3 && rows.map((r) => r.dataset.runId).join() === "run-c,run-b,run-a" && doc.getElementById("empty").hidden === true && doc.getElementById("runs").hidden === false, "three runs listed newest first (by startedAt)", rows.map((r) => r.dataset.runId).join());
+    ok(doc.getElementById("keep").textContent === "7", "the intro shows the stored runs_keep");
+    const cells = (tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent);
+    const a = cells(rows[2]);
+    ok(a[0] === `${new Date(RUN_A.startedAt).toLocaleString()}ended ${new Date(RUN_A.finishedAt).toLocaleString()}: all jobs processed`, "started and ended with the reason", a[0]);
+    ok(a[1] === "DRY RUN" && cells(rows[1])[1] === "FULL RUN · step-by-step" && rows[1].querySelector("td.mode .live") && !rows[2].querySelector("td.mode .live"), "the mode cell: DRY RUN, or FULL RUN in the warning colour, with the step-by-step mark", cells(rows[1])[1]);
+    ok(a[2] === "2" && a[3] === "done 0 · dry-run 1 · skipped 1 · failed 0 · unverified 0 · stopped 0", "jobs and the six counts (as the popup's summary counts them)", a[3]);
+    ok(cells(rows[1])[3] === "done 1 · dry-run 0 · skipped 0 · failed 0 · unverified 0 · stopped 1" && cells(rows[0])[3] === "done 0 · dry-run 0 · skipped 0 · failed 0 · unverified 0 · stopped 0 · pending 2", "counts of the other runs (a pending count only when some job is pending)", cells(rows[0])[3]);
+    const sizeA = RL.sizeOf(RUN_A);
+    ok(a[4] === `4 lines · ${RL.sizeText(sizeA)}` && sizeA > 800 && /^\d+(\.\d)? KB$/.test(RL.sizeText(sizeA)), "the log cell: the line count and the size of the text that Download log produces", `${a[4]} (${sizeA} bytes)`);
+    ok(/\(in progress\)/.test(cells(rows[0])[0]) && rows[0].querySelector("td.actions button.delete").disabled === true && rows[2].querySelector("td.actions button.delete").disabled === false, "the run in progress is marked and its Delete is disabled; an older run's Delete is enabled");
+    ok(rows.every((r) => r.querySelectorAll("td.actions button").length === 2 && r.querySelector("button.download").textContent === "Download log" && r.querySelector("button.delete").textContent === "Delete"), 'every row has "Download log" and "Delete"');
+    // The hostile log line was rendered as text, never as markup.
+    ok(!doc.querySelector("script") || Array.from(doc.querySelectorAll("script")).every((s) => s.getAttribute("src")) , "no inline <script> element was created from a log line");
+    ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(fs.readFileSync(path.join(E.EXT, "runs/runs.js"), "utf8")) && !/innerHTML|insertAdjacentHTML/.test(fs.readFileSync(path.join(E.EXT, "common/runlog.js"), "utf8")), "runs.js (and runlog.js) never use innerHTML, outerHTML, insertAdjacentHTML or document.write");
+
+    // Download log: a text file in memory, saved through an anchor with the download attribute and an object URL.
+    rows[2].querySelector("button.download").click(); await tick(); await tick();
+    ok(store.__downloads && store.__downloads.length === 1 && store.__downloads[0].download === "model-garden-clicker-run-20261008-" + `${String(new Date(RUN_A.startedAt).getHours()).padStart(2, "0")}0500.txt` && /^blob:/.test(store.__downloads[0].href), "Download log clicks an anchor with download=model-garden-clicker-run-<YYYYMMDD-HHMMSS>.txt (local time of the start) and an object URL", JSON.stringify(store.__downloads));
+    const blob = store.__blobs[0];
+    const text = await blob.text();
+    ok(blob.type.startsWith("text/plain") && text === RL.textOf(RUN_A), "the file is text/plain holding MGC_RUNLOG.textOf(record)", blob.type);
+    const lines = text.split("\n");
+    ok(lines[0] === "Model Garden Clicker run log" && lines[1] === "run id:        run-a" && lines[2] === "started:       2026-10-08T10:05:00.000Z" && lines[3] === "ended:         2026-10-08T10:09:30.000Z" && lines[4] === "mode:          DRY RUN" && lines[5] === "step-by-step:  off" && lines[6] === "reason:        all jobs processed" && lines[7] === "jobs:          2 (done 0 · dry-run 1 · skipped 1 · failed 0 · unverified 0 · stopped 0)" && lines[8] === "log lines:     4",
+      "the header block: run id, start, end (ISO), mode, step-by-step, reason, jobs with counts, line count", lines.slice(0, 9).join(" | "));
+    const tableStart = lines.indexOf("job  project   model             status   started                   ended                     message");
+    ok(tableStart === 10 && lines[11] === "1    proj-one  claude-haiku-4-5  dry-run  2026-10-08T10:05:01.000Z  2026-10-08T10:07:00.000Z  dry run: checkbox ticked" && lines[12] === "2    proj-two  claude-haiku-4-5  skipped  2026-10-08T10:07:01.000Z  2026-10-08T10:09:29.000Z  skipped: already enabled", "then the job results as a plain-text table", lines.slice(10, 13).join(" | "));
+    const logStart = lines.indexOf("log:");
+    ok(logStart === 14 && lines[15] === "2026-10-08T10:05:00.010Z worker [info] run run-a started: 2 project(s) x 1 model(s) = 2 job(s), mode DRY RUN" && lines[16] === "2026-10-08T10:05:02.000Z content [info] model page detected +1200ms",
+      'then one line per entry: "<ISO timestamp> <source> [<level>] <message>"', lines.slice(14, 17).join(" | "));
+    ok(lines[17] === "2026-10-08T10:05:03.000Z content [warn] tick failed: TypeError: <script>alert(1)</script> & \"quoted\" text second line" && lines[18] === "2026-10-08T10:09:30.000Z worker [info] run finished: all jobs processed" && lines[19] === "" && lines.length === 20,
+      "a message's own newlines are folded into the line; markup in a message is kept as text; the file ends with one newline", lines.slice(17).join(" | "));
+    for (const v of ["b.example", "a@b.example", "Elsewhere", "Education", "Internal employees"]) ok(!text.includes(v), `no questionnaire value in the log text: ${v}`);
+    // Download all: every run under its own header, newest first.
+    doc.getElementById("download-all").click(); await tick(); await tick();
+    const all = await store.__blobs[1].text();
+    ok(store.__downloads.length === 2 && /^model-garden-clicker-runs-\d{8}-\d{6}\.txt$/.test(store.__downloads[1].download), "Download all saves model-garden-clicker-runs-<now>.txt", store.__downloads[1].download);
+    // The header is "run <id> started <ISO>"; a log line reads "run <id> started: N project(s)" (RUN_B's lines are copied from RUN_A), so the needle carries the date.
+    const order = ["\nrun run-c started 2026-", "\nrun run-b started 2026-", "\nrun run-a started 2026-"].map((h) => all.indexOf(h));
+    const allParts = { head: /^Model Garden Clicker: 3 run\(s\), newest first/.test(all), order: order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1])), textA: all.includes(RL.textOf(RUN_A)), rules: (all.match(/^=+$/gm) || []).length };
+    ok(allParts.head && allParts.order && allParts.textA && allParts.rules === 6, "one text with every run separated by headers, newest first, each run's full text included", JSON.stringify(allParts) + " " + JSON.stringify(all.slice(0, 120)));
+
+    // Delete: confirm names the run; declined does nothing; accepted sends RUNS_DELETE to the worker; a refusal is shown.
+    const confirms = [];
+    p.win.confirm = (m) => { confirms.push(m); return false; };
+    rows[2].querySelector("button.delete").click(); await tick();
+    ok(confirms.length === 1 && confirms[0].includes(new Date(RUN_A.startedAt).toLocaleString()) && /4 lines/.test(confirms[0]) && !(store.__messages || []).length, "Delete asks (naming the run's start and line count); declined sends nothing", confirms[0]);
+    p.win.confirm = (m) => { confirms.push(m); return true; };
+    store.__reply = (m) => (m.type === K.MSG.RUNS_DELETE ? { ok: false, error: "that run is in progress; stop it first" } : { ok: true });
+    rows[2].querySelector("button.delete").click(); await tick(); await tick();
+    ok((store.__messages || []).filter((m) => m.type === K.MSG.RUNS_DELETE && m.runId === "run-a").length === 1 && doc.getElementById("notice").hidden === false && /in progress/.test(doc.getElementById("notice").textContent), "accepted: mgc:runs-delete with the run id goes to the worker; its refusal is shown in the notice", doc.getElementById("notice").textContent);
+    ok(doc.querySelectorAll("#runs tbody tr").length === 3, "the list was re-read (nothing deleted by the page itself: the worker is the only writer)");
+    // Purge all: the confirm states the number of runs; declined does nothing; accepted sends RUNS_PURGE.
+    store.__reply = null; store.__messages = [];
+    p.win.confirm = (m) => { confirms.push(m); return false; };
+    doc.getElementById("purge-all").click(); await tick(); await tick();
+    ok(/Delete the full logs of all 3 run\(s\)\?/.test(confirms[confirms.length - 1]) && !store.__messages.length, "Purge all asks with the number of runs (3); declined sends nothing", confirms[confirms.length - 1]);
+    p.win.confirm = () => true;
+    store.__reply = (m) => (m.type === K.MSG.RUNS_PURGE ? { ok: true, deleted: 2, kept: 1 } : { ok: true });
+    doc.getElementById("purge-all").click(); await tick(); await tick();
+    ok(store.__messages.filter((m) => m.type === K.MSG.RUNS_PURGE).length === 1 && /2 run log\(s\) deleted; the run in progress keeps its log/.test(doc.getElementById("notice").textContent), "accepted: mgc:runs-purge goes to the worker; the reply (2 deleted, the run in progress kept) is shown", doc.getElementById("notice").textContent);
+    // A run ending re-renders the list (KEYS.RUNNING flips).
+    await seed([RUN_A]);
+    store.running = false;
+    p.win.chrome.__fire({ running: { newValue: false } }); await tick(); await tick();
+    ok(doc.querySelectorAll("#runs tbody tr").length === 1 && doc.querySelector("#runs tbody tr").dataset.runId === "run-a", "a change of KEYS.RUNNING re-reads the list");
+    p.win.close();
+  }
+  {
+    // A database that cannot be opened: the notice says so, nothing throws.
+    fakeIDB.reset(); fakeIDB.openError = "blocked by policy";
+    const store = { settings: Object.assign({}, FULL) };
+    const p = await loadPage("runs/runs.html", store, RUNS_SCRIPTS);
+    ok(p.document.getElementById("notice").hidden === false && /could not open the run log database: blocked by policy/.test(p.document.getElementById("notice").textContent) && p.document.getElementById("empty").hidden === false, "an unopenable database is reported in the notice; the page still renders", p.document.getElementById("notice").textContent);
+    fakeIDB.reset();
+    p.win.close();
+  }
+
+  console.log('--- options page: the Logs section ("Runs to keep", Purge all)');
+  {
+    await seed([RUN_A, RUN_B]);
+    const store = { settings: Object.assign({}, FULL) };
+    const p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    const { document: doc, K } = p;
+    const form = doc.getElementById("form");
+    const field = form.elements.runs_keep;
+    ok(field && field.type === "number" && field.min === "1" && field.max === "500" && field.closest("fieldset.logs") && doc.querySelector("fieldset.logs legend").textContent === "Logs", 'a "Logs" fieldset with a number input runs_keep bounded 1-500');
+    ok(field.value === "50", "prefilled with the default 50 when nothing is stored", field.value);
+    ok(/runs\/runs\.html/.test(doc.getElementById("runs-link").getAttribute("href")) && doc.getElementById("runs-link").target === "_blank", "the section links the Runs page (new tab)");
+    for (const bad of ["0", "501", "abc", "2.5", "", "-3"]) {
+      setText(p, "runs_keep", bad);
+      const r = await submit(p);
+      ok(r.error && /See the Logs section/.test(r.text) && !doc.getElementById("runs-keep-error").hidden && /between 1 and 500/.test(doc.getElementById("runs-keep-error").textContent) && !("runs_keep" in store), `runs_keep ${JSON.stringify(bad)} refuses Save with the reason under the field, nothing stored`, doc.getElementById("runs-keep-error").textContent);
+    }
+    setText(p, "runs_keep", "20");
+    let r = await submit(p);
+    ok(!r.error && store.runs_keep === 20 && doc.getElementById("runs-keep-error").hidden === true && field.value === "20", "runs_keep 20 saves KEYS.RUNS_KEEP = 20 (a number) and clears the error", JSON.stringify(store.runs_keep));
+    ok(store.settings.business_name === "b" && !("runs_keep" in store.settings), "the value is its own storage key, not a settings field");
+    setText(p, "runs_keep", "500");
+    r = await submit(p);
+    ok(!r.error && store.runs_keep === 500, "500 (the upper bound) saves");
+    // Purge all: the confirm states the count from the database; the worker does the deleting.
+    const confirms = [];
+    p.win.confirm = (m) => { confirms.push(m); return false; };
+    doc.getElementById("purge-runs").click(); await tick(); await tick();
+    ok(confirms.length === 1 && /Delete the full logs of all 2 run\(s\)\?/.test(confirms[0]) && !(store.__messages || []).some((m) => m.type === K.MSG.RUNS_PURGE), "Purge all asks with the number of runs (2 in the database); declined sends nothing", confirms[0]);
+    p.win.confirm = () => true;
+    store.__reply = (m) => (m.type === K.MSG.RUNS_PURGE ? { ok: true, deleted: 2, kept: 0 } : { ok: true });
+    doc.getElementById("purge-runs").click(); await tick(); await tick();
+    ok((store.__messages || []).filter((m) => m.type === K.MSG.RUNS_PURGE).length === 1 && doc.getElementById("purge-note").hidden === false && /2 run log\(s\) deleted\.$/.test(doc.getElementById("purge-note").textContent), "accepted: mgc:runs-purge goes to the worker and the reply is shown", doc.getElementById("purge-note").textContent);
+    p.win.close();
+    const p2 = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    ok(p2.document.getElementById("form").elements.runs_keep.value === "500", "reloading shows the stored value");
+    p2.win.close();
+    fakeIDB.reset();
+  }
+
+  console.log("--- the release zip and the file table carry the runs page");
+  {
+    const zipScript = fs.readFileSync(path.join(E.EXT, "..", "scripts/build-extension-zip.sh"), "utf8");
+    ok(/background common content icons options popup runs/.test(zipScript), "scripts/build-extension-zip.sh zips the runs directory with the others");
+    const readme = fs.readFileSync(path.join(E.EXT, "README.md"), "utf8");
+    ok(/`runs\/`/.test(readme) && /`common\/runlog\.js`/.test(readme) && /Runs to keep/.test(readme), "extension/README.md documents runs/, common/runlog.js and the retention setting");
   }
 
   E.finish("ui pages");

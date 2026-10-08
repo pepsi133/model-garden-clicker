@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Model Garden Clicker runs</title>
+  <link rel="stylesheet" href="../common/theme.css">
+  <link rel="stylesheet" href="runs.css">
+</head>
+<body>
+  <header>
+    <img class="photo" src="../icons/avatar96.png" alt="">
+    <div class="title">
+      <h1>Model Garden Clicker runs</h1>
+      <div id="intro" class="note">Every run's full log: every line the extension wrote while the run was active, not just the last 50 the popup shows. Kept in this browser's local extension database only; the newest <span id="keep">50</span> runs are kept (Options, Logs).</div>
+    </div>
+    <div class="header-actions">
+      <button type="button" id="refresh" title="Read the list again">Refresh</button>
+      <button type="button" id="download-all" title="One text file with every run, newest first, each under its own header">Download all</button>
+      <button type="button" id="purge-all" title="Delete every run's full log (asks first)">Purge all</button>
+    </div>
+  </header>
+
+  <div id="notice" class="error" hidden></div>
+  <div id="empty" class="empty" hidden>No runs recorded yet. Start a run from the popup; its full log appears here.</div>
+
+  <table id="runs" hidden>
+    <thead>
+      <tr><th>Started</th><th>Mode</th><th>Jobs</th><th>Results</th><th>Log</th><th class="actions">Actions</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script src="../common/constants.js"></script>
+  <script src="../common/runlog.js"></script>
+  <script src="runs.js"></script>
+</body>
+</html>

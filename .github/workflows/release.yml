@@ -23,6 +23,19 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The offline suite must pass before anything is built. The recon dumps
+      # are not in the repository, so the dump-based checks skip here;
+      # MGC_ALLOW_SKIP=1 accepts those skips and nothing else (a failed check
+      # still fails the release).
+      - name: Run the offline test suite
+        run: |
+          (cd extension/test && npm install --no-audit --no-fund)
+          MGC_ALLOW_SKIP=1 sh extension/test/run.sh
+
       - name: Build the extension zip
         run: sh scripts/build-extension-zip.sh
 

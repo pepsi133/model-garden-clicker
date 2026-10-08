@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Model Garden Clicker",
   "short_name": "MG Clicker",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "alarms"],

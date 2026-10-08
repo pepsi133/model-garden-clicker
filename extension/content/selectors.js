@@ -140,6 +140,17 @@
     },
 
     /**
+     * True when any part of the model page's call-to-action stack is in
+     * the DOM (the stack itself, the Enable wrapper or the Agent Studio
+     * wrapper). False on a page that kept the model page's URL but rendered
+     * no model page at all (the console's error page for a project that
+     * does not exist or cannot be opened), which the handler names.
+     */
+    hasShell: function () {
+      return !!D.q("vai-model-garden-call-to-action-button-stack, vertex-ai-request-access-button, vertex-ai-open-generation-ai-studio-button");
+    },
+
+    /**
      * A visible, unchecked checkbox in the page's main content (inside
      * [role="main"] or <main> when the page has one, else anywhere), outside
      * any dialog or overlay: the consent control some model pages render
@@ -372,18 +383,27 @@
       return out;
     },
     /**
-     * The error dialogs the console opens when Agree is refused
-     * (behavior-failure-dialog, aria-label="Error dialog"), for example
-     * title "Action Required: Choose Different Billing Account" with the
-     * billing-account explanation and a single "Got it" button, as
-     * [{ dialog, title, text }]. The text is what a live-mode failure is
-     * reported with.
+     * The error dialogs in the document, as [{ dialog, title, text,
+     * refusal }]: every dialog container holding behavior-failure-dialog or
+     * carrying aria-label="Error dialog". `refusal` is true for the shape
+     * the console uses to refuse a purchase after Agree (docs/dom-map.md,
+     * "Error": the behavior-failure-dialog component, title "Action
+     * Required: Choose Different Billing Account", the billing-account
+     * explanation, a single "Got it" button): the component is present, or
+     * the title or text carries the recorded refusal wording
+     * (MGC.REFUSAL_PHRASES). A bare "Error dialog" container without
+     * either is not a refusal: the Agreements handler gives the success
+     * dialog a grace period before it judges the click. The text is what a
+     * live-mode failure is reported with.
      */
     failureDialogs: function () {
       const out = [];
       for (const dialog of D.qa(DIALOG_SELECTOR)) {
-        if (!D.q("behavior-failure-dialog", dialog) && dialog.getAttribute("aria-label") !== "Error dialog") continue;
-        out.push({ dialog, title: dialogTitle(dialog), text: dialogText(dialog) });
+        const shaped = !!D.q("behavior-failure-dialog", dialog);
+        if (!shaped && dialog.getAttribute("aria-label") !== "Error dialog") continue;
+        const title = dialogTitle(dialog);
+        const text = dialogText(dialog);
+        out.push({ dialog, title, text, refusal: shaped || K.isRefusalText(`${title} ${text}`) });
       }
       return out;
     }

@@ -658,7 +658,12 @@ still ticked, Agree button hidden behind the spinner).
 ```
 
 Error detector: `behavior-failure-dialog` present, or
-`mat-dialog-container[aria-label="Error dialog"]`. Exact texts: title
+`mat-dialog-container[aria-label="Error dialog"]`. Since 0.5.0 only the
+`behavior-failure-dialog` shape, or a dialog carrying the wording below
+("cannot be purchased", "choose different billing account"), counts as the
+console's refusal after Agree; a bare `Error dialog` container is given a
+grace period for the success dialog instead (`extension/README.md`,
+"Switch to a full run"). Exact texts: title
 `Action Required: Choose Different Billing Account`, body "This product
 cannot be purchased using a billing account currently associated with a free
 trial. Please select a different billing account to proceed or upgrade to a

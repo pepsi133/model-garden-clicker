@@ -25,7 +25,7 @@ cd "$EXT"
 zip -q -X -r "$ZIP" \
   manifest.json \
   models.json \
-  background common content icons options popup \
+  background common content icons options popup runs \
   -x '*/.*' -x '*.map' -x 'icons/icon-master.png'
 
 echo "built $ZIP"

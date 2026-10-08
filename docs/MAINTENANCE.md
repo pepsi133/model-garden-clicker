@@ -256,7 +256,8 @@ the step-by-step box; the script presses Continue before Next and Next job
 on the dry-run end panel with trusted clicks and checks the log for the
 panel lines), `--timeout-min` (default 8), `--chrome-major` (the Chrome for
 Testing version for attempt b), `--attempts` (default `ab`), `--profile`,
-`--config`, `--out`.
+`--config`, `--out`, `--download-dir` (where the Runs page's downloaded
+log lands; default `<out>/downloads/`).
 
 What the script does, in order: deletes the profile's cached service worker
 so the worker on disk runs; starts a browser that loads the extension
@@ -266,7 +267,10 @@ running worker reports the manifest version on disk; checks the profile is
 signed in; fills the options page from `config.local.json` with DRY RUN
 ticked and verifies `live_mode=false` in storage; starts the run from the
 popup page and refuses unless the banner reads `MODE: DRY RUN`; polls the
-results with a screenshot per phase; evaluates.
+results with a screenshot per phase; evaluates; opens the Runs page at
+900 x 700 (`runs-900x700.png`), checks the run is listed first with its
+log size and clicks its Download log, checking the saved text file; drains
+the browser console.
 
 What you see at the end:
 
@@ -308,8 +312,7 @@ The Chrome Web Store refuses a version it has already seen, and the release
 workflow refuses a tag that does not match the manifest.
 
 1. Set `"version"` in `extension/manifest.json` to the next number.
-2. Update "Package version" at the top of `store/LISTING.md` and the
-   version mentioned in `store/CHECKLIST.md`.
+2. Update "Package version" at the top of `store/LISTING.md`.
 3. Run `sh extension/test/run.sh` once more.
 4. Check `git status --short`: nothing under `python/recon/`,
    `python/.chrome-profile/` or `python/config.local.json` may appear.
@@ -323,7 +326,10 @@ git push origin main v<version>
 ```
 
 `.github/workflows/release.yml` runs on the tag: it checks that the tag
-equals the manifest version, runs `scripts/build-extension-zip.sh` and
+equals the manifest version, installs jsdom and runs the offline suite
+with `MGC_ALLOW_SKIP=1` (the recon dumps are not in the repository, so
+the dump-based checks skip there; a failed check fails the release), then
+runs `scripts/build-extension-zip.sh` and
 attaches `dist/model-garden-clicker-<version>.zip` to a GitHub release.
 Then upload that zip to the Chrome Web Store by hand; `store/CHECKLIST.md`
 walks the dashboard tabs.

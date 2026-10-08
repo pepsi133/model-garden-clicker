@@ -189,6 +189,17 @@ const trustedKeyup = (el, key) => fireTrusted(el, "keyup", { key });
 /* ------------------------------------------------------------ tiny test reporter */
 
 const counts = { passed: 0, failed: 0, skipped: 0 };
+let finished = false;
+
+// A test file whose async body stalls (an await that never resolves) would
+// otherwise let node exit 0 with no summary line, and run.sh would read
+// that as a pass. The exit code is set from the 'exit' listener, which
+// node honours.
+process.on("exit", (code) => {
+  if (finished || code !== 0) return;
+  console.log(`FAIL the test file ended without finish(): ${counts.passed} passed, ${counts.failed} failed so far; an await never resolved`);
+  process.exitCode = 1;
+});
 
 function ok(cond, label, detail) {
   if (cond) {
@@ -207,6 +218,7 @@ function skip(label, reason) {
 }
 
 function finish(name) {
+  finished = true;
   const line = `${name}: ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`;
   if (counts.failed) {
     console.log("FAILED " + line);

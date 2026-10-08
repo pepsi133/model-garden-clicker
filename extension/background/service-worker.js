@@ -11,8 +11,10 @@
  * runId and are dropped when it is not the current run's.
  */
 import "../common/constants.js";
+import "../common/runlog.js";
 
 const K = globalThis.MGC;
+const RL = globalThis.MGC_RUNLOG;
 const { KEYS, STATUS, PHASE, MSG } = K;
 
 /* ---------------------------------------------------------------- storage */
@@ -28,15 +30,57 @@ function serialized(fn) {
   return p;
 }
 
-async function appendLogUnsafe(level, msg, src) {
-  const o = await get(KEYS.LOG);
+/*
+ * The per-run log (common/runlog.js, IndexedDB) never fails a job: every
+ * write is wrapped here, and a failure (a quota error, a database that
+ * cannot be opened) is reported once per run with a line in the capped
+ * storage log only, after which the run goes on without the full log.
+ */
+let runlogFailedFor = null;
+async function runlogSafe(runId, what, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (runlogFailedFor !== runId) {
+      runlogFailedFor = runId;
+      const why = err && err.name ? `${err.name}: ${err.message || ""}` : String(err);
+      await appendLogUnsafe("warn", `full run log: could not ${what} (${why}); the run continues, this run's full log may be incomplete`, "worker", null);
+    }
+    return undefined;
+  }
+}
+
+/**
+ * Append a line to the capped storage log (what the popup shows) and, while
+ * a run is in progress, to that run's full log. `fullLogRunId` names the
+ * run explicitly (the final line of a run, written after RUNNING is false)
+ * or, as null, keeps the line out of the full log (a line about the full
+ * log itself failing).
+ */
+async function appendLogUnsafe(level, msg, src, fullLogRunId) {
+  const o = await get([KEYS.LOG, KEYS.RUN, KEYS.RUNNING]);
   const log = Array.isArray(o[KEYS.LOG]) ? o[KEYS.LOG] : [];
-  log.push({ t: Date.now(), level, src: src || "worker", msg: String(msg) });
+  const entry = { t: Date.now(), level, src: src || "worker", msg: String(msg) };
+  log.push(entry);
   if (log.length > K.LOG_CAP) log.splice(0, log.length - K.LOG_CAP);
   await set({ [KEYS.LOG]: log });
+  let runId = null;
+  if (fullLogRunId === undefined) {
+    const run = o[KEYS.RUN];
+    if (o[KEYS.RUNNING] === true && run && typeof run.runId === "string") runId = run.runId;
+  } else if (typeof fullLogRunId === "string") {
+    runId = fullLogRunId;
+  }
+  if (runId) await runlogSafe(runId, "append a line", () => RL.append(runId, entry));
 }
 function log(level, msg, src) {
   return serialized(() => appendLogUnsafe(level, msg, src));
+}
+
+/** The run's results in its full log, from the queue as stored now. */
+async function runlogResultsUnsafe(runId, queue) {
+  if (typeof runId !== "string") return;
+  await runlogSafe(runId, "record the job results", () => RL.update(runId, { results: queue || [] }));
 }
 
 /* ---------------------------------------------------------------- tab */
@@ -150,6 +194,13 @@ async function startRunUnsafe({ projects, models, live }) {
     [KEYS.RUN]: run,
     [KEYS.SUMMARY_ACK]: null // the previous run's summary, acknowledged or not, is gone with the new Start
   });
+  // The full log: this run's record first, then the oldest records beyond
+  // "Runs to keep" (options page, Logs) are deleted. Neither can fail the
+  // start: a database error is logged once and the run goes on without it.
+  runlogFailedFor = null;
+  await runlogSafe(run.runId, "create the run record", () => RL.create(run, queue, settings.step_by_step === true));
+  const keepStored = await get(KEYS.RUNS_KEEP);
+  await runlogSafe(run.runId, "prune old run records", () => RL.prune(K.runsKeepFrom(keepStored[KEYS.RUNS_KEEP])));
   await appendLogUnsafe("info", `run ${run.runId} started: ${projectIds.length} project(s) x ${modelSlugs.length} model(s) = ${queue.length} job(s), mode ${live ? "FULL RUN" : "DRY RUN"}${settings.step_by_step === true ? ", step-by-step confirmation on" : ""}`);
   await advanceUnsafe();
   return { ok: true, jobs: queue.length, runId: run.runId };
@@ -163,7 +214,7 @@ async function startRunUnsafe({ projects, models, live }) {
  * activated for it and no notification is raised.
  */
 async function finishRunUnsafe(reason) {
-  const o = await get([KEYS.RUN, KEYS.TAB_ID]);
+  const o = await get([KEYS.RUN, KEYS.TAB_ID, KEYS.QUEUE]);
   const run = Object.assign({}, o[KEYS.RUN] || {}, { finishedAt: Date.now(), reason });
   await chrome.alarms.clear(K.WATCHDOG_ALARM);
   const updates = { [KEYS.RUNNING]: false, [KEYS.CURRENT]: null, [KEYS.STOP_REQUESTED]: false, [KEYS.TAB_ID]: null, [KEYS.RUN]: run };
@@ -171,7 +222,11 @@ async function finishRunUnsafe(reason) {
     updates[KEYS.SUMMARY_ACK] = { runId: run.runId, tabId: typeof o[KEYS.TAB_ID] === "number" ? o[KEYS.TAB_ID] : null, reason, ack: false };
   }
   await set(updates);
-  await appendLogUnsafe("info", `run finished: ${reason}`);
+  // The full log is closed with the end, the reason and the final results;
+  // its last line is the "run finished" line, written after RUNNING is false.
+  const runId = typeof run.runId === "string" ? run.runId : null;
+  if (runId) await runlogSafe(runId, "close the run record", () => RL.update(runId, { finishedAt: run.finishedAt, reason, results: o[KEYS.QUEUE] || [] }));
+  await appendLogUnsafe("info", `run finished: ${reason}`, "worker", runId);
 }
 
 /**
@@ -242,6 +297,7 @@ async function finishJobUnsafe(jobIndex, status, message, stopAfter) {
   await set(updates);
   await chrome.alarms.clear(K.WATCHDOG_ALARM);
   await appendLogUnsafe("info", `job ${jobIndex}: ${status} - ${message}${stopAfter === true ? " (the run stops after this job)" : ""}`);
+  await runlogResultsUnsafe(((await get(KEYS.RUN))[KEYS.RUN] || {}).runId, queue);
 
   // Optional pause (settle_ms, default 0) that leaves the finished job's page
   // on screen before the next job's navigation. If the worker dies during
@@ -305,6 +361,14 @@ async function updateJobUnsafe(jobIndex, fields) {
   return { ok: true };
 }
 
+/**
+ * End the run now, for `reason` (Stop, a closed worker tab, a reload, a
+ * browser restart, a lost tab while a job waited). The job in progress is
+ * marked stopped, unless its Agree click is on record: then it is marked
+ * unverified, never stopped, since the purchase may have gone through and
+ * the content script's own result, if it still comes, is dropped with the
+ * run; the user is told to check by hand.
+ */
 async function stopRunUnsafe(reason) {
   const o = await get([KEYS.RUNNING, KEYS.CURRENT, KEYS.QUEUE]);
   if (o[KEYS.RUNNING] !== true) return { ok: true, note: "no run in progress" };
@@ -312,7 +376,15 @@ async function stopRunUnsafe(reason) {
   const current = o[KEYS.CURRENT];
   const queue = o[KEYS.QUEUE] || [];
   if (current && queue[current.jobIndex] && queue[current.jobIndex].status === STATUS.RUNNING) {
-    queue[current.jobIndex] = Object.assign({}, queue[current.jobIndex], { status: STATUS.STOPPED, message: reason, finishedAt: Date.now(), phase: PHASE.FINISHED });
+    const job = queue[current.jobIndex];
+    const clicked = job.agreeClicked === true;
+    const clause = /^stopped/.test(reason) ? `the run was ${reason}` : `the ${reason}`;
+    queue[current.jobIndex] = Object.assign({}, job, {
+      status: clicked ? STATUS.UNVERIFIED : STATUS.STOPPED,
+      message: clicked ? `Agree was clicked but ${clause}; no confirmation observed; check manually` : reason,
+      finishedAt: Date.now(),
+      phase: PHASE.FINISHED
+    });
     await set({ [KEYS.QUEUE]: queue });
   }
   await finishRunUnsafe(reason);
@@ -448,6 +520,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const manifest = chrome.runtime.getManifest ? chrome.runtime.getManifest() : {};
         return { ok: true, manifest: manifest.version || null, keys: Object.values(KEYS).sort(), messages: Object.values(MSG).sort() };
       }
+      // The full logs are deleted only here (the worker is their only
+      // writer), from the extension's own pages, inside the serialized
+      // chain so a delete never interleaves with an append of the run in
+      // progress, whose record is never deleted.
+      case MSG.RUNS_DELETE:
+        return serialized(() => deleteRunLogUnsafe(msg.runId, fromTab));
+      case MSG.RUNS_PURGE:
+        return serialized(() => purgeRunLogsUnsafe(fromTab));
       default:
         return { ok: false, error: `unknown message type ${msg.type}` };
     }
@@ -456,6 +536,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handle().then(sendResponse, (err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
   return true; // keep the channel open for the async response
 });
+
+/** The id of the run in progress, or null. */
+async function runInProgressIdUnsafe() {
+  const o = await get([KEYS.RUN, KEYS.RUNNING]);
+  return o[KEYS.RUNNING] === true && o[KEYS.RUN] && typeof o[KEYS.RUN].runId === "string" ? o[KEYS.RUN].runId : null;
+}
+
+/** Delete one run's full log. From the extension's own pages only; the run in progress is refused. */
+async function deleteRunLogUnsafe(runId, fromTab) {
+  if (fromTab !== null) return { ok: false, error: "only the extension's own pages can delete run logs" };
+  if (typeof runId !== "string" || !runId) return { ok: false, error: "no run id" };
+  if ((await runInProgressIdUnsafe()) === runId) return { ok: false, error: "that run is in progress; stop it first" };
+  try {
+    const existed = await RL.delete(runId);
+    return existed ? { ok: true } : { ok: false, error: "no log for that run" };
+  } catch (err) {
+    return { ok: false, error: `could not delete the run log: ${err && err.message ? err.message : err}` };
+  }
+}
+
+/** Delete every full log except the run in progress. { ok, deleted, kept } */
+async function purgeRunLogsUnsafe(fromTab) {
+  if (fromTab !== null) return { ok: false, error: "only the extension's own pages can delete run logs" };
+  const current = await runInProgressIdUnsafe();
+  try {
+    const deleted = await RL.purge(current);
+    await appendLogUnsafe("info", `full run logs purged: ${deleted} deleted${current ? ", the run in progress kept" : ""}`);
+    return { ok: true, deleted, kept: current ? 1 : 0 };
+  } catch (err) {
+    return { ok: false, error: `could not purge the run logs: ${err && err.message ? err.message : err}` };
+  }
+}
 
 async function isWorkerTab(tabId) {
   if (tabId === null || tabId === undefined) return false;

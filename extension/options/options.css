@@ -26,6 +26,10 @@ code { font: 12px var(--mgc-mono); }
 .radio label { display: inline-block; margin: 4px 16px 4px 0; font-weight: 400; }
 fieldset.mode-box { border-color: var(--mgc-accent-dark); }
 fieldset.advanced textarea { font: 12px var(--mgc-mono); }
+fieldset.logs input[type="number"] { display: block; width: 120px; margin-top: 4px; padding: 6px; font: 13px system-ui, sans-serif; font-weight: 400; background: var(--mgc-surface); color: var(--mgc-text); border: 1px solid var(--mgc-border); border-radius: 4px; }
+fieldset.logs .purge-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+fieldset.logs #purge-note { font-size: 13px; }
+fieldset.logs #purge-note.saved { color: var(--mgc-ok); font-weight: 600; }
 label.check { font-size: 15px; }
 .explain { margin: 2px 0 14px 24px; color: var(--mgc-muted); }
 .warning { padding: 10px 12px; margin: 0 0 14px; }

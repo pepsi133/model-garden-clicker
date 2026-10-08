@@ -35,4 +35,7 @@ lines are covered with the local background colour.
 ## Source
 
 All images are cropped/resized from original photos of the author's dog (a German
-Shepherd). Originals are not stored in this repository.
+Shepherd). Originals are not stored in this repository. In the two promo tiles
+the harness manufacturer's printed label (a brand name and a web address on the
+chest strap) is covered with fabric sampled from the harness itself, so no
+third-party brand or address shows.

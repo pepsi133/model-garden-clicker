@@ -402,7 +402,75 @@ expectThrow(() => D.click({ textContent: " AGREE ", isConnected: true }), "Forbi
     ok(r.clicks === 1 && r.result && r.result.status === "done" && r.logs.some((m) => /ignoring a confirmation dialog .*"Successfully purchased Claude Haiku 4.55"/.test(m)), "two new success dialogs, the longer version first: it is logged and skipped, the exact version counts (done)", r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.logs.join(" | ")}`);
     r = await live("new error", "", failure(false));
     ok(r.clicks === 1 && r.result && r.result.status === "failed" && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(r.result.message),
-      "an error dialog that appears after the click: failed with its title and text", r.err ? r.err.message : JSON.stringify(r.result));
+      "the console's refusal dialog (behavior-failure-dialog) that appears after the click: failed with its title and text", r.err ? r.err.message : JSON.stringify(r.result));
+  }
+
+  // (T1) after the click only the console's refusal shape fails the job. A bare "Error dialog" container
+  // (no behavior-failure-dialog, no refusal wording) gives the success dialog a grace period
+  // (agree_grace_ms): the four orderings of the 0.4.0 review's probe, then the persisting, the
+  // transient-and-nothing-else and the refusal-wording cases.
+  if (!snapR2) skip("(T1) post-Agree dialog orderings on 05-agreements-checked", "recon dump not present");
+  else {
+    console.log("--- (T1) an error dialog after Agree that is not the console's refusal never fails the job; the success dialog wins within the grace period");
+    const project = new URL(snapR2.url).searchParams.get("project");
+    const GENERIC = '<div class="cdk-overlay-container" id="gen"><mat-dialog-container role="dialog" aria-label="Error dialog"><h1 matdialogtitle>Something went wrong</h1><div matdialogcontent>Could not load billing accounts. Try again.</div></mat-dialog-container></div>';
+    const SUCCESS_OK = '<div class="cdk-overlay-container" id="suc"><mat-dialog-container role="dialog"><mp-consent-complete-dialog><h1 matdialogtitle>Successfully purchased Claude Haiku 4.5</h1></mp-consent-complete-dialog></mat-dialog-container></div>';
+    const REFUSAL_WORDED = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"><h1 matdialogtitle>Action Required: Choose Different Billing Account</h1><div matdialogcontent>This product cannot be purchased using a billing account currently associated with a free trial.</div></mat-dialog-container></div>';
+    const REFUSAL_SHAPED = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog" aria-label="Error dialog"><behavior-failure-dialog><h1 matdialogtitle>Action Required: Choose Different Billing Account</h1><div matdialogcontent>This billing account cannot buy.</div></behavior-failure-dialog></mat-dialog-container></div>';
+    const GRACE = 400, CONFIRM = 1500;
+    let n = 0;
+    /** The live handler on the real ticked page; `afterClick(env)` schedules what the console does after the click. */
+    const timed = async (afterClick) => {
+      const env = E.makeEnv({ html: snapR2.html, url: snapR2.url }); E.rehydrate(env.document, snapR2.forms);
+      env.K.TIMEOUTS.CONFIRM = CONFIRM; env.K.TIMEOUTS.AGREE_GRACE = GRACE; env.K.URL_POLL_MS = 20;
+      const rid = `run-t1-${++n}`;
+      const state = liveState(project, { state: { run: { runId: rid, live: true } } });
+      const ctx = Object.assign(mk(state, null, rid), { job: state.queue[0], settings: { live_mode: true }, setPhase: async () => {}, assertMayAct: async () => {} });
+      const logs = []; ctx.log = (m) => logs.push(m);
+      let clicks = 0, clickAt = null;
+      env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; clickAt = Date.now(); afterClick(env); });
+      let result = null, err = null;
+      try { result = await env.A.handleAgreements(ctx); } catch (e) { err = e; }
+      // ms counts from the click (the grace and confirm clocks start there), not from the handler's start:
+      // the readiness checks on the 4 MB page take several hundred ms before the click.
+      const out = { result, err, clicks, logs, ms: clickAt === null ? -1 : Date.now() - clickAt, recorded: state.queue[0].agreeClicked === true };
+      env.win.close();
+      return out;
+    };
+    const add = (env, html, ms) => setTimeout(() => env.document.body.insertAdjacentHTML("beforeend", html), ms);
+    const remove = (env, id, ms) => setTimeout(() => { const el = env.document.getElementById(id); if (el) el.remove(); }, ms);
+    const says = (r) => (r.err ? r.err.message : `${JSON.stringify(r.result)} ${r.ms} ms | ${r.logs.filter((m) => /dialog/.test(m)).join(" | ")}`);
+    const genericLogged = (r) => r.logs.some((m) => /an error dialog that is not the console's refusal opened after Agree: "Something went wrong: Could not load billing accounts. Try again."; waiting up to 0.4 s more/.test(m));
+    const superseded = (r) => r.logs.some((m) => /the confirmation arrived after the error dialog "Something went wrong: Could not load billing accounts. Try again.": that dialog was not the click's outcome/.test(m));
+
+    let r = await timed((env) => { add(env, GENERIC, 100); add(env, SUCCESS_OK, 250); });
+    ok(r.clicks === 1 && r.recorded && r.result && r.result.status === "done" && r.ms < 1000 && genericLogged(r) && superseded(r),
+      "(a) a generic error container at +100 ms, the success dialog at +250 ms: one click, done (the generic dialog logged, then superseded), not failed", says(r));
+    r = await timed((env) => { add(env, GENERIC, 100); remove(env, "gen", 180); add(env, SUCCESS_OK, 250); });
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms < 1000 && genericLogged(r) && superseded(r),
+      "(b) the generic container at +100 ms is a transient removed at +180 ms, the success dialog at +250 ms: done", says(r));
+    r = await timed((env) => { add(env, SUCCESS_OK, 250); });
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms < 1000 && !genericLogged(r) && !superseded(r) && !r.logs.some((m) => /error dialog/.test(m)),
+      "(c) control: the success dialog alone at +250 ms: done, no error dialog logged", says(r));
+    r = await timed((env) => { setTimeout(() => { env.document.body.insertAdjacentHTML("beforeend", SUCCESS_OK); env.document.body.insertAdjacentHTML("beforeend", GENERIC); }, 100); });
+    ok(r.clicks === 1 && r.result && r.result.status === "done" && r.ms < 1000 && !r.logs.some((m) => /is not the console's refusal/.test(m)),
+      "(d) the success dialog and the generic container in the same instant: done (the success dialog is checked first in a poll)", says(r));
+    r = await timed((env) => { add(env, GENERIC, 100); });
+    ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.ms >= 100 + GRACE && r.ms < CONFIRM && genericLogged(r)
+      && /Agree clicked but the console shows an error dialog that is not its refusal \("Something went wrong: Could not load billing accounts. Try again."\) and no confirmation appeared within 0.4 s of it; check manually/.test(r.result.message),
+      "(e) the generic container persists and no confirmation follows: unverified with the dialog's text once the grace period ends, before confirm_ms, never failed", says(r));
+    r = await timed((env) => { add(env, GENERIC, 100); remove(env, "gen", 180); });
+    ok(r.clicks === 1 && r.result && r.result.status === "unverified" && r.ms >= CONFIRM && /no confirmation observed within 1.5 s; an error dialog that is not the console's refusal was seen meanwhile: "Something went wrong: Could not load billing accounts. Try again."; check manually/.test(r.result.message),
+      "(f) the generic container closes by itself and nothing else appears: unverified after confirm_ms, naming the dialog that was seen", says(r));
+    r = await timed((env) => { add(env, REFUSAL_WORDED, 100); add(env, SUCCESS_OK, 900); });
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < 600 && /Agree refused by the console: Action Required: Choose Different Billing Account: This product cannot be purchased using a billing account currently associated with a free trial\./.test(r.result.message),
+      "(g) a bare Error dialog container whose text carries the console's recorded refusal wording: failed at once with the console's text (no grace period)", says(r));
+    r = await timed((env) => { add(env, REFUSAL_SHAPED, 100); });
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < 600 && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(r.result.message) && !genericLogged(r),
+      "(h) the behavior-failure-dialog shape: failed at once, never logged as a generic dialog", says(r));
+    r = await timed((env) => { add(env, GENERIC, 100); add(env, REFUSAL_SHAPED, 250); });
+    ok(r.clicks === 1 && r.result && r.result.status === "failed" && r.ms < 600 && genericLogged(r) && /Agree refused by the console: Action Required/.test(r.result.message),
+      "(i) a generic container first, then the refusal within the grace period: the refusal is the outcome, failed with its text", says(r));
   }
 
   // (F6) the live handler on a job already marked agreeClicked returns unverified without touching the button.

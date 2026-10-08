@@ -47,6 +47,12 @@
     window.close();
   }
 
+  /** The Runs page (every run's full log) in a normal tab; the popup itself stays as it is. */
+  function openRuns(e) {
+    e.preventDefault();
+    chrome.tabs.create({ url: chrome.runtime.getURL("runs/runs.html") });
+  }
+
   /* ---------------------------------------------------------- header toggles */
 
   /**
@@ -129,6 +135,12 @@
     }
   }
 
+  /**
+   * The model checklist. No model is ticked until the user ticks one (a
+   * first-use popup must not offer every model of the list to a Start):
+   * `selected` is the last selection, kept in popup_state with the
+   * project IDs and the extra slugs and restored on every open.
+   */
   function renderModels(models, selected) {
     const box = $("models");
     box.textContent = "";
@@ -137,7 +149,7 @@
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.value = m.slug;
-      cb.checked = selected ? selected.includes(m.slug) : true;
+      cb.checked = Array.isArray(selected) && selected.includes(m.slug);
       cb.addEventListener("change", savePopupState);
       label.appendChild(cb);
       label.appendChild(document.createTextNode(" " + m.name));
@@ -330,6 +342,7 @@
     on("models-none", "click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = false; }); savePopupState(); });
     on("options", "click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
     on("open-tab", "click", openInTab);
+    on("runs", "click", openRuns);
     on("mode", "click", toggleMode);
     on("step-toggle", "click", toggleStepByStep);
     on("clear-results", "click", async (e) => {

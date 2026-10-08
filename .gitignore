@@ -23,9 +23,10 @@ package-lock.json
 # Build output
 dist/
 
-# Agent skills installed with `npx skills add` (tooling for the docs, not part of the extension)
+# Agent tooling (skills installed with `npx skills add`, agent worktrees,
+# local agent settings): never part of the extension, never tracked
 .agents/
-.claude/skills/
+.claude/
 skills-lock.json
 
 # Editors, OS, environment
@@ -37,4 +38,3 @@ Thumbs.db
 .env.*
 .idea/
 .vscode/
-.claude/settings.local.json

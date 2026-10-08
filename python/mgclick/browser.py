@@ -100,6 +100,7 @@ def make_driver(
     extension_dir: str | Path | None = None,
     browser_version: str | None = None,
     extra_args: tuple[str, ...] = (),
+    download_dir: str | Path | None = None,
 ) -> webdriver.Chrome:
     """Launch Chrome with a dedicated profile.
 
@@ -110,6 +111,9 @@ def make_driver(
     browser_version use a Chrome for Testing build of that major version
                     (downloaded by Selenium Manager) instead of CHROME_BINARY.
     extra_args      additional command-line switches.
+    download_dir    where a download (a link with the download attribute,
+                    as the extension's Runs page saves a log) lands, without
+                    a prompt; the directory is created. Default: Chrome's.
     """
     profile = Path(profile_dir) if profile_dir else DEFAULT_PROFILE_DIR
     profile = profile.resolve()
@@ -138,6 +142,14 @@ def make_driver(
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
+    if download_dir:
+        dl = Path(download_dir).resolve()
+        dl.mkdir(parents=True, exist_ok=True)
+        opts.add_experimental_option("prefs", {
+            "download.default_directory": str(dl),
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+        })
     if headless:
         opts.add_argument("--headless=new")
     # The browser console log is readable through driver.get_log("browser")

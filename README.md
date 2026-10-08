@@ -57,7 +57,7 @@ The popup lists one row per job. **Open in a tab** shows the same page in a norm
 | `failed` | The reason is in the message: a rejected field, a page that was not the job's, a timeout, a console error dialog. |
 | `stopped` | You pressed Stop, or the extension was reloaded during the run. |
 
-The log under the table keeps the last 50 lines, with the milliseconds since the job started on every step.
+The log under the table keeps the last 50 lines, with the milliseconds since the job started on every step. Every run's full log is kept on the **Runs** page (the link in the popup's header): every line, with the run's start, end, mode, jobs and results, downloadable as a text file, for the last 50 runs by default (the "Runs to keep" setting in the options page). See [`extension/README.md`](extension/README.md), "The Runs page".
 
 ## What a job does
 

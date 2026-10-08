@@ -297,24 +297,36 @@
     let found = null;
     let enabledSince = null; // time of the first poll that saw the enabled state, reset when it goes away
     for (let pass = 0; pass < 2 && !found; pass++) {
-      const seen = await D.waitFor(() => {
-        if (S.model.isAlreadyEnabled()) {
-          if (enabledSince === null) { enabledSince = Date.now(); return null; }
-          return Date.now() - enabledSince >= K.enabledConfirmMs() ? { enabled: true } : null;
-        }
-        enabledSince = null;
-        const btn = S.model.enableButton();
-        if (!btn) return null;
-        if (D.isDisabled(btn)) {
-          if (S.model.uncheckedCheckbox()) {
-            throw new D.FatalError("Enable is disabled on the model page next to an unchecked consent checkbox; the model page needs a manual step: tick it by hand in the console, then start the job again");
+      let seen;
+      try {
+        seen = await D.waitFor(() => {
+          if (S.model.isAlreadyEnabled()) {
+            if (enabledSince === null) { enabledSince = Date.now(); return null; }
+            return Date.now() - enabledSince >= K.enabledConfirmMs() ? { enabled: true } : null;
           }
-          return null;
+          enabledSince = null;
+          const btn = S.model.enableButton();
+          if (!btn) return null;
+          if (D.isDisabled(btn)) {
+            if (S.model.uncheckedCheckbox()) {
+              throw new D.FatalError("Enable is disabled on the model page next to an unchecked consent checkbox; the model page needs a manual step: tick it by hand in the console, then start the job again");
+            }
+            return null;
+          }
+          const dialog = S.dialogs.findApiEnableDialog();
+          if (dialog && dialog.dialog && D.isVisible(dialog.dialog)) return { dialog: true };
+          return { btn };
+        }, { timeout: T.MODEL_READY, what: "Enable button (enabled, no dialog) or enabled state" });
+      } catch (err) {
+        // The URL is the model page's but nothing of the model page rendered
+        // (the console's error page for a project that does not exist or
+        // cannot be opened): the same timeout, retried like any other, but
+        // the message names the project so a "gave up" result says why.
+        if (err instanceof D.TimeoutError && !S.model.hasShell()) {
+          throw new Error(`the model page for project "${ctx.job.projectId}" showed neither an Enable button nor the enabled state within ${Math.round(T.MODEL_READY / 1000)} s and rendered no model page content at all: the project may not exist, you may lack access to it, or the ID may be misspelt`);
         }
-        const dialog = S.dialogs.findApiEnableDialog();
-        if (dialog && dialog.dialog && D.isVisible(dialog.dialog)) return { dialog: true };
-        return { btn };
-      }, { timeout: T.MODEL_READY, what: "Enable button (enabled, no dialog) or enabled state" });
+        throw err;
+      }
       if (seen.dialog) {
         // The dialog opened while this handler was waiting; clear it here
         // instead of waiting for the next tick's pre-action step.
@@ -658,18 +670,30 @@
     const who = byUser ? "Agree clicked by you" : "Agree clicked";
 
     // After Agree the console opens one of two dialogs 5-7 s later: the
-    // "Successfully purchased <model>" confirmation or an error dialog such
-    // as "Action Required: Choose Different Billing Account". The job ends
-    // the moment either is detected: the success dialog is the
-    // authoritative signal (the model page's enabled state can lag it by
-    // minutes and is not waited for) and it must name the job's model (a
-    // confirmation for another product is logged and ignored). The error
-    // text is what the job is reported with so the user sees the console's
-    // reason. The wait is bounded by the confirm_ms setting (default 60 s)
-    // and only runs its full length when no dialog appears; any error while
-    // waiting ends the job as unverified: the click happened.
+    // "Successfully purchased <model>" confirmation or its refusal, "Action
+    // Required: Choose Different Billing Account" (a behavior-failure-dialog,
+    // docs/dom-map.md). The job ends the moment either is detected: the
+    // success dialog is the authoritative signal (the model page's enabled
+    // state can lag it by minutes and is not waited for) and it must name
+    // the job's model (a confirmation for another product is logged and
+    // ignored); the refusal's text is what the job is reported with so the
+    // user sees the console's reason. Only the refusal shape (the component,
+    // or the recorded refusal wording: S.agreements.failureDialogs) fails
+    // the job. Any other error dialog that opens after the click (a bare
+    // "Error dialog" container, never observed on the console) is not taken
+    // as the click's outcome, since a transient error next to a purchase
+    // that goes through would report the purchase failed: it is logged and
+    // the wait goes on for agree_grace_ms (default 15 s), during which the
+    // success dialog still wins; if that dialog is still open when the
+    // grace ends, the job is unverified with the dialog's text; if it closed
+    // by itself and nothing else appeared, the wait runs to confirm_ms and
+    // the job is unverified naming the dialog. The wait is bounded by the
+    // confirm_ms setting (default 60 s) and only runs its full length when
+    // no dialog appears; any error while waiting ends the job as unverified:
+    // the click happened.
     const wanted = job.modelName || job.modelSlug;
     const ignored = new Set();
+    let generic = null; // { at, detail, dialog }: the first error dialog after the click that is not the console's refusal
     let outcome;
     try {
       outcome = await D.waitFor(() => {
@@ -681,19 +705,32 @@
             ctx.log(`ignoring a confirmation dialog that does not name the job's model "${wanted}": "${d.title}"`);
           }
         }
-        const failure = S.agreements.failureDialogs().find((f) => !dialogsBefore.has(f.dialog));
-        return failure ? { failure } : null;
+        for (const f of S.agreements.failureDialogs()) {
+          if (dialogsBefore.has(f.dialog)) continue;
+          const detail = [f.title, f.text].filter(Boolean).join(": ") || "error dialog without text";
+          if (f.refusal) return { failure: f, detail };
+          if (!generic) {
+            generic = { at: Date.now(), detail, dialog: f.dialog };
+            ctx.log(`an error dialog that is not the console's refusal opened after Agree: "${detail}"; waiting up to ${T.AGREE_GRACE / 1000} s more for the confirmation before judging it`);
+          }
+        }
+        if (generic && Date.now() - generic.at >= T.AGREE_GRACE && D.isVisible(generic.dialog)) return { generic };
+        return null;
       }, { timeout: T.CONFIRM, what: "confirmation or error dialog after Agree" });
     } catch (err) {
       const why = err instanceof D.TimeoutError ? `no confirmation observed within ${T.CONFIRM / 1000} s` : `error while waiting for the confirmation: ${err.message}`;
-      return { status: STATUS.UNVERIFIED, message: `${who} but ${why}; check manually` };
+      const seen = generic ? `; an error dialog that is not the console's refusal was seen meanwhile: "${generic.detail}"` : "";
+      return { status: STATUS.UNVERIFIED, message: `${who} but ${why}${seen}; check manually` };
     }
     if (outcome.failure) {
-      const f = outcome.failure;
-      const detail = [f.title, f.text].filter(Boolean).join(": ");
-      ctx.log(`console refused Agree: ${detail}`);
-      return { status: STATUS.FAILED, message: `Agree refused by the console: ${detail || "error dialog without text"}` };
+      ctx.log(`console refused Agree: ${outcome.detail}`);
+      return { status: STATUS.FAILED, message: `Agree refused by the console: ${outcome.detail}` };
     }
+    if (outcome.generic) {
+      ctx.log(`the error dialog is still open ${T.AGREE_GRACE / 1000} s after it appeared and no confirmation followed: "${outcome.generic.detail}"`);
+      return { status: STATUS.UNVERIFIED, message: `${who} but the console shows an error dialog that is not its refusal ("${outcome.generic.detail}") and no confirmation appeared within ${T.AGREE_GRACE / 1000} s of it; check manually` };
+    }
+    if (generic) ctx.log(`the confirmation arrived after the error dialog "${generic.detail}": that dialog was not the click's outcome`);
     ctx.mark(`success dialog detected ("${outcome.title}"); job done`);
     return { status: STATUS.DONE, message: `enabled: ${who} and confirmation observed` };
   };

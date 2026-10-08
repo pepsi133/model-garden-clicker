@@ -130,12 +130,12 @@ def drop_service_worker_cache(profile: str) -> None:
         log(f"removed {sw_dir} so the extension's service worker is loaded from disk")
 
 
-def start_browser(profile: str, ext_id: str, attempts: str, major: str | None):
+def start_browser(profile: str, ext_id: str, attempts: str, major: str | None, download_dir: Path):
     """Return (driver, attempt_letter). Exits 3 when nothing works."""
     drop_service_worker_cache(profile)
     if "a" in attempts:
         log(f"attempt (a): {CHROME_BINARY} with --load-extension={EXTENSION_DIR}")
-        driver = make_driver(profile, extension_dir=EXTENSION_DIR)
+        driver = make_driver(profile, extension_dir=EXTENSION_DIR, download_dir=download_dir)
         log(f"attempt (a): browserVersion={driver.capabilities.get('browserVersion')}")
         if extension_loaded(driver, ext_id):
             log("attempt (a): extension loaded")
@@ -146,7 +146,7 @@ def start_browser(profile: str, ext_id: str, attempts: str, major: str | None):
         major = major or chrome_major()
         log(f"attempt (b): Chrome for Testing {major} via Selenium Manager, same profile")
         try:
-            driver = make_driver(profile, extension_dir=EXTENSION_DIR, browser_version=major)
+            driver = make_driver(profile, extension_dir=EXTENSION_DIR, browser_version=major, download_dir=download_dir)
         except WebDriverException as exc:
             log(f"attempt (b): could not start Chrome for Testing on the profile: {str(exc)[:300]}")
             log("attempt (c): stopping")
@@ -526,6 +526,93 @@ def screenshot_pages(driver, ext_id: str, out_dir: Path) -> list[Path]:
     return shots
 
 
+RUNS_ROWS_JS = """
+return Array.from(document.querySelectorAll('#runs tbody tr')).map((tr) => ({
+  runId: tr.dataset.runId,
+  cells: Array.from(tr.querySelectorAll('td')).map((td) => td.textContent),
+  deleteDisabled: tr.querySelector('button.delete').disabled,
+  downloadTitle: tr.querySelector('button.download').title
+}));
+"""
+RUNS_PAGE_JS = """
+const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden; };
+return { title: document.title, empty: shown('empty'), notice: shown('notice'), noticeText: document.getElementById('notice').textContent,
+  keep: document.getElementById('keep').textContent, purgeDisabled: document.getElementById('purge-all').disabled };
+"""
+RUNS_W, RUNS_H = 900, 700
+
+
+def check_runs_page(driver, ext_id: str, out_dir: Path, run: dict, log_lines: list[str], download_dir: Path) -> bool:
+    """Open runs/runs.html in this session: the run must be listed first with its log size, and Download log must produce the file.
+
+    The download is a link with the download attribute and an object URL
+    (no permission); Chrome saves it into download_dir (set at browser
+    start). The file's first 20 lines are printed as evidence, and its
+    log section must hold the same number of lines as the full run log
+    (the popup's storage log is capped at 500, so for a long run the file
+    holds more lines than extension-log.txt, never fewer).
+    """
+    ok = True
+    print()
+    driver.get(f"chrome-extension://{ext_id}/runs/runs.html")
+    got = set_viewport(driver, RUNS_W, RUNS_H)
+    time.sleep(1.5)
+    page = driver.execute_script(RUNS_PAGE_JS)
+    rows = driver.execute_script(RUNS_ROWS_JS)
+    shot = out_dir / f"runs-{RUNS_W}x{RUNS_H}.png"
+    driver.save_screenshot(str(shot))
+    log(f"runs page screenshot at a {got[0]} x {got[1]} viewport: {shot}")
+    run_id = run.get("runId")
+    print(f"runs page: title {page['title']!r}, {len(rows)} run(s) listed, runs to keep {page['keep']}, notice {page['noticeText']!r}")
+    for r in rows[:5]:
+        print(f"  {r['runId']}: {' | '.join(r['cells'][:5])}")
+    good = page["title"] == "Model Garden Clicker runs" and not page["notice"] and not page["empty"]
+    print(f"{'PASS' if good else 'FAIL'} the runs page rendered its list with no database notice")
+    ok = ok and good
+    mine = next((r for r in rows if r["runId"] == run_id), None)
+    good = mine is not None and rows[0]["runId"] == run_id
+    print(f"{'PASS' if good else 'FAIL'} the run just finished ({run_id}) is listed first (newest first)")
+    ok = ok and good
+    if mine is None:
+        return False
+    m = re.match(r"(\d+) lines · ([\d.]+ (?:B|KB|MB))$", mine["cells"][4])
+    good = bool(m) and int(m.group(1)) >= len(log_lines) and "dry-run" in mine["cells"][3]
+    print(f"{'PASS' if good else 'FAIL'} its row shows the log size and line count ({mine['cells'][4]!r}; the storage log holds {len(log_lines)} lines) and the counts ({mine['cells'][3]!r})")
+    ok = ok and good
+    good = mine["deleteDisabled"] is False and not page["purgeDisabled"]
+    print(f"{'PASS' if good else 'FAIL'} Delete and Purge all are enabled for a finished run")
+    ok = ok and good
+    # Download log: a real Selenium click; the file lands in download_dir.
+    before = {p.name for p in download_dir.glob("*.txt")} if download_dir.is_dir() else set()
+    driver.find_element("css selector", f'#runs tbody tr[data-run-id="{run_id}"] button.download').click()
+    deadline = time.monotonic() + 15
+    new_files: list[Path] = []
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        new_files = [p for p in download_dir.glob("model-garden-clicker-run-*.txt") if p.name not in before and not p.name.endswith(".crdownload")]
+        if new_files:
+            break
+    good = len(new_files) == 1 and re.fullmatch(r"model-garden-clicker-run-\d{8}-\d{6}\.txt", new_files[0].name) is not None
+    print(f"{'PASS' if good else 'FAIL'} Download log saved one file named model-garden-clicker-run-<YYYYMMDD-HHMMSS>.txt into {download_dir}: {[p.name for p in new_files]}")
+    ok = ok and good
+    if not new_files:
+        return False
+    text = new_files[0].read_text(encoding="utf-8")
+    file_lines = text.split("\n")
+    print(f"downloaded log {new_files[0]} ({len(text.encode('utf-8'))} bytes, {len(file_lines)} lines); first 20 lines:")
+    for line in file_lines[:20]:
+        print(f"    {line}")
+    log_start = file_lines.index("log:") if "log:" in file_lines else -1
+    entries = [l for l in file_lines[log_start + 1:] if l] if log_start >= 0 else []
+    good = f"run id:        {run_id}" in file_lines and file_lines[0] == "Model Garden Clicker run log" and "mode:          DRY RUN" in file_lines
+    print(f"{'PASS' if good else 'FAIL'} the file opens with the header block naming this run id and mode DRY RUN")
+    ok = ok and good
+    good = log_start > 0 and len(entries) >= len(log_lines) and all(re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z (worker|content|ui) \[\w+\] ", l) for l in entries)
+    print(f"{'PASS' if good else 'FAIL'} the log section holds {len(entries)} entries (at least the {len(log_lines)} of the storage log), each '<ISO> <source> [<level>] <message>'")
+    ok = ok and good
+    return ok
+
+
 def collect_console(driver, ext_id: str, out_dir: Path) -> bool:
     """Drain the browser console log of every open page (worker tab, popup page, options page).
 
@@ -616,6 +703,7 @@ def main() -> int:
     ap.add_argument("--attempts", default="ab", help="browser attempts to try, in order (default: ab)")
     ap.add_argument("--timeout-min", type=float, default=8.0, help="max minutes to wait for the run (default: %(default)s)")
     ap.add_argument("--out", default=None, help="evidence directory (default: python/recon/ext-<timestamp>/)")
+    ap.add_argument("--download-dir", default=None, help="where the Runs page's downloaded log lands (default: <out>/downloads/)")
     ap.add_argument("--step-by-step", action="store_true", help="tick the extension's step-by-step box; this script clicks Continue before Next and Next job on the dry-run end panel")
     args = ap.parse_args()
 
@@ -629,9 +717,10 @@ def main() -> int:
     ext_id = unpacked_extension_id(EXTENSION_DIR)
     out_dir = Path(args.out) if args.out else RECON_DIR / f"ext-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    log(f"extension {EXTENSION_DIR} id {ext_id}; evidence in {out_dir}")
+    download_dir = Path(args.download_dir) if args.download_dir else out_dir / "downloads"
+    log(f"extension {EXTENSION_DIR} id {ext_id}; evidence in {out_dir}; downloads in {download_dir}")
 
-    driver, attempt = start_browser(args.profile, ext_id, args.attempts, args.chrome_major)
+    driver, attempt = start_browser(args.profile, ext_id, args.attempts, args.chrome_major, download_dir)
     try:
         log(f"browser attempt ({attempt}) is in use: {driver.capabilities.get('browserVersion')}")
         check_worker_fresh(driver, ext_id)
@@ -661,12 +750,16 @@ def main() -> int:
         driver.switch_to.window(popup)
         for shot in screenshot_pages(driver, ext_id, out_dir):
             log(f"screenshot {shot}")
-        # After the popup and options pages were loaded too: the console log
-        # of every open page, failing on SEVERE entries from the extension.
+        # The Runs page in the same session: the run is listed with its
+        # full log, and Download log writes the text file.
+        ok = check_runs_page(driver, ext_id, out_dir, run, lines, download_dir) and ok
+        # After the popup, options and runs pages were loaded too: the
+        # console log of every open page, failing on SEVERE entries from
+        # the extension.
         ok = collect_console(driver, ext_id, out_dir) and ok
         print()
         print(f"evidence: {out_dir}")
-        for p in sorted(out_dir.iterdir()):
+        for p in sorted(out_dir.rglob("*")):
             print(f"  {p}")
         return 0 if ok else 1
     finally:

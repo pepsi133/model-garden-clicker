@@ -6,7 +6,7 @@ holds the earlier text, paste the new Description into the Store listing tab
 and save the draft.
 
 Every field of the developer dashboard, ready to paste. Replace `https://github.com/pepsi133/model-garden-clicker`
-with the public GitHub URL before pasting. Package version: 0.4.0
+with the public GitHub URL before pasting. Package version: 0.5.0
 (`extension/manifest.json`).
 
 ## Store listing tab
@@ -31,7 +31,7 @@ with the public GitHub URL before pasting. Package version: 0.4.0
     2. Click the toolbar icon. Paste project IDs, one per line, and tick the models. Every project and model pair becomes one job.
     3. Click Start. One console tab opens and the jobs run in order. A dark badge in the corner of that tab shows the job, the current step with its timeout, and what comes next.
     4. For each job the extension opens the model page, clicks Enable, fills the questionnaire with your saved values, clicks Next and ticks the terms checkbox on the Agreements page.
-    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (the model was already enabled), failed (with the reason) or stopped. The log keeps the last 50 lines.
+    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (the model was already enabled), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page (a link in the popup) keeps every run's full log, in this browser only, and saves it as a text file on request.
 
     MODES
 

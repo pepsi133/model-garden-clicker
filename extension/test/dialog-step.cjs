@@ -64,7 +64,7 @@ const { ok, skip } = E;
   const bad = keep.cloneNode(true);
   parent.appendChild(bad);
   const badBtn = D.qa("button", bad).find((b) => D.text(b) === "Enable");
-  badBtn.querySelector(".mdc-button__label, span").textContent = " Agree ";
+  (badBtn.querySelector(".mdc-button__label, span") || badBtn).textContent = " Agree "; // the synthetic button has no label span
   let badClicks = 0;
   badBtn.addEventListener("click", () => { badClicks += 1; });
   S.dialogs.findApiEnableDialog = () => ({ dialog: bad, enableButton: badBtn });

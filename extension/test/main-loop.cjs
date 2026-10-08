@@ -96,6 +96,7 @@ function boot(opts) {
   env.K.URL_POLL_MS = 20;
   env.K.TIMEOUTS.CONFIRM = 300; env.K.TIMEOUTS.AGREEMENTS_READY = 300; env.K.TIMEOUTS.MODEL_READY = opts.modelReady || 300; env.K.TIMEOUTS.NAV = 300;
   if (opts.handler) env.A.handleModelPage = opts.handler;
+  if (opts.agreementsHandler) env.A.handleAgreements = opts.agreementsHandler; // before main.js captures the handlers
   const ctx = env.dom.getInternalVMContext();
   for (const f of ["content/badge.js", "content/main.js"]) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   return {
@@ -228,6 +229,96 @@ function boot(opts) {
     const t = boot({ workerTab: false, handler: async () => { calls += 1; return null; } });
     await sleep(300);
     ok(calls === 0 && t.results.length === 0 && t.badge() === null, "not the worker tab: no handler call, no result, no badge");
+    t.stop();
+  }
+
+  console.log("--- (T3) a document is tied to the job it first saw: it never acts for a later job, even when it reported nothing");
+  {
+    // The model handler returns null (the flow continues on the next page) but the page never changes, so this
+    // document reports nothing for job 0: the worker's watchdog ends it and advances to job 1 of the SAME project.
+    // Before 0.5.0 the H1 guard looked only at jobs this document had reported, so this stale page ran job 1's
+    // handler on job 0's page (the 0.4.0 review's probe); now the document acts only for the job it was created for.
+    let calls = 0; const jobsSeen = [];
+    const t = boot({ moreJobs: [pending("proj-one", "claude-sonnet-4-6")], handler: async (ctx) => { calls += 1; jobsSeen.push(ctx.jobIndex); return null; } });
+    await until(() => calls === 1, 2000);
+    await sleep(200);
+    ok(calls === 1 && jobsSeen[0] === 0 && t.results.length === 0, "job 0: the handler ran once and returned null; nothing reported (the job waits for the watchdog)", `calls=${calls} ${JSON.stringify(t.results)}`);
+    const phasesBefore = t.phases.length;
+    t.state.queue[0] = Object.assign({}, t.state.queue[0], { status: "failed", phase: "finished", message: "timeout: no result within 10 minutes in phase model" });
+    advance(t);
+    await sleep(600);
+    ok(calls === 1 && t.results.length === 0 && t.phases.length === phasesBefore, "job 1 (same project, other model) in phase navigate, this document never reported job 0: no handler call, no phase, no result for job 1", `calls=${calls} jobs=${JSON.stringify(jobsSeen)} ${JSON.stringify(t.results)}`);
+    ok(/job 2\/2 · proj-one · claude-sonnet-4-6/.test(t.badge() || "") && /finished, waiting for the next job's page/.test(t.badge() || ""), "the badge names job 2 and says it waits for the next job's page", t.badge());
+    t.state.current = { jobIndex: 1, phase: "model" };
+    t.fire({ current: { newValue: t.state.current } });
+    await sleep(300);
+    ok(calls === 1 && t.results.length === 0, "still nothing after the phase moved on: the document stays tied to job 0", `calls=${calls}`);
+    t.stop();
+  }
+  {
+    // the same on the real ticked Agreements page (run A): job 0 is left unreported in a live run whose
+    // Agreements handler is replaced by one that never reports; job 1 of the same project must get neither
+    // a result ("no Marketplace product id") nor a phase nor an Agree click from it.
+    const snapT3 = E.readSnapshot(E.findRun("A") || "", "05-agreements-checked");
+    if (!snapT3) skip("(T3) stale unreported Agreements page against the next job", "recon dump not present");
+    else {
+      const project = new URL(snapT3.url).searchParams.get("project");
+      let agreeCalls = 0; const jobsSeen = [];
+      const t = boot({ html: snapT3.html, forms: snapT3.forms, url: snapT3.url, live: true, job: { projectId: project, productId: "anthropic/anthropic-867.cloudpartnerservices.goog" }, moreJobs: [pending(project, "claude-sonnet-4-6")],
+        agreementsHandler: async (ctx) => { agreeCalls += 1; jobsSeen.push(ctx.jobIndex); return null; } });
+      let clicks = 0; t.env.S.agreements.agreeButton().addEventListener("click", () => { clicks += 1; });
+      await until(() => agreeCalls === 1, 3000);
+      await sleep(200);
+      ok(agreeCalls === 1 && jobsSeen[0] === 0 && t.results.length === 0 && clicks === 0, "job 0: the (stubbed) Agreements handler ran once and reported nothing", `calls=${agreeCalls}`);
+      const phasesBefore = t.phases.length;
+      t.state.queue[0] = Object.assign({}, t.state.queue[0], { status: "failed", phase: "finished", message: "timeout: no result within 10 minutes in phase agreements" });
+      advance(t);
+      await sleep(1000);
+      ok(agreeCalls === 1 && t.results.length === 0 && t.phases.length === phasesBefore && clicks === 0 && !t.logs.some((m) => /job 1:.*(Marketplace product id|model page is for)/.test(m)),
+        "job 1 (same project) in phase navigate, LIVE: the stale unreported page runs no handler for it and gives it no result, no phase and no click (the 0.4.0 review's probe (a))", `calls=${agreeCalls} jobs=${JSON.stringify(jobsSeen)} ${JSON.stringify(t.results)} clicks=${clicks} ${t.logs.filter((m) => /job 1/.test(m)).join(" | ")}`);
+      t.stop();
+    }
+  }
+
+  console.log("--- (T4) a project that never renders a model page fails after the model-page wait, naming the project");
+  {
+    // The console left the model page's URL for a page the extension does not know (an error page, a dropped
+    // route): in phase navigate the job fails after model_ready_ms instead of waiting for the ten-minute watchdog.
+    const t = boot({ url: "https://console.cloud.google.com/welcome?project=proj-one", html: "<!doctype html><html><head></head><body><h1>Welcome</h1></body></html>", modelReady: 600 });
+    const t0 = Date.now();
+    await until(() => t.results.length > 0, 3000);
+    const r = t.results[0]; const ms = Date.now() - t0;
+    ok(r && r.jobIndex === 0 && r.status === "failed" && ms >= 600 && ms < 2500 && /the console did not show a model page for project "proj-one" within 1 s of the navigation \(the tab shows \/welcome\): the project may not exist, you may lack access to it, or the ID may be misspelt/.test(r.message),
+      "unknown console page in phase navigate: failed after model_ready_ms with a message naming the project and the path", `${JSON.stringify(r)} ${ms} ms`);
+    ok(t.phases.length === 0, "no phase was set (no handler ran)", JSON.stringify(t.phases));
+    t.stop();
+  }
+  {
+    // control: an unknown page in a later phase (the flow already started on this document) is left to the
+    // handlers' own waits and the watchdog, as before.
+    const t = boot({ url: "https://console.cloud.google.com/welcome?project=proj-one", html: "<!doctype html><html><head></head><body><h1>Welcome</h1></body></html>", modelReady: 300, current: { jobIndex: 0, phase: "questionnaire" } });
+    await sleep(900);
+    ok(t.results.length === 0, "control: an unknown page in phase questionnaire reports nothing (not a navigation that never landed)", JSON.stringify(t.results));
+    t.stop();
+  }
+  {
+    // The URL stays the model page's but nothing of the model page renders (the console's error page at the same
+    // URL): the real handler's wait names the project; retried like any timeout, so the job ends with "gave up".
+    const t = boot({ html: "<!doctype html><html><head></head><body><h1>You don't have permission to access this resource</h1></body></html>", modelReady: 500 });
+    await until(() => t.results.length > 0, 5000);
+    const r = t.results[0];
+    ok(r && r.status === "failed" && /gave up on model page after 3 attempts: the model page for project "proj-one" showed neither an Enable button nor the enabled state within 1 s and rendered no model page content at all: the project may not exist, you may lack access to it, or the ID may be misspelt/.test(r.message),
+      "model URL with no model page content: after three model-page waits the job fails naming the project (not the bare timeout text)", JSON.stringify(r));
+    t.stop();
+  }
+  {
+    // control: the plain model page (the Enable button present) keeps the bare timeout wording when the click
+    // leads nowhere, and an enabled page is skipped as before (covered above); here only the wording.
+    const t = boot({ html: '<!doctype html><html><head></head><body><vai-model-garden-call-to-action-button-stack></vai-model-garden-call-to-action-button-stack></body></html>', modelReady: 300 });
+    await until(() => t.results.length > 0, 4000);
+    const r = t.results[0];
+    ok(r && r.status === "failed" && /gave up on model page after 3 attempts: timed out after 300 ms waiting for Enable button \(enabled, no dialog\) or enabled state/.test(r.message),
+      "control: the model page's stack present but no Enable button yet: the bare timeout wording (a slow page, not an unreachable project)", JSON.stringify(r));
     t.stop();
   }
 

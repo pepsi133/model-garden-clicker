@@ -43,6 +43,9 @@ const RENDERED = '<h1>Agreements</h1><h2>Purchase summary</h2><table><tr><td>Cla
   '<button data-prober="cloud-marketplace-request-product"><span class="mdc-button__label"> Agree </span></button>';
 const SUCCESS = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><mp-consent-complete-dialog><h1 matdialogtitle>Successfully purchased Claude Haiku 4.5</h1></mp-consent-complete-dialog></mat-dialog-container></div>';
 const ERROR_DIALOG = '<div class="cdk-overlay-container" id="err"><mat-dialog-container role="dialog" aria-label="Error dialog"><h1 matdialogtitle>Something went wrong</h1><div matdialogcontent>Could not load billing accounts. Try again.</div></mat-dialog-container></div>';
+// The console's refusal after Agree (docs/dom-map.md): the behavior-failure-dialog shape. ERROR_DIALOG above is a
+// bare container, which the post-Agree wait no longer takes as the outcome (content-guard.cjs, T1).
+const REFUSAL_DIALOG = '<div class="cdk-overlay-container" id="refusal"><mat-dialog-container role="dialog" aria-label="Error dialog"><behavior-failure-dialog><h1 matdialogtitle>Action Required: Choose Different Billing Account</h1><div matdialogcontent>This billing account cannot buy.</div></behavior-failure-dialog></mat-dialog-container></div>';
 const API_DIALOG = '<div class="cdk-overlay-container" id="api"><mat-dialog-container role="dialog"><apis-enabler><h1 matdialogtitle> Enable APIs </h1><div matdialogcontent>The Agent Platform API must be enabled to use this page.</div><button> Cancel </button><button> Enable </button></apis-enabler></mat-dialog-container></div>';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -395,9 +398,9 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     trustedClick(agreeNode(env).querySelector("span")); // the click the browser fires for the key
     await sleep(80);
     ok(out.done === null && out.ctx.rec.marks.some((m) => /Agree activated by you \(click\)/.test(m)) && clicks() === 1, "the browser's click for the key is the activation: seen as the user's click", out.ctx.rec.marks.join(" | "));
-    env.document.body.insertAdjacentHTML("beforeend", ERROR_DIALOG.replace('id="err"', 'id="err2"'));
+    env.document.body.insertAdjacentHTML("beforeend", REFUSAL_DIALOG);
     await out.p;
-    ok(out.done && !out.done.e && out.done.r.status === "failed" && /Agree refused by the console: Something went wrong: Could not load billing accounts/.test(out.done.r.message) && clicks() === 1, "an error dialog after the user's activation is that click's outcome: failed with the console's text", says(out));
+    ok(out.done && !out.done.e && out.done.r.status === "failed" && /Agree refused by the console: Action Required: Choose Different Billing Account: This billing account cannot buy/.test(out.done.r.message) && clicks() === 1, "the console's refusal dialog after the user's activation is that click's outcome: failed with the console's text (T1: a bare error container would not be)", says(out));
     env.win.close();
 
     // (N3/L1) Space: a keydown with no keyup (focus moved), a keyup of another key, a keydown with its keyup

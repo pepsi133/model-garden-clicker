@@ -24,7 +24,22 @@
     POPUP_STATE: "popup_state",     // last popup inputs (projects text, models, extras)
     RUN: "run",                     // { runId, live, startedAt, finishedAt, reason }: the run's identity and mode snapshot
     TIMING: "timing",               // advanced timing settings (options page "Advanced"); absent = constants below
-    SUMMARY_ACK: "summary_ack"      // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
+    SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
+    RUNS_KEEP: "runs_keep"          // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
+  };
+
+  /*
+   * Per-run logs: every log line the worker writes to KEYS.LOG (capped at
+   * LOG_CAP) is also appended, uncapped, to the run's record in the
+   * extension's IndexedDB (common/runlog.js; the worker is the only writer).
+   * When a run starts the oldest records beyond RUNS_KEEP are deleted.
+   */
+  MGC.RUNS_KEEP_DEFAULT = 50;
+  MGC.RUNS_KEEP_BOUNDS = [1, 500];
+  /** The effective number of runs to keep from a stored value: an integer within the bounds, else the default. */
+  MGC.runsKeepFrom = function (stored) {
+    const [lo, hi] = MGC.RUNS_KEEP_BOUNDS;
+    return typeof stored === "number" && Number.isInteger(stored) && stored >= lo && stored <= hi ? stored : MGC.RUNS_KEEP_DEFAULT;
   };
 
   /* Job phases, written to storage as current.phase. */
@@ -79,7 +94,9 @@
     JOB_RESULT: "mgc:job-result",   // content -> worker  { runId, jobIndex, status, message, stopAfter? } (stopAfter: record the result, then stop the run instead of advancing)
     LOG: "mgc:log",                 // any -> worker      { level, msg }
     VERSION: "mgc:version",         // any -> worker: { manifest, keys } of the worker that is running
-    SUMMARY_ACK: "mgc:summary-ack"  // popup or worker-tab content -> worker { runId }: OK on the end-of-run summary
+    SUMMARY_ACK: "mgc:summary-ack", // popup or worker-tab content -> worker { runId }: OK on the end-of-run summary
+    RUNS_DELETE: "mgc:runs-delete", // runs page -> worker { runId }: delete that run's full log (refused for the run in progress)
+    RUNS_PURGE: "mgc:runs-purge"    // runs or options page -> worker: delete every full log (the run in progress is kept)
   };
 
   /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
@@ -161,7 +178,24 @@
     NAV: 45000,               // URL change after Enable (1-4 s) or Next (up to ~18 s)
     AGREEMENTS_READY: 45000,  // terms checkbox rendered
     CONFIRM: 60000,           // confirmation or error dialog after Agree (live mode only)
+    AGREE_GRACE: 15000,       // after Agree: how long a success dialog may still arrive once an error dialog that is not the console's refusal opened (live mode only; bounded by CONFIRM)
     API_DIALOG_CLOSE: 120000  // "Enable APIs" dialog to close after its Enable
+  };
+
+  /*
+   * The console's refusal of a purchase after Agree, as recorded in
+   * docs/dom-map.md ("Error"): a behavior-failure-dialog titled "Action
+   * Required: Choose Different Billing Account" whose body says the product
+   * "cannot be purchased using a billing account currently associated with
+   * a free trial". A dialog is a refusal when it holds that component or
+   * its title or text carries one of these phrases; any other error dialog
+   * after Agree is not taken as the click's outcome (content/actions.js).
+   */
+  MGC.REFUSAL_PHRASES = ["cannot be purchased", "choose different billing account"];
+  /** True when `s` (a dialog's title and text) carries the console's recorded refusal wording. */
+  MGC.isRefusalText = function (s) {
+    const t = String(s || "").toLowerCase().replace(/\s+/g, " ");
+    return MGC.REFUSAL_PHRASES.some((p) => t.includes(p));
   };
   MGC.WATCHDOG_ALARM = "mgc-watchdog";
   MGC.WATCHDOG_MINUTES = 10;
@@ -187,6 +221,7 @@
     nav_ms: ["TIMEOUTS", "NAV"],
     agreements_ready_ms: ["TIMEOUTS", "AGREEMENTS_READY"],
     confirm_ms: ["TIMEOUTS", "CONFIRM"],
+    agree_grace_ms: ["TIMEOUTS", "AGREE_GRACE"],
     poll_ms: ["URL_POLL_MS"],
     settle_ms: ["JOB_SETTLE_MS"],
     watchdog_min: ["WATCHDOG_MINUTES"]
@@ -201,6 +236,7 @@
     nav_ms: [1000, 600000],
     agreements_ready_ms: [1000, 600000],
     confirm_ms: [1000, 600000],
+    agree_grace_ms: [1000, 600000],
     poll_ms: [50, 5000],
     settle_ms: [0, 60000],
     watchdog_min: [1, 60]

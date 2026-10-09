@@ -26,7 +26,8 @@
     TIMING: "timing",               // advanced timing settings (options page "Advanced"); absent = constants below
     SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
     RUNS_KEEP: "runs_keep",         // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
-    PAUSED: "paused"                // boolean: the popup's Pause; the worker starts no new job while true (the job in progress finishes); cleared by Resume, Stop and the run's end
+    PAUSED: "paused",               // boolean: the popup's Pause; the worker starts no new job while true (the job in progress finishes); cleared by Resume, Stop and the run's end
+    PURCHASED_PAIRS: "purchased_pairs" // array of "project/model" (lower-cased): every pair with an Agree click or an observed purchase on record, in any run; never pruned by "Runs to keep" and not cleared by a purge of the run logs
   };
 
   /*

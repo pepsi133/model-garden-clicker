@@ -336,6 +336,39 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     const r0 = await env.A.handleAgreements(ctx);
     ok(r0 && r0.status === "dry-run" && panelOf(env) === null && ctx.rec.phases.join() === "agreements", "control: step-by-step off, dry-run at once, no panel");
     env.win.close();
+
+    // (0.8.0) while the dry-run panel waits, the user's own click on the console's Agree, or a purchase
+    // confirmation, ends the job unverified with purchaseObserved recorded (the extension clicks nothing).
+    for (const [label, act, wording] of [
+      ["the user's trusted click on the console's Agree", (e) => trustedClick(agreeNode(e).querySelector("span")), /^unverified: you clicked the console's Agree during a dry run; check manually$/],
+      ["a purchase confirmation", (e) => e.document.body.insertAdjacentHTML("beforeend", SUCCESS), /^unverified: the console reported a purchase while waiting for confirmation; check manually$/]
+    ]) {
+      env = serve(RENDERED);
+      state = stateFor({ live: false });
+      ctx = ctxFor(env, state);
+      clicks = arm(env);
+      done = null;
+      const pu = env.A.handleAgreements(ctx).then((x) => { done = { r: x }; }, (e) => { done = { e }; });
+      await sleep(300);
+      act(env);
+      await pu;
+      const userClicks = label.startsWith("the user's") ? 1 : 0;
+      ok(done && !done.e && done.r.status === "unverified" && wording.test(done.r.message) && ctx.rec.updates.some((u) => u.purchaseObserved === true) && !ctx.rec.updates.some((u) => u.agreeClicked) && clicks() === userClicks && panelOf(env) === null,
+        `(0.8.0) dry run, ${label} while the panel waits: unverified, purchaseObserved recorded, the extension clicked nothing`, done && (done.e ? done.e.message : JSON.stringify(done.r)) + " " + JSON.stringify(ctx.rec.updates));
+      env.win.close();
+    }
+
+    // (0.8.0) the terms node is resolved again after the await and must be the same node: a re-render in
+    // between ends the job with the locators message, and nothing is ticked.
+    env = serve(RENDERED);
+    state = stateFor({ live: false });
+    state.settings.step_by_step = false;
+    ctx = ctxFor(env, state, { assertMayAct: async () => { const old = env.document.querySelector("mat-checkbox"); old.replaceWith(old.cloneNode(true)); } });
+    let rerr = null;
+    try { await env.A.handleAgreements(ctx); } catch (e) { rerr = e; }
+    ok(rerr && env.D.isFatal(rerr) && /the terms checkbox \(mat-checkbox\.p6ntest-mp-agreements-body-tos-checkbox or mp-agreements-tos\) was not found again before the tick/.test(rerr.message) && !env.document.querySelector('mat-checkbox input').checked,
+      "(0.8.0) the terms box re-rendered between the wait and the tick: fatal with the locators message, nothing ticked", rerr && rerr.message);
+    env.win.close();
   }
 
   console.log("--- handleAgreements with step-by-step: full run (Continue before Agree)");

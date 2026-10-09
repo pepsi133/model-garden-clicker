@@ -295,13 +295,17 @@
    * element, or an Angular Material host. */
   /* The controls that make a checkbox host ambiguous when it holds more
    * than one: native checkboxes and radios, any element whose role names a
-   * checkbox, a switch or a checkable menu item (in any case, as one of
-   * several role tokens), anything carrying aria-checked, and Angular
-   * Material's checkbox, slide-toggle and radio hosts. Shadow roots are not
+   * checkbox, a switch, a radio or a checkable menu item (in any case, as
+   * one of several role tokens), anything carrying aria-checked,
+   * aria-pressed or aria-selected, Angular Material's checkbox,
+   * slide-toggle and radio hosts, and embedded documents (iframe, object,
+   * embed), whose content cannot be judged. Shadow roots are not
    * searched. */
   const CHECKBOX_LIKE = [
     'input[type="checkbox"]', 'input[type="radio"]', '[role~="checkbox" i]', '[role~="switch" i]',
-    '[role~="menuitemcheckbox" i]', "[aria-checked]", "mat-checkbox", "mat-slide-toggle", "mat-radio-button"
+    '[role~="radio" i]', '[role~="menuitemradio" i]',
+    '[role~="menuitemcheckbox" i]', "[aria-checked]", "[aria-pressed]", "[aria-selected]",
+    "mat-checkbox", "mat-slide-toggle", "mat-radio-button", "iframe", "object", "embed"
   ].join(", ");
 
   /** The checkable controls inside a host (the host itself not counted). */

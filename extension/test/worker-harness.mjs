@@ -733,7 +733,15 @@ assert(r.ok === true && store.queue[0].status === "skipped" && store.queue[0].me
 const secondStamp = RL.stamp(store.run.startedAt);
 r = await msg(START(["flow-proj"], ["claude-haiku-4-5"], true, false)); await settle();
 assert(r.ok === true && store.running === false && store.queue[0].status === "skipped" && store.queue[0].leftOut === "done" && store.queue[0].message === `done in run ${secondStamp} (unverified)`, "24h (0.8.0) a third Start, records wiped, the previous queue holding only the left-out entry: still left out as done (unverified), the memory no longer ends one run back: " + store.queue[0].message);
-// Control: a previous queue whose entry for the pair failed runs the pair.
+// (0.8.0) The purchased-pairs memory: records wiped and a previous queue
+// that no longer shows the click, the pair is still left out as done.
+assert(Array.isArray(store.purchased_pairs) && store.purchased_pairs.includes("flow-proj/claude-haiku-4-5"), "24h (0.8.0) the Agree click wrote the pair to the purchased-pairs memory: " + JSON.stringify(store.purchased_pairs));
+store.queue = [{ projectId: "flow-proj", modelSlug: "claude-haiku-4-5", status: "failed", agreeClicked: false, message: "x" }];
+fakeIDB.reset();
+r = await msg(START(["flow-proj"], ["Claude-Haiku-4-5"], true, false)); await settle();
+assert(r.ok === true && store.running === false && store.queue[0].status === "skipped" && store.queue[0].leftOut === "done" && store.queue[0].message === "done in an earlier run (purchased-pairs memory) (unverified)", "24h (0.8.0) records pruned or purged and no click in the previous queue: the purchased-pairs memory still leaves the pair out (any spelling): " + store.queue[0].message);
+// Control: without that memory, a previous queue whose entry for the pair failed runs the pair.
+delete store.purchased_pairs;
 store.queue = [{ projectId: "flow-proj", modelSlug: "claude-haiku-4-5", status: "failed", agreeClicked: false, message: "x" }];
 fakeIDB.reset();
 r = await msg(START(["flow-proj"], ["claude-haiku-4-5"], true, false)); await settle();

@@ -31,6 +31,12 @@ and the project uses [Semantic Versioning](https://semver.org/).
   message banner; an accept button in a console message banner (such as
   the Fable 5.1 addendum's), also inside a status or alert region; or a
   dialog checkbox labelled with consent wording.
+- The extra consent check also covers accept buttons named only by their
+  aria-label, accept links, an accept-only message banner inside a dialog,
+  and a consent checkbox in the "Enable APIs" or error dialog. On the
+  questionnaire only the dropdown's option list is skipped, not the rest
+  of its overlay. A banner inside a status region is named by the banner.
+- A slide toggle built on a native checkbox input is not a checkbox.
 - A permission error shown by the console ends the job as failed at once
   with "missing permission:" and the console's words.
 - Both checks also run right before every click and tick, the "Enable
@@ -46,6 +52,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   reported a purchase while the step-by-step panel waited, the job ends
   unverified (never failed or stopped, except the console's own refusal),
   and every later run leaves that pair out.
+- In a dry run with step-by-step on, clicking the console's own Agree, or
+  a purchase confirmation, while the "dry run ends here" panel waits ends
+  the job unverified with the purchase on record.
+- Bought pairs are also kept in a small list in the extension's storage
+  that "Runs to keep" never prunes and Purge all does not clear, so a later
+  run still leaves them out after their run logs are gone.
+- The terms box counts radios, toggle buttons, selectable items and
+  embedded frames inside it as extra controls, and is looked up again right
+  before the tick (it must be the same element). A terms box whose input
+  has not rendered yet is waited for instead of failing the job.
 - The test run prints the checksum of the Agree guard. The guard itself is
   unchanged.
 

@@ -1,8 +1,8 @@
 # Chrome Web Store listing: Model Garden Clicker
 
-**Re-paste needed.** The Description below changed for 0.6.1: the `skipped`
-result now also covers a pair done in an earlier run (the cross-run guard),
-so the character count moved. Paste the new Description into the Store
+**Re-paste needed.** The Description below changed for 0.8.0: the `skipped`
+result now also covers a pair an earlier run found already enabled, finished
+or recorded a purchase for (the cross-run guard), so the character count moved. Paste the new Description into the Store
 listing tab and save the draft. (It was also rewritten on 2026-10-08 as a
 step-by-step walkthrough, same facts, same summary.)
 
@@ -20,7 +20,7 @@ with the public GitHub URL before pasting. Package version: 0.8.0
 
     Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.
 
-### Description (plain text, 3,857 characters, under the 4,000 limit)
+### Description (plain text, 3,902 characters, under the 4,000 limit)
 
     Model Garden Clicker enables Anthropic Claude models in the Google Cloud console Model Garden for many projects, one project and one model at a time, inside your own signed-in browser.
 
@@ -32,7 +32,7 @@ with the public GitHub URL before pasting. Package version: 0.8.0
     2. Click the toolbar icon. Paste project IDs, one per line, and tick the models. Every project and model pair becomes one job.
     3. Click Start. One console tab opens and the jobs run in order. A dark badge in the corner of that tab shows the job, the current step with its timeout, and what comes next.
     4. For each job the extension opens the model page, clicks Enable, fills the questionnaire with your saved values, clicks Next and ticks the terms checkbox on the Agreements page.
-    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (the model was already enabled, or the pair was done in an earlier run), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page (a link in the popup) keeps every run's full log, in this browser only, and saves it as a text file on request.
+    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (the model was already enabled, or an earlier run found it enabled, finished the pair or recorded a purchase for it), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page (a link in the popup) keeps every run's full log, in this browser only, and saves it as a text file on request.
 
     MODES
 

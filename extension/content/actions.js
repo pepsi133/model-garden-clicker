@@ -621,6 +621,31 @@
     return null;
   }
 
+  /**
+   * A purchase confirmation that opened after `dialogsBefore` was taken, while
+   * a step-by-step panel waited: the job's unverified result with
+   * purchaseObserved, or null.
+   */
+  function observedPurchase(ctx, dialogsBefore, while_) {
+    const d = S.agreements.successDialogs().find((x) => !dialogsBefore.has(x.dialog) && D.isVisible(x.dialog));
+    if (!d) return null;
+    ctx.log(`a purchase confirmation opened while ${while_}: "${d.title}"`);
+    return { status: STATUS.UNVERIFIED, message: "unverified: the console reported a purchase while waiting for confirmation; check manually", purchaseObserved: true };
+  }
+
+  /**
+   * A purchase the console reported (or the user's own Agree) is recorded on
+   * the job, so the cross-run guard counts the pair as done (no repeat
+   * purchase). Returns `how`.
+   */
+  async function recordObservedPurchase(ctx, how) {
+    if (how.purchaseObserved === true) {
+      const rec = await ctx.updateJob({ purchaseObserved: true });
+      if (!rec || !rec.ok) ctx.log("could not record the observed purchase on the job (stale run or tab)");
+    }
+    return how;
+  }
+
   A.handleAgreements = async function (ctx) {
     await ctx.setPhase(PHASE.AGREEMENTS);
 
@@ -663,6 +688,11 @@
     }
     await ctx.assertMayAct();
     A.assertNoBlocker();
+    // The page may have re-rendered during the awaits: the box ticked is the
+    // node the hooks lead to now, and it must be the one that was waited for.
+    if (S.agreements.termsCheckbox() !== checkbox) {
+      throw new D.FatalError("the Agreements page rendered (billing-integrated-ai-agreements-body or mp-agreements-tos is present) but the terms checkbox (mat-checkbox.p6ntest-mp-agreements-body-tos-checkbox or mp-agreements-tos) was not found again before the tick; the console changed the page: see docs/MAINTENANCE.md");
+    }
     ctx.step("ticking the terms checkbox");
     ctx.mark("action started: tick the terms checkbox");
     await D.setCheckbox(checkbox, true);
@@ -681,14 +711,32 @@
         const fresh = await ctx.refresh();
         const more = (fresh.queue || []).some((j, i) => i > ctx.jobIndex && j.status === STATUS.PENDING);
         await ctx.setPhase(PHASE.AWAITING_CONFIRMATION, K.CONFIRM_STEP.NEXT_JOB);
-        const how = await A.awaitConfirmation(ctx, K.CONFIRM_STEP.NEXT_JOB, {
-          title: "Step-by-step: dry run ends here (Agree not clicked)",
-          summary: `${DRY_RUN_MESSAGE}. Next job ends this job as dry-run${more ? " and the run moves to the next job" : " (it is the last job, so the run finishes)"}. Stop ends this job as dry-run and then stops the run.`,
-          continueLabel: "Next job", continueAction: "next-job", proceedText: "the job ends dry-run",
-          stopEndsJob: true
-        });
+        // The user may still click the console's own Agree, or the console may
+        // report a purchase, while this panel waits: either is a possible
+        // purchase, recorded so a later run does not try the pair again.
+        const dialogsAtPanel = new Set(S.dialogs.all());
+        let userAgreeDry = false;
+        const unwatchDry = S.agreements.onAgreeActivation(() => { userAgreeDry = true; });
+        let how;
+        try {
+          how = await A.awaitConfirmation(ctx, K.CONFIRM_STEP.NEXT_JOB, {
+            title: "Step-by-step: dry run ends here (Agree not clicked)",
+            summary: `${DRY_RUN_MESSAGE}. Next job ends this job as dry-run${more ? " and the run moves to the next job" : " (it is the last job, so the run finishes)"}. Stop ends this job as dry-run and then stops the run.`,
+            continueLabel: "Next job", continueAction: "next-job", proceedText: "the job ends dry-run",
+            stopEndsJob: true,
+            outcome: () => {
+              if (userAgreeDry) {
+                ctx.log("you clicked the console's own Agree while the dry-run panel waited");
+                return { status: STATUS.UNVERIFIED, message: "unverified: you clicked the console's Agree during a dry run; check manually", purchaseObserved: true };
+              }
+              return observedPurchase(ctx, dialogsAtPanel, "the dry-run panel waited");
+            }
+          });
+        } finally {
+          unwatchDry();
+        }
         await ctx.setPhase(PHASE.AGREEMENTS);
-        if (how && typeof how === "object") return how;
+        if (how && typeof how === "object") return recordObservedPurchase(ctx, how);
         if (how === "stop") return { status: STATUS.DRY_RUN, message: `${DRY_RUN_MESSAGE}; you stopped the run here`, stopAfter: true };
       }
       return { status: STATUS.DRY_RUN, message: DRY_RUN_MESSAGE };
@@ -719,23 +767,10 @@
           const how = await A.awaitConfirmation(ctx, K.CONFIRM_STEP.AGREE, {
             summary: `FULL RUN: Continue clicks Agree, which accepts the terms and purchases ${job.modelName || job.modelSlug} for ${job.projectId}; the project is billed for its use. Stop ends the run. Click one or the other, not the console's Agree as well.`,
             userActed: () => userAgree !== null,
-            outcome: () => {
-              const d = S.agreements.successDialogs().find((x) => !dialogsBefore.has(x.dialog) && D.isVisible(x.dialog));
-              if (!d) return null;
-              ctx.log(`a purchase confirmation opened while waiting for your Continue and no Agree activation by you was seen: "${d.title}"`);
-              return { status: STATUS.UNVERIFIED, message: "unverified: the console reported a purchase while waiting for confirmation; check manually", purchaseObserved: true };
-            }
+            outcome: () => observedPurchase(ctx, dialogsBefore, "waiting for your Continue and no Agree activation by you was seen")
           });
           await ctx.setPhase(PHASE.AGREEMENTS);
-          if (how && typeof how === "object") {
-            // A purchase the console reported is recorded on the job, so the
-            // cross-run guard counts the pair as done (no repeat purchase).
-            if (how.purchaseObserved === true) {
-              const rec = await ctx.updateJob({ purchaseObserved: true });
-              if (!rec || !rec.ok) ctx.log("could not record the observed purchase on the job (stale run or tab)");
-            }
-            return how;
-          }
+          if (how && typeof how === "object") return recordObservedPurchase(ctx, how);
           if (how === "user") {
             byUser = true;
             break;

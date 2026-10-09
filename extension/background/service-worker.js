@@ -194,6 +194,9 @@ async function modelNames() {
  */
 async function priorPairsUnsafe({ live, prevQueue, prevRun }) {
   const notes = [];
+  // The permanent purchased-pairs memory: a pair bought in a run whose record
+  // was pruned, deleted or purged is still left out.
+  const purchased = new Set(await purchasedPairsUnsafe());
   let prior = [];
   try {
     prior = await RL.list(); // newest first
@@ -253,6 +256,7 @@ async function priorPairsUnsafe({ live, prevQueue, prevRun }) {
     const key = guardKey(projectId, modelSlug);
     // Done in any earlier run: left out (the repeat-purchase guard).
     if (doneBy.has(key)) return Object.assign({ kind: "done" }, doneBy.get(key));
+    if (purchased.has(pairKey(projectId, modelSlug))) return { kind: "done", startedAt: null, status: STATUS.UNVERIFIED, where: "an earlier run (purchased-pairs memory)" };
     // Skipped: only when the pair's newest outcome is a skip; a newer
     // failed, stopped or dry-run outcome means it is attempted again.
     const newest = newestBy.get(key);
@@ -292,7 +296,7 @@ async function applyCrossRunGuardUnsafe(queue, { includeDone, live, prevQueue, p
     const hit = prior.kindOf(job.projectId, job.modelSlug);
     if (!hit) continue;
     const now = Date.now();
-    const where = typeof hit.startedAt === "number" ? `run ${RL.stamp(hit.startedAt)}` : "the previous run";
+    const where = hit.where || (typeof hit.startedAt === "number" ? `run ${RL.stamp(hit.startedAt)}` : "the previous run");
     Object.assign(job, {
       status: STATUS.SKIPPED,
       message: hit.kind === "done" ? `done in ${where} (${hit.status})` : `skipped in ${where} (already enabled)`,
@@ -541,6 +545,9 @@ async function finishJobUnsafe(jobIndex, status, message, stopAfter) {
     status = STATUS.UNVERIFIED;
   }
   queue[jobIndex] = Object.assign({}, queue[jobIndex], { status, message: String(message || ""), finishedAt: Date.now(), phase: PHASE.FINISHED });
+  // The console's refusal: nothing was bought, so the pair leaves the
+  // purchased-pairs memory as it is not counted in the run records either.
+  if (text.startsWith(REFUSED_PREFIX) && queue[jobIndex].purchaseObserved !== true) await rememberPurchasedPairUnsafe(queue[jobIndex], false);
   const updates = { [KEYS.QUEUE]: queue, [KEYS.CURRENT]: Object.assign({}, current, { phase: PHASE.FINISHED, updatedAt: Date.now() }) };
   if (stopAfter === true) updates[KEYS.STOP_REQUESTED] = true;
   await set(updates);
@@ -594,6 +601,32 @@ async function setPhaseUnsafe(jobIndex, phase, awaiting) {
 
 const JOB_UPDATE_FIELDS = new Set(K.JOB_UPDATE_FIELDS);
 
+/** The purchased-pairs memory's key for a pair: "project/model", lower-cased. */
+function pairKey(projectId, modelSlug) {
+  return `${String(projectId).toLowerCase()}/${String(modelSlug).toLowerCase()}`;
+}
+
+/** The purchased-pairs memory (KEYS.PURCHASED_PAIRS) as a list of pair keys. */
+async function purchasedPairsUnsafe() {
+  const list = (await get(KEYS.PURCHASED_PAIRS))[KEYS.PURCHASED_PAIRS];
+  return Array.isArray(list) ? list.filter((x) => typeof x === "string") : [];
+}
+
+/**
+ * Add `job`'s pair to the purchased-pairs memory (on), or take it out (the
+ * guard undid an Agree record it proved was never clicked, and no purchase
+ * was observed). Nothing prunes or purges this memory.
+ */
+async function rememberPurchasedPairUnsafe(job, on) {
+  const list = await purchasedPairsUnsafe();
+  const key = pairKey(job.projectId, job.modelSlug);
+  const at = list.indexOf(key);
+  if (on && at < 0) list.push(key);
+  else if (!on && at >= 0) list.splice(at, 1);
+  else return;
+  await set({ [KEYS.PURCHASED_PAIRS]: list });
+}
+
 async function updateJobUnsafe(jobIndex, fields) {
   const o = await get([KEYS.QUEUE, KEYS.CURRENT, KEYS.RUNNING]);
   const current = o[KEYS.CURRENT];
@@ -605,6 +638,8 @@ async function updateJobUnsafe(jobIndex, fields) {
   for (const [k, v] of Object.entries(fields || {})) if (JOB_UPDATE_FIELDS.has(k)) allowed[k] = v;
   queue[jobIndex] = Object.assign({}, queue[jobIndex], allowed);
   await set({ [KEYS.QUEUE]: queue });
+  if (purchaseOnRecord(queue[jobIndex])) await rememberPurchasedPairUnsafe(queue[jobIndex], true);
+  else if (allowed.agreeClicked === false) await rememberPurchasedPairUnsafe(queue[jobIndex], false);
   if (allowed.agreeClickedByUser === true) await appendLogUnsafe("info", `job ${jobIndex}: you clicked the console's Agree yourself; recorded`);
   else if (allowed.agreeClicked === true) await appendLogUnsafe("info", `job ${jobIndex}: Agree click recorded`);
   return { ok: true };

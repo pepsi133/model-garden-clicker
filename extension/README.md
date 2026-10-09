@@ -130,12 +130,17 @@ by its tab id). The geometry is checked in headless Chrome by
    A pair whose latest result was dry-run, failed or stopped is attempted
    again. This is separate from, and in addition to, the model page's own
    already-enabled check, which still runs for every job.
-   The guard has two memories: the run records shown on the Runs page and
+   The guard has three memories: the run records shown on the Runs page,
    the previous run's results as the popup still shows them (its queue in
-   the extension's storage, which "clear" under the results empties). A run
+   the extension's storage, which "clear" under the results empties), and
+   a small list of the pairs with Agree clicked or a purchase the console
+   reported (`purchased_pairs` in the extension's storage). A run
    that is deleted, purged or pruned by "Runs to keep", or a record that
    could not be written, is forgotten by the first; the second remembers
-   the one run before this Start only. If the run-log database cannot be
+   the one run before this Start only; the third is never pruned, and
+   Purge all does not clear it, so a bought pair stays left out (as "done
+   in an earlier run (purchased-pairs memory)"). The console's own refusal
+   takes the pair off that list. If the run-log database cannot be
    opened at Start, a full run is refused with a message that says so (the
    Runs page shows the database error; a dry run is still possible) and a
    dry run starts with a warning line in the log, guarded by the previous
@@ -248,17 +253,21 @@ manifest asks for no new permission for any of this (no `downloads`, no
 An extra consent control the extension does not support ends the job
 `failed` at once with its title or an excerpt of its text. It is, by
 structure: any visible checkbox (`mat-checkbox`, a native checkbox or a
-`role="checkbox"` element, not a `role="switch"` toggle) on the model,
-questionnaire or Agreements page other than the terms box itself, whatever
-its label, overlay panes included; on the questionnaire page its own form
-and the dropdown panel it opens are the flow's and are excepted. Also any
+`role="checkbox"` element, not a `role="switch"` toggle, native or not) on
+the model, questionnaire or Agreements page other than the terms box
+itself, whatever its label, overlay panes included; on the questionnaire
+page its own form and the option list (listbox) of the dropdown it opens
+are the flow's and are excepted, but not the rest of that overlay. Also any
 visible checkbox in a message banner (`cfc-message`, the addendum
-container, a status or alert region); an accept button in a `cfc-message`
-or the addendum container, wherever it sits (a status or alert region
-around it included, but not a status notice such as a cookie bar that has
-no `cfc-message` inside); or, in a dialog, a checkbox labelled (by its
-text, `aria-label` or `aria-labelledby`) with consent wording, and a
-dialog without such a checkbox is not one. The
+container, a status or alert region); an accept button or link (by its
+text or its `aria-label`) in a `cfc-message` or the addendum container,
+wherever it sits (a status or alert region around it included, but not a
+status notice such as a cookie bar that has no `cfc-message` inside), and
+also inside a dialog the flow does not handle; or, in a dialog (the
+"Enable APIs" and error dialogs included, the purchase confirmation not),
+a checkbox labelled (by its text, `aria-label` or `aria-labelledby`) with
+consent wording, and a dialog without such a checkbox or accept control
+is not one. The
 Fable 5.1 "Advanced AI Safety Addendum" banner is one. Denial wording
 ("permission denied", "403 Forbidden", "you don't have permission",
 "missing required permissions", "contact your administrator") in an error
@@ -273,11 +282,25 @@ timeout is waited out. The terms checkbox is ticked only when its two page
 hooks lead to exactly one checkbox, outside any banner or dialog, that
 holds exactly one checkable control (its own native input), and only
 through that input. Any other checkable control inside it (a checkbox or
-radio input, any `role` naming a checkbox, switch or checkable menu item in
-any case, anything with `aria-checked`, a Material checkbox, slide toggle
-or radio) makes it ambiguous: the job fails naming "the terms checkbox
-holds N checkbox controls";
-otherwise the job fails and nothing is ticked.
+radio input, any `role` naming a checkbox, switch, radio or checkable menu
+item in any case, anything with `aria-checked`, `aria-pressed` or
+`aria-selected`, a Material checkbox, slide toggle or radio, an `iframe`,
+`object` or `embed`) makes it ambiguous: the job fails naming "the terms
+checkbox holds N checkbox controls"; a terms box whose input has not
+rendered yet is waited for. Shadow roots are not searched. The box is
+looked up again right before the tick and must be the same element. In
+every other case the job fails and nothing is ticked.
+
+Known limits (both fail closed: the job fails, nothing is clicked or
+ticked): a feedback or other dialog that holds a checkbox labelled with
+terms wording ("By sending feedback, you agree to ...") fails the job
+while it is open; and any extra checkbox on a model page, whatever it is
+for (a "Show deprecated models" filter, say), fails every job on that
+page by design.
+
+In a dry run with step-by-step on, a click on the console's own Agree
+while the "dry run ends here" panel waits, or a purchase confirmation
+opening then, ends the job `unverified` with the purchase on record.
 
 Once Agree was clicked (or the console reported a purchase while the
 step-by-step panel waited), a job never ends `failed` or `stopped`: a

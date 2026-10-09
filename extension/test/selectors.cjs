@@ -471,6 +471,58 @@ withSnapshot(RUN_B, "01-model-page-api-dialog", ({ S, document: doc }) => {
   ok(!!env.A.blockerResult(), "an overlay pane on the questionnaire page without a select panel is judged: a blocker");
   env.win.close();
 })();
+(function remainingReviewItems() {
+  console.log("--- (0.8.0) the select-panel skip, accept controls, terms-host controls, flow dialogs, switch inputs and live-region names");
+  const AGR = "https://console.cloud.google.com/marketplace/agreements/anthropic/anthropic-867.cloudpartnerservices.goog?project=proj-one";
+  const MODEL = "https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-haiku-4-5?project=proj-one";
+  const Q = "https://console.cloud.google.com/agent-platform/model-garden/questionnaire?project=proj-one&model=publishers/anthropic/models/claude-haiku-4-5";
+  const doc = (body) => `<!doctype html><html><head></head><body>${body}</body></html>`;
+  // Only the listbox that holds the options is skipped: a box beside it in the same overlay pane is judged.
+  let env = E.makeEnv({ html: doc('<raf-form raf-entry-name="RequestAccessFormGroup"></raf-form><div class="cdk-overlay-container"><div class="cdk-overlay-pane"><div role="listbox"><mat-option>Canada</mat-option></div><mat-checkbox><label><input type="checkbox"> I agree to the addendum</label></mat-checkbox></div></div>'), url: Q });
+  ok(!!env.A.blockerResult(), "a checkbox in the select panel's overlay pane but outside its listbox is judged: a blocker", JSON.stringify(env.A.blockerResult()));
+  env.win.close();
+  // Accepting controls: an icon-only button named by aria-label, a link, and an accept-only cfc-message inside a dialog the flow does not handle.
+  const accepts = [
+    ["an icon-only button whose aria-label accepts", '<cfc-message type="warning"><div>Review the model addendum.</div><button aria-label="Accept terms"><mat-icon>check</mat-icon></button></cfc-message>', /^cfc-message$/],
+    ["an <a> accept link", '<cfc-message type="warning"><div>Review the model addendum.</div><a href="#">Accept terms</a></cfc-message>', /^cfc-message$/],
+    ["an accept-only cfc-message inside a non-flow modal dialog", '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><h1 matdialogtitle>Model terms</h1><cfc-message type="warning"><div>Review the model addendum.</div><button> Accept </button></cfc-message></mat-dialog-container></div>', /^mat-dialog-container$/]
+  ];
+  for (const [label, html, where] of accepts) {
+    env = E.makeEnv({ html: doc(html), url: MODEL });
+    const c = env.S.blockers.consent();
+    ok(!!c && where.test(c.where), `accepting control: ${label} is an extra consent control`, JSON.stringify(c));
+    env.win.close();
+  }
+  // Terms-host controls: each of these inside the terms box makes it ambiguous (2 controls), so it is never ticked.
+  const terms = (extra) => `<billing-integrated-ai-agreements-body><mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><label><input type="checkbox">${extra}<mp-agreements-tos>I agree to the Terms</mp-agreements-tos></label></mat-checkbox></billing-integrated-ai-agreements-body>`;
+  const extras = ['<div role="radio">x</div>', '<div role="menuitemradio">x</div>', '<button aria-pressed="false">x</button>', '<div aria-selected="false">x</div>', "<iframe></iframe>", "<object></object>", "<embed>"];
+  const counted = extras.filter((x) => {
+    const e = E.makeEnv({ html: doc(terms(x)), url: AGR });
+    const r = e.A.blockerResult();
+    const hit = e.S.agreements.termsCheckbox() === null && !!r && /the terms checkbox holds 2 checkbox controls/.test(r.message);
+    e.win.close();
+    return hit;
+  });
+  ok(counted.length === extras.length, `role=radio, role=menuitemradio, aria-pressed, aria-selected, iframe, object and embed inside the terms box are counted (${counted.length} of ${extras.length})`, extras.filter((x) => !counted.includes(x)).join(" "));
+  // A terms host whose input is not rendered yet (0 controls): not a blocker, the handler keeps waiting.
+  env = E.makeEnv({ html: doc('<billing-integrated-ai-agreements-body><mat-checkbox class="p6ntest-mp-agreements-body-tos-checkbox"><label><mp-agreements-tos>I agree to the Terms</mp-agreements-tos></label></mat-checkbox></billing-integrated-ai-agreements-body>'), url: AGR });
+  ok(env.S.agreements.termsCheckbox() === null && env.S.blockers.consent() === null, "a terms host with no control yet: termsCheckbox() is null and it is not a blocker (waited for)", JSON.stringify(env.S.blockers.consent()));
+  env.win.close();
+  // The flow's "Enable APIs" dialog is scanned for a consent checkbox like any dialog.
+  env = E.makeEnv({ html: doc('<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><apis-enabler><h1 matdialogtitle> Enable APIs </h1><div matdialogcontent>The Agent Platform API must be enabled to use this page.</div><mat-checkbox><label><input type="checkbox"> I agree to the API terms of service</label></mat-checkbox><button> Enable </button></apis-enabler></mat-dialog-container></div>'), url: MODEL });
+  const api = env.S.blockers.consent();
+  ok(!!api && api.where === "mat-dialog-container" && api.title === "Enable APIs", "a consent checkbox inside the \"Enable APIs\" dialog is an extra consent control", JSON.stringify(api));
+  env.win.close();
+  // A native checkbox input with role="switch" is a toggle: not an unchecked consent box, not a blocker.
+  env = E.makeEnv({ html: doc('<div role="main"><input type="checkbox" role="switch" aria-label="Show deprecated models"></div>'), url: MODEL });
+  ok(env.S.model.uncheckedCheckbox() === null && env.A.blockerResult() === null, "an input[type=checkbox][role=switch] is neither model.uncheckedCheckbox() nor a blocker");
+  env.win.close();
+  // A banner wrapped in a live region is named by the cfc-message inside it.
+  env = E.makeEnv({ html: doc('<div role="status"><cfc-message type="warning"><div>Review the model addendum.</div><button> Accept Terms </button></cfc-message></div>'), url: MODEL });
+  const live = env.S.blockers.consent();
+  ok(!!live && live.where === "cfc-message", "a banner inside a role=\"status\" wrapper is named by its cfc-message, not \"div\"", JSON.stringify(live));
+  env.win.close();
+})();
 (function blockersOnEveryDump() {
   console.log("--- (0.8.0) absence control: both detectors over every recon dump; the only match is the Fable 5.1 consent banner (run E)");
   const fs = require("fs");

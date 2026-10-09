@@ -66,6 +66,11 @@ cross-family "newest" order either.
 | 11 | claude-opus-4-5 | Claude Opus 4.5 | 20251101 | GA | yes | yes (`claude-opus-4-5@20251101`) |
 | 12 | claude-haiku-4-5 | Claude Haiku 4.5 | 20251001 | GA | yes | yes (`claude-haiku-4-5@20251001`) |
 
+Added for 0.8.0 (`extension/models.json`): Claude Haiku 5.5, slug
+`claude-haiku-5-5`, launchStage GA. It is not in the 2026-10-07 API listing
+above, which was not run again, so its versionId and its docs-table entry
+are not recorded here.
+
 All 12 API entries are confirmed by the Anthropic docs table. The dated
 versionIds (`@20251101`, `@20251001`) match between the API and the docs.
 

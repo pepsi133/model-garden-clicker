@@ -826,7 +826,7 @@ function setSelect(p, name, value) {
     ok(!/chrome\.notifications/.test(shipped) && !/action\.openPopup/.test(shipped), "no chrome.notifications and no action.openPopup (the popup is never opened by the extension)");
     ok(!/"notifications"/.test(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8")), "the manifest asks for no notifications permission");
     const creates = Array.from(shipped.matchAll(/chrome\.tabs\.create\([^;]*\)/g)).map((m) => m[0]);
-    ok(creates.length === 4 && creates.filter((c) => /active:\s*true/.test(c)).length === 1 && creates.some((c) => /runs\/runs\.html/.test(c)) && creates.filter((c) => /popup\/popup\.html/.test(c)).length === 2 && creates.some((c) => /"\?tab=1&link=" \+ token/.test(c)), "tabs.create: the worker tab (opened in front right after Start), the Open-in-a-tab page, the Runs page and the deep-link popup tab (popup.html?tab=1&link=<token>, not in front) only", creates.join(" | "));
+    ok(creates.length === 3 && creates.filter((c) => /active:\s*true/.test(c)).length === 1 && creates.some((c) => /runs\/runs\.html/.test(c)) && !creates.some((c) => /link=/.test(c)), "tabs.create: the worker tab (opened in front right after Start), the Open-in-a-tab page and the Runs page only (no deep-link tab: the console-link path was dropped)", creates.join(" | "));
   }
 
   console.log("--- manifest: permissions are storage and alarms only, host access is the console origin only");
@@ -1653,7 +1653,7 @@ function setSelect(p, name, value) {
       ["every value an img tag", `?tab=1&v=${hostile}&projects=${hostile}&models=${hostile}`],
       ["every value javascript:", "?tab=1&v=javascript:alert(1)&projects=javascript:alert(1)&models=javascript:alert(1)"],
       ["an img tag as a key", `?tab=1&v=1&projects=p-one-1&${hostile}=1`],
-      ["an img tag as the token", `?tab=1&link=${hostile}`],
+      ["an img tag under the dropped link= key", `?tab=1&link=${hostile}`],
       ["a raw img tag unencoded", "?tab=1&v=1&projects=<img src=x onerror=alert(1)>"]
     ]) {
       store = base(); c = recorder(true);
@@ -1668,52 +1668,16 @@ function setSelect(p, name, value) {
     p = await open("?v=1&projects=p-one-1", store, c); await tick(); d = p.document;
     ok(d.documentElement.className === "popup" && c.calls.length === 0 && d.getElementById("projects").value === "" && banner(d).hidden === true && err(d).hidden === true, "(U5) popup.html?v=1&projects=p-one-1 without tab: the popup layout, the confirm not called, the textarea empty, no error", d.documentElement.className);
     p.win.close();
-    // U6: a token and link values together.
-    store = base(); store.pending_link = { token: "abc", raw: "mgc=v1;projects=p-nine-9", receivedAt: Date.now() }; c = recorder(true);
+    // U6/U7: the console-link path (a ?link=<token> tab and a stored pending_link record) was dropped in 0.9.0.
+    // link= is now an unknown key like any other: refused by the parser; a leftover record in storage is neither read nor touched.
+    store = base(); store.pending_link = { token: "tok-1", raw: "v=1&projects=p-nine-9", receivedAt: Date.now() }; c = recorder(true);
+    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && err(d).hidden === false && /^link refused: the key "link" is not one of v, projects, models$/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1" && banner(d).hidden === true && !(store.__messages || []).length, "(U7) ?tab=1&link=tok-1 (the dropped console-link tab): refused as an unknown key, confirm not called, nothing filled, nothing sent", err(d).text);
+    ok(JSON.stringify(store.pending_link) === JSON.stringify({ token: "tok-1", raw: "v=1&projects=p-nine-9", receivedAt: store.pending_link.receivedAt }) && !d.getElementById("projects").value.includes("p-nine-9"), "(U7) a leftover pending_link record is not read, not used and not deleted (the popup no longer knows the key)", JSON.stringify(store.pending_link));
+    p.win.close();
+    store = base(); c = recorder(true);
     p = await open("?tab=1&link=abc&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && err(d).hidden === false && /^link refused: the page carries a link token and link values together/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U6) ?tab=1&link=abc&v=1&projects=p-one-1: refused with one reason, confirm not called, nothing filled", err(d).text);
-    p.win.close();
-    store = base(); c = recorder(true);
-    p = await open("?tab=1&link=abc&link=abc", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && /more than one link token/.test(err(d).text), "(U6) two link tokens: refused", err(d).text);
-    p.win.close();
-    // U7: form B through the stored record.
-    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1;models=claude-haiku-4-5", receivedAt: Date.now() };
-    let recordAtConfirm = "unset";
-    c = recorder(() => { recordAtConfirm = "pending_link" in store ? "present" : "deleted"; return true; });
-    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 1 && recordAtConfirm === "deleted" && !("pending_link" in store), "(U7) a matching token: the record is deleted before the confirm", recordAtConfirm);
-    ok(/1 project\(s\)/.test(c.calls[0]) && /\nProject IDs: p-one-1$/.test(c.calls[0]) && /Models: claude-haiku-4-5/.test(c.calls[0]), "(U7) the confirm names the stored values", c.calls[0]);
-    ok(d.getElementById("projects").value === "p-one-1" && JSON.stringify(ticked(d)) === '["claude-haiku-4-5"]' && banner(d).hidden === false && /Filled from a link: 1 project\(s\): p-one-1; models: claude-haiku-4-5/.test(banner(d).text), "(U7) OK fills from the stored text", banner(d).text);
-    // jsdom refuses replaceState on the opaque chrome-extension: origin (a SecurityError, which Chrome does not raise); the
-    // popup catches it, so the fill above went through, and the source carries the call that strips the token in Chrome.
-    ok(/history\.replaceState\(null, "", location\.pathname \+ "\?tab=1"\)/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8")) && p.pageErrors.length === 0, "(U7) the token is stripped from the URL with replaceState(…, \"?tab=1\") once the record is read; jsdom's refusal of that call on this origin is caught", p.win.location.search);
-    p.win.close();
-    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() }; c = recorder(true);
-    p = await open("?tab=1&link=tok-2", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && !("pending_link" in store) && err(d).hidden === false && /^link refused: the link token does not match the pending link/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1" && banner(d).hidden === true, "(U7) a token that does not match: one refusal line, the record deleted, nothing filled", err(d).text);
-    p.win.close();
-    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() - 11 * 60 * 1000 }; c = recorder(true);
-    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && !("pending_link" in store) && /^link refused: the pending link is older than 10 minutes/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U7) an 11-minute-old record: one refusal line, the record deleted, nothing filled", err(d).text);
-    p.win.close();
-    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() - 9 * 60 * 1000 }; c = recorder(true);
-    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 1 && d.getElementById("projects").value === "p-one-1", "(U7) control: a 9-minute-old record is accepted");
-    p.win.close();
-    store = base(); c = recorder(true);
-    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && /does not match the pending link/.test(err(d).text), "(U7) no record at all: refused like a mismatch (a second tab for the same token sees one refusal line)");
-    p.win.close();
-    for (const [label, rec] of [["a token that is not a string", { token: 5, raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() }], ["a record without receivedAt", { token: "tok-1", raw: "mgc=v1;projects=p-one-1" }], ["a record whose raw is not text", { token: "tok-1", raw: 7, receivedAt: Date.now() }], ["a record that is a string", "tok-1"]]) {
-      store = base(); store.pending_link = rec; c = recorder(true);
-      p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
-      ok(c.calls.length === 0 && !("pending_link" in store) && /^link refused: /.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", `(U7) ${label}: refused, deleted, nothing filled`, err(d).text);
-      p.win.close();
-    }
-    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1;x=1", receivedAt: Date.now() }; c = recorder(true);
-    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && !("pending_link" in store) && /^link refused: the key "x" is not one of/.test(err(d).text), "(U7) the stored text is parsed again by the popup (one code path for both forms): an invalid stored text is refused here", err(d).text);
+    ok(c.calls.length === 0 && /^link refused: the key "link" is not one of/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U6) link= next to valid values: the whole link is refused (any bad item refuses all)", err(d).text);
     p.win.close();
     // U8: 23 projects.
     const projects23 = Array.from({ length: 23 }, (_, i) => `p-link-${String(i).padStart(3, "0")}`);
@@ -1758,12 +1722,12 @@ function setSelect(p, name, value) {
     p = await open("?tab=1&v=1&projects=p-one-1&models=" + "claude-x-1,".repeat(380) + "claude-y-1", store, c); await tick(); d = p.document;
     ok(c.calls.length === 0 && /longer than 4096 characters/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "a link over 4096 characters in the query string is refused (by the parser's own cap, ?tab=1& not counted)", err(d).text);
     p.win.close();
-    // A link while the popup tab shows an active run is dropped in form A as in form B (D4): no confirm, nothing filled.
+    // A link while the popup tab shows an active run is dropped (D4): no confirm, nothing filled.
     store = Object.assign(base(), { running: true, run: { runId: "r-act", live: false }, queue: [{ projectId: "proj-run", modelSlug: "claude-haiku-4-5", status: "running" }], current: { jobIndex: 0, phase: "model" } }); c = recorder(true);
     p = await open("?tab=1&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && /link refused: a run is active; the link is dropped/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1" && d.getElementById("start").disabled === true && store.running === true && store.queue.length === 1 && !(store.__messages || []).length, "with a run active, form A is dropped: no confirm, nothing filled, one error line; the run, its queue and the worker are untouched", err(d).text);
+    ok(c.calls.length === 0 && /link refused: a run is active; the link is dropped/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1" && d.getElementById("start").disabled === true && store.running === true && store.queue.length === 1 && !(store.__messages || []).length, "with a run active, the link is dropped: no confirm, nothing filled, one error line; the run, its queue and the worker are untouched", err(d).text);
     p.win.close();
-    // (finding 5) form A leaves the tab's URL once it is read, as form B's token does: a reload or a session restore of the
+    // (finding 5) the link leaves the tab's URL once it is read: a reload or a session restore of the
     // tab shows the form as it is instead of asking again (and overwriting edits made since). Under http://x/ because
     // jsdom refuses replaceState on the chrome-extension: origin (Chrome does not; the popup catches the refusal either way).
     const openHttp = (query, st, confirmFn) => loadPage("popup/popup.html", st, POPUP_SCRIPTS, query, undefined, confirmFn, "http://x/");
@@ -1771,9 +1735,9 @@ function setSelect(p, name, value) {
       ["OK", "?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5", true, "p-one-1"],
       ["Cancel", "?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5", false, "old-proj-1"],
       ["a refused link", "?tab=1&v=1&projects=p-one-1&x=1", true, "old-proj-1"],
-      ["form B's token", "?tab=1&link=tok-1", true, "p-one-1"]
+      ["the dropped link= token", "?tab=1&link=tok-1", true, "old-proj-1"]
     ]) {
-      store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() }; c = recorder(answer);
+      store = base(); c = recorder(answer);
       p = await openHttp(query, store, c); await tick(); d = p.document;
       ok(p.win.location.search === "?tab=1" && p.win.location.pathname === "/popup/popup.html" && d.documentElement.classList.contains("tab") && d.getElementById("projects").value === filled, `(finding 5) after ${label} the URL is popup.html?tab=1 exactly (the link is gone, the tab layout stays)`, `${p.win.location.href} ${d.getElementById("projects").value}`);
       p.win.close();
@@ -1786,7 +1750,7 @@ function setSelect(p, name, value) {
     p = await openHttp("?tab=1&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
     ok(c.calls.length === 1 && d.getElementById("projects").value === "p-one-1" && p.win.location.search === "?tab=1", "(finding 5) control: the fill itself still happens under http://x/ (the origin is not what the link path keys on)");
     p.win.close();
-    ok(/if \(!rest\.length\) return null;\n\s*try \{ history\.replaceState\(null, "", location\.pathname \+ "\?tab=1"\); \} catch \(e\) \{ \/\* ignore \*\/ \}\n\s*return rest\.join\("&"\);/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8")), "(finding 5) source: form A's branch of pendingLinkText strips the query before the text is returned (before the parse and the confirm), so a refusal is one-shot too");
+    ok(/if \(!rest\.length\) return null;\n\s*try \{ history\.replaceState\(null, "", location\.pathname \+ "\?tab=1"\); \} catch \(e\) \{ \/\* ignore \*\/ \}\n\s*return rest\.join\("&"\);/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8")), "(finding 5) source: pendingLinkText strips the query before the text is returned (before the parse and the confirm), so a refusal is one-shot too");
     // The banner goes with the Start it announced.
     store = base(); c = recorder(true);
     p = await open("?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5", store, c); await tick(); d = p.document;
@@ -1796,14 +1760,14 @@ function setSelect(p, name, value) {
     p.win.close();
   }
 
-  console.log("--- (S1-S5) deep links, static: the link path sends nothing and clicks nothing, no innerHTML in popup.js, the worker reads the sender before the parse, no link value reaches a URL, a selector or a timer, the manifest is unchanged");
+  console.log("--- (S1-S5) deep links, static: the link path sends nothing and clicks nothing, no innerHTML in popup.js, the worker and the content script hold no deep-link path, no link value reaches a URL, a selector or a timer, the manifest is unchanged");
   {
     const popupJs = fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8");
     const workerJs = fs.readFileSync(path.join(E.EXT, "background/service-worker.js"), "utf8");
     const mainJs = fs.readFileSync(path.join(E.EXT, "content/main.js"), "utf8");
     /** The source of a top-level function in an IIFE-style module (two-space indent): from its first line to its closing "  }" line. */
     const fnBody = (src, head, indent) => { const s = src.indexOf(head); if (s < 0) return null; const e = src.indexOf(`\n${indent}}\n`, s); return e < 0 ? null : src.slice(s, e); };
-    const popupFns = ["async function pendingLinkText()", "function linkBannerText(", "function showLinkBanner(", "function clearLinkFill()", "async function applyDeepLink()"].map((h) => [h, fnBody(popupJs, h, "  ")]);
+    const popupFns = ["function pendingLinkText()", "function linkBannerText(", "function showLinkBanner(", "function clearLinkFill()", "async function applyDeepLink()"].map((h) => [h, fnBody(popupJs, h, "  ")]);
     ok(!/function linkConfirmText\(/.test(popupJs) && /K\.linkConfirmText\(parsed, resolved\)/.test(popupJs), "(S1) the confirm text comes from K.linkConfirmText (constants.js, pure and tested in deep-link.cjs), not from a closure in popup.js");
     ok(popupFns.every(([, b]) => b && b.length > 40), "(S1) every deep-link function of popup.js was located", popupFns.map(([h, b]) => `${h}:${b ? b.length : "none"}`).join(" "));
     const linkPath = popupFns.map(([, b]) => b).join("\n");
@@ -1812,21 +1776,13 @@ function setSelect(p, name, value) {
     ok(/applyDeepLink\(\)/.test(fnBody(popupJs, "async function init()", "  ")) && (popupJs.match(/applyDeepLink\(\)/g) || []).length === 2, "(S1) applyDeepLink is defined once and called once, from init");
     ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(popupJs), "(S2) popup.js matches none of innerHTML, outerHTML, insertAdjacentHTML, document.write");
     ok(/el\.textContent = text \|\| ""/.test(fnBody(popupJs, "function showLinkBanner(", "  ")) && (linkPath.match(/textContent/g) || []).length >= 1 && !/\.title =|setAttribute/.test(linkPath), "(S2) the banner is written with textContent only (no title, no attribute from the link)");
-    const handler = fnBody(workerJs, "async function deepLinkUnsafe(", "");
-    ok(!!handler && handler.indexOf("sender.id") > 0 && handler.indexOf("sender.tab") > 0 && handler.indexOf("sender.url") > 0 && handler.indexOf("parseDeepLink") > 0, "(S3) deepLinkUnsafe reads sender.id, sender.tab, sender.url and calls parseDeepLink");
-    ok(handler.indexOf("sender.id") < handler.indexOf("parseDeepLink") && handler.indexOf("sender.tab") < handler.indexOf("parseDeepLink") && handler.indexOf("sender.url") < handler.indexOf("parseDeepLink") && handler.indexOf("sender.url") < handler.indexOf("msg.raw"), "(S3) the sender checks come before the parse and before the message text is read (source order)");
-    ok(handler.indexOf("KEYS.RUNNING") < handler.indexOf("lastLinkAcceptedAt") && handler.indexOf("lastLinkAcceptedAt") < handler.indexOf("parseDeepLink") && handler.indexOf("parseDeepLink") < handler.indexOf("crypto.randomUUID") && handler.indexOf("crypto.randomUUID") < handler.indexOf("chrome.tabs.create"), "(S3) order: run-active check, 2-second window, parse, token, one tabs.create");
-    ok(/case MSG\.DEEP_LINK:\n\s+return serialized\(\(\) => deepLinkUnsafe\(msg, sender\)\);/.test(workerJs), "(S3) the MSG.DEEP_LINK case runs deepLinkUnsafe inside the serialized chain with the raw sender");
+    ok(!/deepLinkUnsafe|DEEP_LINK|PENDING_LINK|parseDeepLink|popup\/popup\.html|link=/.test(workerJs), "(S3) the worker holds no deep-link handler: no deepLinkUnsafe, no DEEP_LINK message, no pending-link key, no parse, no popup tab opened for a link (the console-link path was dropped in 0.9.0)");
+    ok(!/mgc=|location\.hash|DEEP_LINK|parseDeepLink/.test(mainJs), "(S3) the content script reads no fragment and sends no link");
     const sinks = /chrome\.tabs\.create\(|URL\(|fetch\(|setAttribute\(|querySelector\(|RegExp\(|eval\(|Function\(|setTimeout\(/;
     const linkValues = /parsed|projects|models|dropped|latest|resolved|\braw\b|\btext\b|rec\.|token/;
-    const bodies = [["popup.js", linkPath], ["service-worker.js", handler], ["main.js", fnBody(mainJs, "function readDeepLink()", "  ")]];
-    for (const [name, body] of bodies) {
-      const sinkLines = body.split("\n").filter((l) => sinks.test(l));
-      const bad = sinkLines.filter((l) => linkValues.test(l.replace(/new URL\(sender\.url\)/, "").replace(/"\?tab=1&link=" \+ token/, "")));
-      ok(!!body && bad.length === 0, `(S4) ${name}: no link value reaches tabs.create, URL(, fetch(, setAttribute(, querySelector(, RegExp(, eval(, Function( or setTimeout( (${sinkLines.length} sink line(s): sender.url into URL(), the random token into tabs.create)`, bad.join(" | "));
-    }
-    ok(!sinks.test(linkPath) && !sinks.test(fnBody(mainJs, "function readDeepLink()", "  ")), "(S4) popup.js and main.js link paths contain none of the sinks at all");
-    ok(/typeof rec\.token !== "string" \|\| !token \|\| rec\.token !== token/.test(linkPath) && /chrome\.storage\.local\.get\(KEYS\.PENDING_LINK\)/.test(linkPath) && /chrome\.storage\.local\.remove\(KEYS\.PENDING_LINK\)/.test(linkPath), "(S4) the token is compared by string equality under the fixed key, never used as a key, and the record is removed at once");
+    const bad = linkPath.split("\n").filter((l) => sinks.test(l) && linkValues.test(l));
+    ok(bad.length === 0 && !sinks.test(linkPath), "(S4) popup.js: the link path contains none of tabs.create, URL(, fetch(, setAttribute(, querySelector(, RegExp(, eval(, Function( or setTimeout( at all", bad.join(" | "));
+    ok(!/PENDING_LINK|pending_link/.test(linkPath) && !/chrome\.storage\.local\.(get|remove)\(KEYS\.PENDING/.test(popupJs), "(S4) the link path reads no stored link record: the query string is the only source");
     const manifest = JSON.parse(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8"));
     const baseline = { permissions: ["storage", "alarms"], host_permissions: ["https://console.cloud.google.com/*"], content_scripts: [{ matches: ["https://console.cloud.google.com/*"], run_at: "document_end", js: ["common/constants.js", "content/dom.js", "content/selectors.js", "content/badge.js", "content/actions.js", "content/main.js"] }] };
     ok(JSON.stringify(manifest.permissions) === JSON.stringify(baseline.permissions) && JSON.stringify(manifest.host_permissions) === JSON.stringify(baseline.host_permissions) && JSON.stringify(manifest.content_scripts) === JSON.stringify(baseline.content_scripts), "(S5) the manifest deep-equals the 0.8.0 baseline on permissions, host_permissions and content_scripts", JSON.stringify([manifest.permissions, manifest.host_permissions, manifest.content_scripts]));

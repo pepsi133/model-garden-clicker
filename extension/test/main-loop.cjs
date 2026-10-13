@@ -70,7 +70,7 @@ function boot(opts) {
     summary_ack: opts.summary || null
   };
   if (opts.running === false) state.running = false;
-  const results = [], logs = [], logEntries = [], phases = [], updates = [], listeners = [], acks = [], links = [];
+  const results = [], logs = [], logEntries = [], phases = [], updates = [], listeners = [], acks = [], sent = [];
   let gets = 0;
   let isWorkerTab = opts.workerTab !== false;
   env.win.chrome = {
@@ -82,6 +82,7 @@ function boot(opts) {
       lastError: undefined,
       sendMessage: (m, cb) => {
         let reply = { ok: true };
+        sent.push(JSON.parse(JSON.stringify(m)));
         if (m.type === env.K.MSG.WHOAMI) reply = { isWorkerTab, showsSummary: isWorkerTab && !!state.summary_ack && state.summary_ack.ack !== true };
         else if (m.type === env.K.MSG.SUMMARY_ACK) { acks.push(m); if (state.summary_ack && state.summary_ack.runId === m.runId) state.summary_ack.ack = true; }
         else if (m.type === env.K.MSG.SET_PHASE) { phases.push(m.awaiting ? `${m.phase}(${m.awaiting})` : m.phase); state.current.phase = m.phase; state.current.awaiting = m.awaiting || null; state.queue[0].phase = m.phase; }
@@ -89,7 +90,6 @@ function boot(opts) {
         else if (m.type === env.K.MSG.JOB_RESULT) { results.push(m); state.current.phase = "finished"; if (m.stopAfter === true) state.stop_requested = true; }
         else if (m.type === env.K.MSG.STOP) { state.stop_requested = true; state.running = false; }
         else if (m.type === env.K.MSG.LOG) { logs.push(m.msg); logEntries.push({ level: m.level, msg: m.msg }); }
-        else if (m.type === env.K.MSG.DEEP_LINK) { links.push(m); }
         setTimeout(() => cb(reply), 1);
       }
     }
@@ -98,10 +98,11 @@ function boot(opts) {
   env.K.TIMEOUTS.CONFIRM = 300; env.K.TIMEOUTS.AGREEMENTS_READY = 300; env.K.TIMEOUTS.MODEL_READY = opts.modelReady || 300; env.K.TIMEOUTS.NAV = 300;
   if (opts.handler) env.A.handleModelPage = opts.handler;
   if (opts.agreementsHandler) env.A.handleAgreements = opts.agreementsHandler; // before main.js captures the handlers
+  if (opts.beforeLoad) opts.beforeLoad(env); // a spy that must see what main.js does at load
   const ctx = env.dom.getInternalVMContext();
   for (const f of ["content/badge.js", "content/main.js"]) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   return {
-    env, state, results, logs, logEntries, phases, updates, acks, links, gets: () => gets,
+    env, state, results, logs, logEntries, phases, updates, acks, sent, gets: () => gets,
     fire: (changes) => { for (const fn of listeners) fn(changes, "local"); },
     badge: () => { const b = env.document.getElementById("mgc-badge"); return b ? b.textContent : null; },
     badgeVisible: () => { const b = env.document.getElementById("mgc-badge"); return !!b && b.style.display !== "none"; },
@@ -770,107 +771,38 @@ function boot(opts) {
     t.stop();
   }
 
-  console.log("--- (M1-M4) deep links: a #mgc= fragment on the console origin is sent once as text and removed; nothing else is read or sent");
+  console.log("--- (M6) the console-link deep link (#mgc= on a console page) was dropped in 0.9.0: such a URL sends nothing and is left alone");
   {
-    const HASH = "#mgc=v1;projects=p-one-1";
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x" + HASH });
-    await sleep(60);
-    ok(t.links.length === 1 && t.links[0].raw === HASH.slice(1) && t.links[0].length === HASH.length - 1, "(M1) a document at the console origin with #mgc=... sends exactly one DEEP_LINK with raw (the fragment without #) and length", JSON.stringify(t.links));
-    ok(Object.keys(t.links[0]).sort().join() === "length,raw,type", "(M1) the message carries type, raw and length and no other field", Object.keys(t.links[0]).join());
-    ok(t.env.win.location.hash === "" && t.env.win.location.href === "https://console.cloud.google.com/x", "(M1) the fragment is removed from the URL (history.replaceState)", t.env.win.location.href);
-    t.fire({ running: { newValue: false } }); await sleep(60);
-    t.env.win.dispatchEvent(new t.env.win.Event("popstate")); await sleep(60);
-    ok(t.links.length === 1, "(M1) a second tick (storage change, popstate) sends nothing more");
-    ok(t.results.length === 0 && t.phases.length === 0 && t.updates.length === 0 && !t.badgeVisible(), "(M1) control: no job message, no phase, no badge (the link path does no DOM work and starts nothing)");
-    t.stop();
-  }
-  {
-    // (M5) The console writes its router state back with replaceState a few
-    // seconds after load, from a URL read before the fragment was removed
-    // (seen live on 2026-10-13: the gallery adds &pageState=... and the old
-    // #mgc= fragment). The fragment must leave again, the console's query
-    // string and state object must stay, and the link is not sent twice.
-    const HASH = "#mgc=v1;projects=p-one-1";
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x?project=p-one-1" + HASH });
-    await sleep(60);
-    ok(t.links.length === 1 && t.env.win.location.hash === "", "(M5) fixture: the link was sent once and the fragment removed at load", t.env.win.location.href);
-    t.env.win.history.replaceState({ router: 7 }, "", "/x?project=p-one-1&pageState=(g)" + HASH);
-    ok(t.env.win.location.hash === HASH, "(M5) fixture: the console's replaceState put the fragment back");
-    await sleep(120);
-    ok(t.env.win.location.hash === "" && t.env.win.location.href === "https://console.cloud.google.com/x?project=p-one-1&pageState=(g)", "(M5) the returning fragment is removed again; the console's query string (pageState) survives", t.env.win.location.href);
-    ok(t.env.win.history.state && t.env.win.history.state.router === 7, "(M5) the console's history state object is kept", JSON.stringify(t.env.win.history.state));
-    t.env.win.history.replaceState(null, "", "/y" + HASH);
-    await sleep(120);
-    ok(t.env.win.location.hash === "" && t.links.length === 1, "(M5) a later return (another route) is removed too, and the link is still sent only once", `${t.env.win.location.href} ${t.links.length}`);
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x" });
-    await sleep(60);
-    t.env.win.history.replaceState(null, "", "/x#mgc=v1;projects=p-one-1");
-    await sleep(120);
-    ok(t.links.length === 0 && t.env.win.location.hash === "#mgc=v1;projects=p-one-1", "(M5 control) a document that carried no link at load neither sends nor watches a fragment that appears later (the link is read at load only)", t.env.win.location.href);
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x#other" });
-    await sleep(60);
-    ok(t.links.length === 0 && t.env.win.location.hash === "#other", "(M2) a hash that is not #mgc= sends nothing and is left in place", t.env.win.location.hash);
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x#MGC=v1;projects=p-one-1" });
-    await sleep(60);
-    ok(t.links.length === 0, "(M2) the prefix is case-sensitive: #MGC= sends nothing");
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x?project=p-one-1#mgc=v1;projects=p-one-1" });
-    await sleep(60);
-    ok(t.links.length === 1 && t.env.win.location.href === "https://console.cloud.google.com/x?project=p-one-1", "(M1) the console's own query string survives the fragment removal", t.env.win.location.href);
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "https://evil.example/#mgc=v1;projects=p-one-1" });
-    await sleep(60);
-    ok(t.links.length === 0 && t.env.win.location.hash === "#mgc=v1;projects=p-one-1", "(M3) a document on another origin sends nothing and its hash is left alone (the script's own origin check; the manifest match is the first control)");
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com.evil.example/#mgc=v1;projects=p-one-1" });
-    await sleep(60);
-    ok(t.links.length === 0, "(M3) a look-alike host (console.cloud.google.com.evil.example) sends nothing");
-    t.stop();
-  }
-  {
-    const t = boot({ running: false, current: null, url: "http://console.cloud.google.com/#mgc=v1;projects=p-one-1" });
-    await sleep(60);
-    ok(t.links.length === 0, "(M3) the console host over http sends nothing (origin compared with the scheme)");
-    t.stop();
-  }
-  {
-    const long = "mgc=v1;projects=" + "p-one-1,".repeat(700);
-    const hash = "#" + long.slice(0, 5000);
-    ok(hash.length === 5001, "(M4) fixture: a fragment of 5000 characters after the #");
-    const t = boot({ running: false, current: null, url: "https://console.cloud.google.com/x" + hash });
-    await sleep(60);
-    ok(t.links.length === 1 && t.links[0].raw.length === 4096 && t.links[0].raw === long.slice(0, 4096) && t.links[0].length === 5000, "(M4) a 5000-character fragment sends raw cut to 4096 characters and length 5000", t.links[0] && `${t.links[0].raw.length}/${t.links[0].length}`);
-    ok(t.env.win.location.hash === "", "(M4) the long fragment is removed too");
-    t.stop();
-  }
-  {
+    // The same page with and without the old fragment: the messages sent
+    // must be the same (an idle tab's own traffic only), none may carry the
+    // fragment, and the URL and the history state must stay as they were.
+    const HASH = "#mgc=v1;projects=p-one-1;models=latest";
+    const runIt = async (url) => {
+      const replaced = [];
+      const spy = (env) => {
+        const h = env.win.history;
+        const realReplace = h.replaceState.bind(h), realPush = h.pushState.bind(h);
+        h.replaceState = (...args) => { replaced.push(args); return realReplace(...args); };
+        h.pushState = (...args) => { replaced.push(args); return realPush(...args); };
+      };
+      const t = boot({ running: false, current: null, url, beforeLoad: spy });
+      await sleep(400); // longer than the default 250 ms URL poll the dropped watcher used
+      t.fire({ running: { newValue: false } }); await sleep(60);
+      return { t, replaced };
+    };
+    const plain = await runIt("https://console.cloud.google.com/x?project=p-one-1");
+    const withLink = await runIt("https://console.cloud.google.com/x?project=p-one-1" + HASH);
+    ok(JSON.stringify(withLink.t.sent.map((m) => m.type)) === JSON.stringify(plain.t.sent.map((m) => m.type)), "(M6) a console page with #mgc= sends exactly the messages the same page sends without it", JSON.stringify([plain.t.sent.map((m) => m.type), withLink.t.sent.map((m) => m.type)]));
+    ok(!withLink.t.sent.some((m) => /mgc=|deep-link/.test(JSON.stringify(m))), "(M6) no message carries the fragment or a deep-link type", JSON.stringify(withLink.t.sent));
+    ok(withLink.t.env.win.location.href === "https://console.cloud.google.com/x?project=p-one-1" + HASH && withLink.t.env.win.location.hash === HASH, "(M6) the URL is not touched: the fragment stays where it was", withLink.t.env.win.location.href);
+    ok(withLink.replaced.length === 0, "(M6) no history.replaceState or pushState call", JSON.stringify(withLink.replaced));
+    ok(withLink.t.results.length === 0 && withLink.t.phases.length === 0 && withLink.t.updates.length === 0 && !withLink.t.badgeVisible(), "(M6) control: no job message, no phase, no badge");
+    plain.t.stop(); withLink.t.stop();
+    const src = fs.readFileSync(path.join(E.EXT, "content/main.js"), "utf8");
+    ok(!/mgc=|location\.hash|readDeepLink|keepLinkFragmentOut|DEEP_LINK/.test(src), "(M6) main.js holds no fragment reader, no watcher and no deep-link message");
     const manifest = JSON.parse(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8"));
     const cs = manifest.content_scripts[0];
-    ok(JSON.stringify(cs.matches) === JSON.stringify(["https://console.cloud.google.com/*"]) && cs.all_frames !== true && cs.js[cs.js.length - 1] === "content/main.js", "(M3 control) the manifest injects the content script on the console origin only, top frame only, main.js last");
-    const src = fs.readFileSync(path.join(E.EXT, "content/main.js"), "utf8");
-    const start = src.indexOf("function readDeepLink()");
-    const body = src.slice(start, src.indexOf("\n  }\n", start));
-    ok(start > 0 && /location\.origin !== K\.CONSOLE_BASE/.test(body) && /hash\.startsWith\("#mgc="\)/.test(body) && /hash\.slice\(1, K\.DEEP_LINK\.MAX_RAW \+ 1\)/.test(body) && /history\.replaceState\(history\.state, "", location\.pathname \+ location\.search\)/.test(body), "(M1) readDeepLink checks the origin, the #mgc= prefix, cuts at MAX_RAW and removes the fragment with replaceState, keeping history.state");
-    ok(!/parseDeepLink|document\.|querySelector|innerHTML|createElement|split\(|decodeURI|new URL\(|fetch\(|setTimeout\(/.test(body), "(M1) readDeepLink does no parsing and no DOM work");
-    ok((src.match(/readDeepLink\(\)/g) || []).length === 2, "(M1) readDeepLink is defined once and called once (at load)");
-    const kStart = src.indexOf("function keepLinkFragmentOut()");
-    const kBody = src.slice(kStart, src.indexOf("\n  }\n", kStart));
-    ok(kStart > 0 && !/send\(|MSG\.|parseDeepLink|document\.|querySelector|innerHTML|chrome\./.test(kBody) && (src.match(/keepLinkFragmentOut\(\)/g) || []).length === 2 && /if \(readDeepLink\(\)\) keepLinkFragmentOut\(\)/.test(src), "(M5) keepLinkFragmentOut sends nothing, reads no DOM, and starts only when readDeepLink sent a link at load");
+    ok(JSON.stringify(cs.matches) === JSON.stringify(["https://console.cloud.google.com/*"]) && cs.all_frames !== true && cs.js[cs.js.length - 1] === "content/main.js", "(M6 control) the manifest injects the content script on the console origin only, top frame only, main.js last");
   }
 
   E.finish("main loop");

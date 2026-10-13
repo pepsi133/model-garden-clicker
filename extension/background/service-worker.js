@@ -767,118 +767,6 @@ async function recoverUnsafe() {
   await finishRunUnsafe(reason);
 }
 
-/* ---------------------------------------------------------------- deep links */
-
-/*
- * A deep link of form B (docs/scoping/03-deep-links.md): the content
- * script on a console page sends the "#mgc=..." fragment as text. The
- * worker checks the sender before it reads anything, then the run state,
- * then the 2-second window, then parses with the same function the popup
- * uses. An accepted link is stored under KEYS.PENDING_LINK as { token, raw,
- * receivedAt } (the raw text; the popup parses it again) and exactly one
- * tab opens popup/popup.html?tab=1&link=<token>. Nothing here starts a run
- * or touches a setting. The reply is { ok } or { ok: false, error } and
- * carries no stored data.
- */
-let lastLinkAcceptedAt = 0; // worker memory: the 2-second window between accepted links
-let lastRefusalLoggedAt = 0; // worker memory: when a refusal was last logged (one per REFUSAL_LOG_WINDOW_MS)
-let refusalsSuppressed = 0; // refusals not logged since then, named in one summary line when the window reopens
-let lastRunDropLoggedAt = 0; // worker memory: when a run-active drop was last logged (its own window)
-
-/**
- * Log a refusal, at most one per REFUSAL_LOG_WINDOW_MS: a flood of refused
- * links must not push the run's own lines out of the capped storage log or
- * pad the run's full log. The first refusal of a window is logged as it is
- * (during a run, into the run's full log too, so a dropped link leaves its
- * one line there); the others are counted, and the next logged refusal is
- * preceded by one summary line with the count (storage log only).
- */
-async function logRefusalUnsafe(error, runActive) {
-  const now = Date.now();
-  // The run-active drop has a window of its own, so a refusal of another
-  // kind just before it never hides the one line D4 promises the run's log.
-  const last = runActive === true ? lastRunDropLoggedAt : lastRefusalLoggedAt;
-  if (now - last < K.DEEP_LINK.REFUSAL_LOG_WINDOW_MS) { refusalsSuppressed += 1; return; }
-  if (refusalsSuppressed > 0) await appendLogUnsafe("warn", `deep link: ${refusalsSuppressed} more link(s) refused in the last ${Math.round(K.DEEP_LINK.REFUSAL_LOG_WINDOW_MS / 1000)} s (not listed)`, "worker", null);
-  refusalsSuppressed = 0;
-  if (runActive === true) lastRunDropLoggedAt = now; else lastRefusalLoggedAt = now;
-  await appendLogUnsafe("warn", `deep link refused: ${error}`);
-}
-
-/** A link's text for the log: ASCII printable only, at most LOG_RAW_CHARS characters. */
-function linkForLog(raw) {
-  const s = typeof raw === "string" ? raw : "";
-  const cut = s.slice(0, K.DEEP_LINK.LOG_RAW_CHARS).replace(/[^\x20-\x7e]/g, "?");
-  return s.length > K.DEEP_LINK.LOG_RAW_CHARS ? `${cut}…` : cut;
-}
-
-/** Delete the pending link when it is older than MAX_AGE_MS (on a new link and at worker start). */
-async function pruneLinkUnsafe() {
-  const rec = (await get(KEYS.PENDING_LINK))[KEYS.PENDING_LINK];
-  if (!rec || typeof rec !== "object") return;
-  // A receivedAt in the future (a clock jump) counts as old too.
-  if (typeof rec.receivedAt !== "number" || Date.now() - rec.receivedAt > K.DEEP_LINK.MAX_AGE_MS || rec.receivedAt > Date.now() + K.DEEP_LINK.MIN_INTERVAL_MS) {
-    await chrome.storage.local.remove(KEYS.PENDING_LINK);
-    await appendLogUnsafe("info", "deep link: a pending link older than 10 minutes was deleted unread");
-  }
-}
-
-async function deepLinkUnsafe(msg, sender) {
-  // `silent`: the reply names the reason, the log gets nothing. The sender
-  // checks are silent: none of them can come from the user's own link, and
-  // a log line per message would be a lever for whoever sends them.
-  const refuse = async (error, silent, runActive) => {
-    if (silent !== true) await logRefusalUnsafe(error, runActive);
-    return { ok: false, error };
-  };
-  // The sender first, before anything in the message is read: this
-  // extension's own content script (sender.id), in a tab, on the console
-  // origin exactly. The popup page in a tab carries the extension's origin
-  // and is refused here like any other sender.
-  if (!sender || typeof sender !== "object") return refuse("no sender", true);
-  if (sender.id !== chrome.runtime.id) return refuse("the sender is not this extension", true);
-  if (!sender.tab || typeof sender.tab !== "object") return refuse("the sender is not a content script in a tab", true);
-  let origin = null;
-  try { origin = typeof sender.url === "string" ? new URL(sender.url).origin : null; } catch (e) { origin = null; }
-  if (origin !== K.CONSOLE_BASE) return refuse("the sender is not on the console origin", true);
-  if (!msg || typeof msg.raw !== "string") return refuse("the link is not text");
-  const length = typeof msg.length === "number" && Number.isInteger(msg.length) ? msg.length : msg.raw.length;
-  if (length > K.DEEP_LINK.MAX_RAW || msg.raw.length > K.DEEP_LINK.MAX_RAW || length < msg.raw.length) return refuse(`the link is longer than ${K.DEEP_LINK.MAX_RAW} characters`);
-  await pruneLinkUnsafe();
-  const o = await get([KEYS.RUNNING, KEYS.RUN]);
-  if (o[KEYS.RUNNING] === true) {
-    const run = o[KEYS.RUN];
-    return refuse(`a run is active (run ${run && typeof run.runId === "string" ? run.runId : "?"}); the link is dropped, not stored`, false, true);
-  }
-  const now = Date.now();
-  // The window lives in worker memory; after a worker restart the pending
-  // record's receivedAt stands in for it.
-  const pending = (await get(KEYS.PENDING_LINK))[KEYS.PENDING_LINK];
-  if (pending && typeof pending === "object" && typeof pending.receivedAt === "number" && now - pending.receivedAt < K.DEEP_LINK.MIN_INTERVAL_MS) lastLinkAcceptedAt = Math.max(lastLinkAcceptedAt, pending.receivedAt);
-  if (now - lastLinkAcceptedAt < K.DEEP_LINK.MIN_INTERVAL_MS) return refuse("another link was accepted less than 2 seconds ago; this one is dropped");
-  const parsed = K.parseDeepLink(msg.raw);
-  if (!parsed.ok) return refuse(`${parsed.error} (link: ${linkForLog(msg.raw)})`);
-  lastLinkAcceptedAt = now;
-  const token = crypto.randomUUID();
-  await set({ [KEYS.PENDING_LINK]: { token, raw: msg.raw, receivedAt: now } });
-  // The record is written before the tab opens (the popup reads it at
-  // once). If the tab cannot be opened (no browser window, say), the record
-  // is removed again and the window reopens, so the next link is not held
-  // back by one that never showed; the remove needs no token compare, as
-  // nothing else writes the key inside the serialized chain.
-  try {
-    await chrome.tabs.create({ url: chrome.runtime.getURL("popup/popup.html") + "?tab=1&link=" + token });
-  } catch (err) {
-    lastLinkAcceptedAt = 0;
-    await chrome.storage.local.remove(KEYS.PENDING_LINK);
-    const why = err && err.message ? err.message : String(err);
-    await appendLogUnsafe("warn", `deep link: could not open a tab (${why}); the link is dropped`);
-    return { ok: false, error: "could not open a tab" };
-  }
-  await appendLogUnsafe("info", `deep link accepted: ${parsed.projects.length} project(s), ${parsed.latest ? "models: latest" : `${parsed.models.length} model(s)`}; the popup opened in a tab, nothing starts until Start is pressed`);
-  return { ok: true };
-}
-
 /* ---------------------------------------------------------------- events */
 
 /**
@@ -970,10 +858,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return serialized(() => deleteRunLogUnsafe(msg.runId, fromTab));
       case MSG.RUNS_PURGE:
         return serialized(() => purgeRunLogsUnsafe(fromTab));
-      // The sender checks live inside the handler, in the serialized chain,
-      // with the run-state check they gate.
-      case MSG.DEEP_LINK:
-        return serialized(() => deepLinkUnsafe(msg, sender));
       default:
         return { ok: false, error: `unknown message type ${msg.type}` };
     }
@@ -1085,6 +969,5 @@ chrome.runtime.onStartup.addListener(() => {
 // Runs every time the worker is (re)started, including after Chrome
 // terminated an idle worker in the middle of a run. Delayed so that the
 // onStartup / onInstalled handlers above run first after a browser restart
-// or a reload (they end the run instead of resuming it). A pending deep
-// link older than 10 minutes is deleted at the same time.
-setTimeout(() => serialized(async () => { await pruneLinkUnsafe(); await recoverUnsafe(); }), K.RECOVER_DELAY_MS);
+// or a reload (they end the run instead of resuming it).
+setTimeout(() => serialized(recoverUnsafe), K.RECOVER_DELAY_MS);

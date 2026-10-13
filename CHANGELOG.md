@@ -45,13 +45,11 @@ and the project uses [Semantic Versioning](https://semver.org/).
   the deep-link design and its security review.
 - Deep links: a link opens the popup in a tab with the project IDs and the
   models filled in, after a confirmation dialog that lists the validated
-  values and says that nothing starts until Start. Two forms carry the
-  keys `v`, `projects` and `models`:
-  `chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest`
-  (address bar, bookmarks) and
-  `https://console.cloud.google.com/...#mgc=v1;projects=p-a,p-b;models=latest`
-  (a plain console link for a signed-in browser; the content script hands
-  the fragment to the worker and removes it from the URL). `models` may
+  values and says that nothing starts until Start. The link is the popup
+  page's own URL with the keys `v`, `projects` and `models`, for the
+  address bar and bookmarks:
+  `chrome-extension://fmfhgpbcpacoddjpfemghhpinhodcglp/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest`
+  (the Chrome Web Store id; an unpacked copy has another). `models` may
   be a slug list, `latest` (resolved over this machine's list) or absent
   (nothing ticked). OK fills the form, saves it as a manual edit would and
   shows a "Filled from a link" banner with a Clear button; Cancel changes
@@ -60,17 +58,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
   Any unknown or repeated key, a wrong version, an invalid or repeated id
   or slug, more than 23 projects, more than 13 models or more than 4,096
   characters refuses the whole link with one reason; a link during a run
-  is dropped with one log line; the worker accepts the fragment only from
-  its own content script on the console origin, opens one tab per link
-  and drops a second link within two seconds. The manifest is unchanged.
-  `MGC.parseDeepLink` (`common/constants.js`), the storage key
-  `pending_link`, the message `mgc:deep-link`, and the suites
-  `extension/test/deep-link.cjs` (the parser) plus new sections in the
-  worker, popup and content-script suites. The form B check in a
-  signed-in browser is still to be done (see `docs/scoping/03-deep-links.md`).
+  is dropped with one error line. The manifest is unchanged.
+  `MGC.parseDeepLink` (`common/constants.js`), the suite
+  `extension/test/deep-link.cjs` (the parser) and a new section in the
+  popup suite. A console link carrying the values was designed too and
+  dropped before the release: it did not work in the owner's test
+  (`docs/scoping/03-deep-links.md`).
 - `scripts/deep-link/`: `mgc_link.py` and `mgc-link.sh`, two small generators
   that print a deep link for a project list and a model list (for a runbook
-  or a pipeline; the extension validates the link when it is opened).
+  or a pipeline; the extension validates the link when it is opened). They
+  default to the store id; `--extension-id` or `MGC_EXTENSION_ID` sets the
+  id of an unpacked copy.
 
 ### Changed
 - The model list is sorted by release date, newest first, at load time. The
@@ -78,11 +76,6 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - As after every version bump, the first popup open after the next release
   resets the model selection to none once. The `latest` link is the
   one-click way back.
-
-### Fixed
-- The content script removes the `#mgc=` fragment again when the Model
-  Garden page writes it back into the URL a few seconds after load, so a
-  reload of that tab does not send the link a second time.
 
 [0.9.0]: https://github.com/pepsi133/model-garden-clicker/releases/tag/v0.9.0
 

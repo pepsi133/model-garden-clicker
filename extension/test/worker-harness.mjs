@@ -17,7 +17,6 @@ globalThis.chrome = {
   storage: { local: {
     get: async (keys) => { const ks = Array.isArray(keys) ? keys : [keys]; const o = {}; for (const k of ks) if (k in store) o[k] = structuredClone(store[k]); return o; },
     set: async (obj) => { Object.assign(store, structuredClone(obj)); },
-    remove: async (keys) => { for (const k of (Array.isArray(keys) ? keys : [keys])) delete store[k]; },
   } },
   tabs: {
     create: async ({ url }) => { const id = nextTabId++; tabs.set(id, url); events.push(["tabs.create", id, url]); return { id }; },
@@ -38,8 +37,6 @@ globalThis.chrome = {
     getManifest: () => ({ version: "0.0.0-test" }),
     // getURL names an origin fetch() cannot load here: modelNames() must cope without models.json
     getURL: (p) => "chrome-extension://x/" + p,
-    // The extension's own id, as chrome.runtime.id and as sender.id of its own content scripts (the deep-link checks compare them).
-    id: "x",
   },
 };
 await import(path.join(EXT, "common/constants.js"));
@@ -56,12 +53,6 @@ function msg(m, tabId, sender) {
 /** The popup opened in a tab: an extension page with sender.tab set, under the extension's origin. */
 const TAB_PAGE = (id) => ({ tab: { id }, url: "chrome-extension://x/popup/popup.html?tab=1" });
 const settle = () => new Promise((r) => setTimeout(r, 10));
-// The worker's clock can be moved forward (never back): section 31 opens a
-// new refusal-log window that way instead of waiting 10 s of wall time.
-const realNow = Date.now;
-let clockSkewMs = 0;
-Date.now = () => realNow() + clockSkewMs;
-const skewClock = (ms) => { clockSkewMs += ms; };
 let n = 0;
 let finished = false;
 // A stalled await (a transaction that never completes, say) must not read as a pass: node would exit 0 with no summary line.
@@ -1054,227 +1045,19 @@ assert(r.ok === true && store.queue[0].modelSlug === "claude-haiku-4-5" && tabs.
 r = await msg({ type: K.MSG.STOP }); await settle();
 fakeIDB.reset(); store.queue = []; store.run = null;
 
-// 31. (W1-W8) deep links (docs/scoping/03-deep-links.md, form B): MSG.DEEP_LINK from the content script on the console origin
-const PL = K.KEYS.PENDING_LINK;
-const LINK_SENDER = (over) => Object.assign({ id: "x", tab: { id: 7001 }, url: "https://console.cloud.google.com/agent-platform/model-garden?project=p-one-1" }, over || {});
-const RAW = "mgc=v1;projects=p-one-1,p-two-2;models=claude-haiku-4-5";
-const link = (raw, sender, extra) => msg(Object.assign({ type: K.MSG.DEEP_LINK, raw, length: typeof raw === "string" ? raw.length : undefined }, extra || {}), null, sender === undefined ? LINK_SENDER() : sender);
-const tabsCreated = () => events.filter((e) => e[0] === "tabs.create").length;
-const linkLogs = () => store.log.filter((l) => /^deep link/.test(l.msg));
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const onlyOkFields = (reply) => reply && Object.keys(reply).every((k) => k === "ok" || k === "error") && typeof reply.ok === "boolean" && (reply.ok === true ? Object.keys(reply).length === 1 : typeof reply.error === "string");
-const WINDOW = K.DEEP_LINK.REFUSAL_LOG_WINDOW_MS;
-/** A fresh refusal-log window: the next refusal is logged, with no summary line of earlier suppressed refusals in front of it (one throwaway refusal flushes that summary). */
-const freshWindow = async () => { skewClock(WINDOW + 1); await link("mgc=v1;x=1"); skewClock(WINDOW + 1); };
-delete store[PL];
-assert(store.running !== true && !(PL in store), "31 fixture: no run, no pending link");
-// W1
-let created0 = tabsCreated();
-r = await link(RAW);
-assert(r.ok === true && onlyOkFields(r), "31 (W1) a valid link from a content-script sender (id, tab, console url) is accepted with { ok: true } and nothing else: " + JSON.stringify(r));
-assert(store[PL] && typeof store[PL].token === "string" && /^[0-9a-f-]{36}$/.test(store[PL].token) && store[PL].raw === RAW && typeof store[PL].receivedAt === "number" && Math.abs(Date.now() - store[PL].receivedAt) < 2000 && Object.keys(store[PL]).sort().join() === "raw,receivedAt,token", "31 (W1) the record { token (a UUID), raw (the text as sent), receivedAt } is stored under KEYS.PENDING_LINK: " + JSON.stringify(store[PL]));
-assert(tabsCreated() === created0 + 1 && events[events.length - 1][0] === "tabs.create" && events[events.length - 1][2] === "chrome-extension://x/popup/popup.html?tab=1&link=" + store[PL].token, "31 (W1) exactly one tab created at popup/popup.html?tab=1&link=<the record's token>: " + events[events.length - 1][2]);
-assert(!/active/.test(JSON.stringify(events[events.length - 1])) && linkLogs().some((l) => /^deep link accepted: 2 project\(s\), 1 model\(s\)/.test(l.msg) && l.level === "info"), "31 (W1) the accept was logged with the counts, never the ids");
-const token1 = store[PL].token;
-// W2: a second link 1 s later is dropped; a third after the 2 s window is accepted and replaces the record
-await wait(1000);
-let logs0 = linkLogs().length; created0 = tabsCreated();
-r = await link("mgc=v1;projects=p-three-3");
-assert(r.ok === false && /less than 2 seconds ago/.test(r.error) && onlyOkFields(r), "31 (W2) a second valid link 1 s later is dropped with the reason in the reply: " + r.error);
-assert(tabsCreated() === created0 && store[PL].token === token1 && store[PL].raw === RAW && linkLogs().length === logs0 + 1, "31 (W2) no new tab, the record unchanged, one log line");
-await wait(1100);
-created0 = tabsCreated();
-r = await link("mgc=v1;projects=p-three-3");
-assert(r.ok === true && tabsCreated() === created0 + 1 && store[PL].token !== token1 && store[PL].raw === "mgc=v1;projects=p-three-3", "31 (W2) a third link after the 2-second window is accepted and replaces the record (new token, new raw)");
-const token3 = store[PL].token;
-await wait(2100); // the window check precedes the parse: a bad link inside the window is answered with the window
-await freshWindow();
-created0 = tabsCreated(); logs0 = linkLogs().length;
-r = await link("mgc=v1;projects=p-one-1;models=latest;models=latest");
-assert(r.ok === false && /the key "models" is repeated/.test(r.error) && tabsCreated() === created0 && store[PL].token === token3, "31 (W2) a link with a repeated key is refused with the parser's reason, no tab, record untouched: " + r.error);
-assert(linkLogs().length === logs0 + 1 && /^deep link refused: the key "models" is repeated \(link: mgc=v1;projects=p-one-1;models=latest;models=latest\)$/.test(linkLogs()[linkLogs().length - 1].msg), "31 (W2) the refusal is logged with the reason and the (short) link text: " + linkLogs()[linkLogs().length - 1].msg);
-const longBad = "mgc=v1;projects=" + "p-bad-".repeat(60) + "\u0007\n";
-await freshWindow();
-r = await link(longBad);
-const lastLog = linkLogs()[linkLogs().length - 1].msg;
-const loggedLink = /\(link: (.*)…\)$/.exec(lastLog);
-assert(r.ok === false && loggedLink && loggedLink[1].length === 80 && !/[^\x20-\x7e…]/.test(lastLog) && !/\u0007/.test(lastLog), "31 (W2) a refused link is logged with at most 80 characters of its text, control characters replaced: " + lastLog);
-// W3: refused before any parse, no tab, nothing stored
-await chrome.storage.local.remove(PL);
-await wait(2100);
-const refusedSenders = [
-  ["no id", LINK_SENDER({ id: undefined }), /not this extension/],
-  ["another id", LINK_SENDER({ id: "y" }), /not this extension/],
-  ["no tab", LINK_SENDER({ tab: undefined }), /not a content script in a tab/],
-  ["console.cloud.google.com.evil.example", LINK_SENDER({ url: "https://console.cloud.google.com.evil.example/" }), /not on the console origin/],
-  ["http://console.cloud.google.com/", LINK_SENDER({ url: "http://console.cloud.google.com/" }), /not on the console origin/],
-  ["evil.example with the fragment", LINK_SENDER({ url: "https://evil.example/#mgc=v1;projects=p-one-1" }), /not on the console origin/],
-  ["the extension's own popup page", LINK_SENDER({ url: "chrome-extension://x/popup/popup.html?tab=1" }), /not on the console origin/],
-  ["a sender with no url", LINK_SENDER({ url: undefined }), /not on the console origin/],
-  ["an empty sender object", {}, /not this extension/],
-  ["an unparsable url", LINK_SENDER({ url: "not a url" }), /not on the console origin/],
-  ["a console url in upper case", LINK_SENDER({ url: "https://CONSOLE.cloud.google.com/x" }), null]
-];
-for (const [name, sender, re] of refusedSenders) {
-  created0 = tabsCreated();
-  r = await link(RAW, sender);
-  const refused = r.ok === false && onlyOkFields(r) && tabsCreated() === created0 && !(PL in store);
-  if (re) assert(refused && re.test(r.error), `31 (W3) sender ${name}: refused before any parse (${r.error}), no tab, nothing stored`);
-  else assert(r.ok === true && tabsCreated() === created0 + 1 && (PL in store), `31 (W3) control: ${name} is the console origin (hosts are case-insensitive) and is accepted`);
+// 31. The console-link deep link (a "#mgc=" fragment sent by the content script) was dropped in 0.9.0: the worker has
+// no handler for it. The old message from a console content-script sender is an unknown type: no tab, no storage write.
+{
+  const CONSOLE_SENDER = { id: "x", tab: { id: 7001 }, url: "https://console.cloud.google.com/agent-platform/model-garden?project=p-one-1#mgc=v1;projects=p-one-1" };
+  const tabsCreated = () => events.filter((e) => e[0] === "tabs.create").length;
+  const before = JSON.stringify(Object.keys(store).sort()), created0 = tabsCreated(), logs0 = store.log.length;
+  r = await msg({ type: "mgc:deep-link", raw: "mgc=v1;projects=p-one-1", length: 23 }, 7001, CONSOLE_SENDER); await settle();
+  assert(r.ok === false && r.error === "unknown message type mgc:deep-link", "31 the old mgc:deep-link message is answered as an unknown type: " + JSON.stringify(r));
+  assert(tabsCreated() === created0 && JSON.stringify(Object.keys(store).sort()) === before && !("pending_link" in store) && !store.log.slice(logs0).some((l) => /deep link/.test(l.msg)), "31 no tab opened, no storage key added (no pending_link), no deep-link log line");
+  assert(!("DEEP_LINK" in K.MSG) && !("PENDING_LINK" in K.KEYS), "31 constants: no MSG.DEEP_LINK and no KEYS.PENDING_LINK");
+  r = await msg({ type: K.MSG.VERSION });
+  assert(!r.messages.includes("mgc:deep-link") && !r.keys.includes("pending_link"), "31 the VERSION reply lists neither the deep-link message type nor the pending-link key");
 }
-await chrome.storage.local.remove(PL);
-await wait(2100);
-// with a valid link text, the hostile senders still do not parse: a parse would log the parser's reason; a sender refusal
-// is answered in the reply only (no log line at all: a sender that is not the user's own content script gets no lever on the log)
-await freshWindow();
-logs0 = store.log.length;
-r = await link("mgc=v1;projects=p-one-1;x=1", LINK_SENDER({ id: "y" }));
-assert(r.ok === false && /not this extension/.test(r.error) && store.log.length === logs0, "31 (W3) a bad sender with a bad link is refused for the sender in the reply only: the link was never parsed and nothing was logged");
-for (const [name, sender] of refusedSenders.filter(([, , re]) => re)) { r = await link(RAW, sender); assert(r.ok === false && store.log.length === logs0, `31 (W3) sender ${name}: no log line`); }
-await freshWindow();
-logs0 = store.log.length;
-r = await link("mgc=v1;projects=p-one-1;x=1");
-assert(r.ok === false && store.log.length === logs0 + 1 && /^deep link refused: the key "x" is not one of/.test(store.log[logs0].msg), "31 (W3) control: the same bad link from the user's own content script is logged with the parser's reason");
-created0 = tabsCreated();
-r = await link(RAW);
-assert(r.ok === true && tabsCreated() === created0 + 1 && store[PL] && store[PL].raw === RAW, "31 (W3) control: the W1 sender is accepted again after the window");
-// W4: raw not a string or absent
-await chrome.storage.local.remove(PL);
-await wait(2100);
-for (const [name, extra] of [["raw a number", { raw: 42 }], ["raw an object", { raw: { toString: () => RAW } }], ["raw an array", { raw: [RAW] }], ["raw null", { raw: null }], ["raw absent", { raw: undefined }]]) {
-  created0 = tabsCreated();
-  r = await link(undefined, LINK_SENDER(), extra);
-  assert(r.ok === false && /the link is not text/.test(r.error) && tabsCreated() === created0 && !(PL in store), `31 (W4) ${name}: refused, no tab, nothing stored`);
-}
-// W7: length 4097 with a 4096-character raw refused before parse; 4096 passes. The fixture is a valid link of exactly
-// 4096 characters. With the 23-project and 13-model caps a project list alone cannot reach 4096 characters, so the bulk
-// is percent-encoded model slugs (three characters a letter): 10 fully-encoded ids, 10 fully-encoded 100-character slugs
-// and one 99-character tuning slug with its first 27 characters encoded (153 raw). Both counts and the decoded joined
-// lists stay within the caps.
-const raw4096 = (() => {
-  const hex = (c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0");
-  const enc = (s, k) => s.split("").map((c, i) => (i < k ? hex(c) : c)).join("");
-  let pn = 0, sn = 0;
-  const mkId = () => ("p-link-" + String(pn++).padStart(3, "0") + "abcdefghijklmnopqrstuvwxyz").slice(0, 30);
-  const mkSlug = (L) => ("claude-model-" + String(sn++).padStart(2, "0") + "-" + "x".repeat(100)).slice(0, L);
-  const ids = Array.from({ length: 10 }, () => enc(mkId(), 30));
-  const slugs = Array.from({ length: 10 }, () => enc(mkSlug(100), 100));
-  slugs.push(enc(mkSlug(99), 27));
-  return `mgc=v1;projects=${ids.join(",")};models=${slugs.join(",")}`;
-})();
-assert(raw4096.length === 4096 && K.parseDeepLink(raw4096).ok === true, "31 (W7) fixture: a valid 4096-character raw");
-await freshWindow();
-created0 = tabsCreated(); logs0 = linkLogs().length;
-r = await link(raw4096, LINK_SENDER(), { length: 4097 });
-assert(r.ok === false && /longer than 4096 characters/.test(r.error) && tabsCreated() === created0 && !(PL in store) && linkLogs().length === logs0 + 1 && !/\(link: /.test(linkLogs()[logs0].msg), "31 (W7) length 4097 with a 4096-character raw (a link cut by the content script) is refused on the length before any parse: " + r.error);
-r = await link(raw4096, LINK_SENDER(), { length: 5000 });
-assert(r.ok === false && /longer than 4096 characters/.test(r.error) && !(PL in store), "31 (W7) length 5000 with the same raw is refused the same way");
-r = await link(raw4096.slice(0, 100), LINK_SENDER(), { length: 50 });
-assert(r.ok === false && /longer than 4096 characters/.test(r.error), "31 (W7) a length below the raw's own length is inconsistent and refused");
-r = await link("mgc=v1;projects=p-one-1;x=1", LINK_SENDER(), { length: "28" });
-assert(r.ok === false && /the key "x" is not one of/.test(r.error), "31 (W7) a non-integer length falls back to the raw's own length (the link is then judged on its text): " + r.error);
-created0 = tabsCreated();
-r = await link(raw4096, LINK_SENDER(), { length: 4096 });
-assert(r.ok === true && tabsCreated() === created0 + 1 && store[PL] && store[PL].raw === raw4096 && store[PL].raw.length === 4096, "31 (W7) length 4096 with the 4096-character raw passes: accepted, one tab, the full text stored");
-await chrome.storage.local.remove(PL);
-// W6: a run active drops a valid link: no tab, no record, one log line naming the run
-await wait(2100);
-r = await msg(START(["proj-one"], ["claude-haiku-4-5"], false, true)); await settle();
-assert(r.ok === true && store.running === true, "31 (W6) fixture: a run is active");
-await freshWindow();
-created0 = tabsCreated(); logs0 = linkLogs().length;
-const runRecord = () => records().find((x) => x.runId === runId());
-let lines0 = runRecord().lineCount;
-r = await link(RAW);
-assert(r.ok === false && /a run is active \(run /.test(r.error) && r.error.includes(runId()) && tabsCreated() === created0 && !(PL in store), "31 (W6) with a run active a valid link is dropped: no tab, no record, the reply names the run: " + r.error);
-assert(linkLogs().length === logs0 + 1 && new RegExp(`^deep link refused: a run is active \\(run ${runId()}\\); the link is dropped, not stored$`).test(linkLogs()[logs0].msg) && store.queue.length === 1 && store.queue[0].projectId === "proj-one", "31 (W6) one log line naming the active run; the queue is untouched");
-assert(runRecord().lineCount === lines0 + 1, "31 (W6) that one line reached the run's full log (D4)");
-// (finding 2) a flood of refused links during the run: one refusal line per 10-second window, the rest counted into one
-// summary line when the window reopens; the storage log keeps the run's own lines and the run's full log grows by one line.
-await freshWindow();
-const markers = store.log.slice(-20).map((l) => l.msg);
-assert(markers.length === 20 && store.log.length <= K.LOG_CAP, "31 (finding 2) fixture: 20 marker lines at the end of the storage log");
-logs0 = store.log.length; lines0 = runRecord().lineCount; created0 = tabsCreated();
-const flood = [];
-for (let i = 0; i < 50; i++) flood.push(await link(i % 2 ? "mgc=v1;projects=p-one-1;x=1" : RAW));
-assert(flood.length === 50 && flood.every((x) => x.ok === false && onlyOkFields(x)) && tabsCreated() === created0 && !(PL in store), "31 (finding 2) 50 links in a burst during the run: every one refused in its reply, no tab, nothing stored");
-assert(store.log.length === logs0 + 1 && /^deep link refused: a run is active/.test(store.log[logs0].msg), "31 (finding 2) the burst wrote exactly one line to the storage log (the first refusal): " + (store.log.length - logs0) + " line(s)");
-assert(runRecord().lineCount === lines0 + 1, "31 (finding 2) the run's full log grew by exactly one line: " + (runRecord().lineCount - lines0));
-assert(store.log.slice(-21, -1).map((l) => l.msg).join("\n") === markers.join("\n"), "31 (finding 2) the 20 marker lines before the burst are all still in the storage log");
-skewClock(WINDOW + 1);
-logs0 = store.log.length; lines0 = runRecord().lineCount;
-r = await link(RAW);
-assert(r.ok === false && store.log.length === logs0 + 2 && store.log[logs0].msg === "deep link: 49 more link(s) refused in the last 10 s (not listed)" && store.log[logs0].level === "warn" && /^deep link refused: a run is active/.test(store.log[logs0 + 1].msg), "31 (finding 2) control: a refusal after the window is logged again, preceded by one summary line counting the 49 suppressed ones: " + store.log.slice(logs0).map((l) => l.msg).join(" | "));
-assert(runRecord().lineCount === lines0 + 1, "31 (finding 2) the summary line stays out of the run's full log; the refusal line is in it");
-skewClock(WINDOW + 1);
-logs0 = store.log.length;
-r = await link(RAW);
-assert(store.log.length === logs0 + 1 && /^deep link refused: a run is active/.test(store.log[logs0].msg), "31 (finding 2) control: with nothing suppressed in between, the next window's refusal carries no summary line");
-// The run-active drop has a window of its own: a refusal of another kind just before it does not hide its line (D4).
-await freshWindow();
-store.running = false;
-logs0 = store.log.length;
-r = await link("mgc=v1;projects=p-one-1;x=1");
-assert(r.ok === false && store.log.length === logs0 + 1 && /^deep link refused: the key "x"/.test(store.log[logs0].msg), "31 (D4 window) a refused link with no run active is logged: " + (store.log[logs0] && store.log[logs0].msg));
-store.running = true;
-r = await link(RAW);
-assert(r.ok === false && store.log.length === logs0 + 2 && /^deep link refused: a run is active/.test(store.log[logs0 + 1].msg), "31 (D4 window) a run-active drop right after it is logged too (its own window): " + store.log.slice(logs0).map((l) => l.msg).join(" | "));
-r = await link(RAW);
-assert(r.ok === false && store.log.length === logs0 + 2, "31 (D4 window) control: a second run-active drop inside the window is not logged");
-r = await msg({ type: K.MSG.STOP }); await settle();
-await wait(2100);
-// W5: a record 11 minutes old is deleted on a new link and at worker start; 9 minutes old stays
-store[PL] = { token: "old-token", raw: RAW, receivedAt: Date.now() - 11 * 60 * 1000 };
-created0 = tabsCreated(); logs0 = linkLogs().length;
-r = await link("mgc=v1;projects=p-one-1;x=1");
-assert(r.ok === false && !(PL in store) && tabsCreated() === created0 && linkLogs().slice(logs0).some((l) => /pending link older than 10 minutes was deleted unread/.test(l.msg)), "31 (W5) an 11-minute-old record is deleted when a new link arrives, even one that is refused");
-store[PL] = { token: "old-token", raw: RAW, receivedAt: Date.now() - 11 * 60 * 1000 };
-listenersBefore = listeners.message.length;
-await import(pathToFileURL(path.join(EXT, "background/service-worker.js")).href + "?instance=deep-link"); await settle(); await settle();
-assert(listeners.message.length === listenersBefore + 1 && !(PL in store), "31 (W5) a fresh worker instance deletes an 11-minute-old record at start");
-store[PL] = { token: "young-token", raw: RAW, receivedAt: Date.now() - 9 * 60 * 1000 };
-await import(pathToFileURL(path.join(EXT, "background/service-worker.js")).href + "?instance=deep-link-2"); await settle(); await settle();
-assert(store[PL] && store[PL].token === "young-token", "31 (W5) a 9-minute-old record stays at worker start");
-r = await link("mgc=v1;projects=p-one-1;x=1");
-assert(store[PL] && store[PL].token === "young-token", "31 (W5) and stays on a refused new link");
-store[PL] = { token: "broken", raw: RAW }; // no receivedAt: unreadable age, deleted
-r = await link("mgc=v1;projects=p-one-1;x=1");
-assert(!(PL in store), "31 (W5) a record without receivedAt is deleted");
-// W8: every reply carries only ok (and error on a refusal)
-await wait(2100);
-const replies = [];
-replies.push(await link(RAW));
-replies.push(await link(RAW)); // within the window
-replies.push(await link("mgc=v1;x=1"));
-replies.push(await link(RAW, LINK_SENDER({ id: "y" })));
-replies.push(await link(7));
-assert(replies.length === 5 && replies[0].ok === true && replies.slice(1).every((x) => x.ok === false) && replies.every(onlyOkFields), "31 (W8) every reply (accepted and each refusal) carries only ok, and error on a refusal: " + JSON.stringify(replies));
-assert(!replies.some((x) => /settings|queue|log|business|popup_state/.test(JSON.stringify(x))), "31 (W8) no settings, queue or log in any reply");
-// (finding 3) tabs.create throws (no browser window): the record is removed, one warn line, no error line, and the
-// next link is not held back by the 2-second window of a link that never showed.
-await chrome.storage.local.remove(PL);
-skewClock(K.DEEP_LINK.MIN_INTERVAL_MS + 1);
-created0 = tabsCreated();
-r = await link(RAW);
-assert(r.ok === true && (PL in store) && tabsCreated() === created0 + 1, "31 (finding 3) control: with tabs.create working a link is accepted, the record is present, one tab");
-await chrome.storage.local.remove(PL);
-skewClock(K.DEEP_LINK.MIN_INTERVAL_MS + 1);
-const realCreate = chrome.tabs.create;
-let createCalls = 0;
-chrome.tabs.create = async () => { createCalls += 1; chrome.tabs.create = realCreate; throw new Error("no window"); }; // throws once
-logs0 = store.log.length; created0 = tabsCreated();
-r = await link(RAW);
-assert(createCalls === 1 && r.ok === false && r.error === "could not open a tab" && onlyOkFields(r), "31 (finding 3) tabs.create throwing once: the reply is { ok: false, error: 'could not open a tab' }: " + JSON.stringify(r));
-assert(!(PL in store) && tabsCreated() === created0, "31 (finding 3) the pending record was removed, no tab");
-const newLines = store.log.slice(logs0);
-assert(newLines.length === 1 && newLines[0].level === "warn" && newLines[0].msg === "deep link: could not open a tab (no window); the link is dropped" && !newLines.some((l) => l.level === "error" || /mgc:deep-link failed/.test(l.msg)), "31 (finding 3) exactly one warn line 'deep link: could not open a tab', no error-level line from the listener's exception path: " + JSON.stringify(newLines.map((l) => [l.level, l.msg])));
-created0 = tabsCreated();
-r = await link(RAW); // at once: the 2-second window must not count the link that never showed
-assert(r.ok === true && (PL in store) && store[PL].raw === RAW && tabsCreated() === created0 + 1 && chrome.tabs.create === realCreate, "31 (finding 3) a valid link sent right after is accepted (the window was reopened), the record stored, one tab");
-// static: the manifest's message list carries the new type; the handler reads the sender before the parse
-r = await msg({ type: K.MSG.VERSION });
-assert(r.messages.includes("mgc:deep-link") && r.keys.includes("pending_link"), "31 the VERSION reply lists the deep-link message type and the pending-link key");
-await chrome.storage.local.remove(PL);
 
 // 32. (finding 1) slugs that name Object.prototype members ("constructor", "toString", ...) are valid slugs and reach the
 // queue (typed by hand or from a link's extra-slugs field); the models.json name lookup must not hand back a prototype
@@ -1286,7 +1069,7 @@ globalThis.fetch = async () => ({ json: async () => structuredClone(modelsJson) 
 try {
   const protoSlugs = ["constructor", "tostring", "hasownproperty", "valueof", "prototype", "__proto__"].filter((s) => K.isValidModelSlug(s));
   assert(protoSlugs.length === 5 && !protoSlugs.includes("__proto__"), "32 fixture: constructor, tostring, hasownproperty, valueof and prototype pass isValidModelSlug (__proto__ does not): " + protoSlugs.join(","));
-  logs0 = store.log.length;
+  const logs0 = store.log.length;
   r = await msg(START(["proj-one"], ["constructor", "toString", "hasOwnProperty", "valueOf", "prototype", "claude-haiku-4-5"], false, true)); await settle();
   assert(r.ok === true && r.jobs === 6 && store.running === true, "32 (finding 1) a Start with the five prototype-named slugs and one real slug is accepted with 6 jobs: " + JSON.stringify(r));
   assert(store.queue.slice(0, 5).every((j) => j.modelName === null) && store.queue.every((j) => typeof j.modelName === "string" || j.modelName === null), "32 (finding 1) every prototype-named slug has modelName null (never a function or an object): " + JSON.stringify(store.queue.map((j) => [j.modelSlug, typeof j.modelName])));

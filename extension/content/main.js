@@ -28,7 +28,6 @@
   const { KEYS, MSG, PHASE, STATUS, PAGE } = K;
 
   let busy = false;
-  if (readDeepLink()) keepLinkFragmentOut(); // before lastHref: the fragment leaves the URL first, so the loop never sees that as a change
   let lastHref = location.href;
   const attempts = new Map();   // "runId|jobIndex|page" -> number of attempts
   const lastErrors = new Map(); // "runId|jobIndex|page" -> last error message
@@ -52,52 +51,6 @@
 
   function log(level, msg) {
     return send({ type: MSG.LOG, level, msg, src: "content" });
-  }
-
-  /* ---------------------------------------------------------- deep link (form B) */
-
-  /*
-   * A console URL whose fragment starts with "#mgc=" is a deep link
-   * (docs/scoping/03-deep-links.md). This document reads the fragment
-   * once, only on the console origin, sends it to the worker as text (the
-   * first MAX_RAW characters, with the full length so a cut link is
-   * refused there) and removes it from the URL, keeping the console's
-   * history state, so a reload or a route change never sends it again. No parsing and no DOM work happen here;
-   * the worker checks the sender, validates the text and opens the popup
-   * tab, where a confirm precedes any fill. Nothing here starts a run.
-   */
-  function readDeepLink() {
-    let hash;
-    try {
-      if (location.origin !== K.CONSOLE_BASE) return;
-      hash = location.hash;
-    } catch (e) {
-      return;
-    }
-    if (typeof hash !== "string" || !hash.startsWith("#mgc=")) return;
-    const raw = hash.slice(1, K.DEEP_LINK.MAX_RAW + 1);
-    send({ type: MSG.DEEP_LINK, raw, length: hash.length - 1 });
-    try { history.replaceState(history.state, "", location.pathname + location.search); } catch (e) { /* ignore */ }
-    return true;
-  }
-
-  /*
-   * The console writes its router state back with history.replaceState
-   * some seconds after load, from a URL it read while the fragment was
-   * still there (measured on 2026-10-13: 6.6 s after navigation, the
-   * Model Garden gallery adding its pageState), so the fragment comes
-   * back and a reload would send the link again. replaceState fires no
-   * event, so a document that carried a link checks its URL at the URL
-   * poll interval for as long as it lives and removes a returning #mgc=
-   * fragment again, keeping the console's state object. It never sends
-   * the link again.
-   */
-  function keepLinkFragmentOut() {
-    setInterval(() => {
-      try {
-        if (location.hash.startsWith("#mgc=")) history.replaceState(history.state, "", location.pathname + location.search);
-      } catch (e) { /* ignore */ }
-    }, K.URL_POLL_MS);
   }
 
   async function readState() {

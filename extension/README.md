@@ -107,21 +107,22 @@ never starts a run and never changes the DRY RUN mode, step-by-step, the
 "Include pairs already done" box, the questionnaire values or the timing.
 The design and its threat model are in `docs/scoping/03-deep-links.md`.
 
-| Form | Link | Works from |
-|---|---|---|
-| A | `chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest` | the address bar and bookmarks of a browser with the extension (`<id>` is the extension id; web pages cannot open it, `popup.html` is not a web-accessible resource) |
-| B | `https://console.cloud.google.com/agent-platform/model-garden#mgc=v1;projects=p-a,p-b;models=latest` | any page, chat or ticket, in a browser that is signed in to the console and has the extension (the fragment never reaches Google; the content script reads it once, sends it to the worker and removes it from the URL) |
+The link is the popup page's own URL, for the address bar and bookmarks
+of a browser with the extension:
 
-Form B is expected to work on a signed-in console; the offline suite
-proves the content script, the worker and the popup, and one check in a
-signed-in browser is still to be done (the console is a single-page app
-and may rewrite the URL before the content script runs at `document_end`).
+```text
+chrome-extension://fmfhgpbcpacoddjpfemghhpinhodcglp/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest
+```
 
-The keys, in either form (`&` or `;` separate them):
+`fmfhgpbcpacoddjpfemghhpinhodcglp` is the Chrome Web Store install's id;
+an unpacked copy has another id (shown on `chrome://extensions`). Web
+pages cannot open the link: `popup.html` is not a web-accessible resource.
+
+The keys (`&` separates them):
 
 | Key | Value | Required | Meaning |
 |---|---|---|---|
-| `v` (form A) / `mgc` (form B) | `1` / `v1` | yes | The format version. The parser accepts either spelling in either form; the forms differ only in where the text sits (query string or fragment). |
+| `v` | `1` | yes | The format version. |
 | `projects` | comma list of project IDs | yes | Each must be a valid Cloud project ID exactly as written (lower-case, 6-30 characters), none repeated, at most 23. |
 | `models` | comma list of model slugs, or `latest`, or absent | no | Slugs exactly as written, none repeated, at most 13. A slug in `models.json` is ticked; any other goes to the extra-slugs field, as the settings import does. `latest` ticks the newest GA model of each line on this machine (the same set as the `latest` link). Absent: nothing is ticked and the banner says so. |
 
@@ -132,8 +133,8 @@ or 13 models, `latest` next to a slug list, a percent-encoding that cannot
 be decoded, or a joined list over the settings import's 2,000-character
 cap refuses the whole link with one reason in the popup's error line.
 Nothing is filled on a refusal. Keys and values are percent-decoded after
-the split, so an encoded `&`, `;`, `,` or `=` stays inside its value (and
-then fails the id or slug rule). A key that is not a plain name is not
+the split, so an encoded `&`, `,` or `=` stays inside its value (and then
+fails the id or slug rule). A key that is not a plain name is not
 echoed in the reason.
 
 What the popup tab does with an accepted link: a confirmation dialog
@@ -151,34 +152,14 @@ as a manual edit would, and shows a "Filled from a link" banner above the
 inputs that repeats those facts, with a **Clear** button that empties the
 three inputs and hides the banner. The banner also goes when Start is
 pressed. The link path runs only in the tab layout (`?tab=1`); the action
-popup has no query string. Either form leaves the tab's URL as
-`popup.html?tab=1` once the link is read (form A's query and form B's
-token are removed with `history.replaceState`, accepted or refused), so a
-reload or a session restore of the tab shows the form as it is instead of
-asking again; a bookmark or a link pasted again opens fresh.
-
-The worker, for form B: it accepts the message only from this extension's
-own content script, in a tab, on the origin `https://console.cloud.google.com`
-exactly; the popup page in a tab and any other origin are refused before
-the text is read, in the reply only (a sender refusal writes no log line:
-none of them can come from your own link). A link that arrives while a
-run is active is dropped with one log line (nothing stored, no tab). A
-second link within two seconds of an accepted one is dropped. An accepted
-link is stored under `pending_link` as `{ token, raw, receivedAt }` with a
-random token and exactly one tab opens `popup/popup.html?tab=1&link=<token>`;
-if that tab cannot be opened (no browser window), the record is removed
-again, one warning line says so and the next link is not held back. The
-popup reads the record under that fixed key, compares the token by string
-equality, deletes the record at once, and refuses a record older than ten
-minutes (the worker also deletes such a record when a new link arrives
-and at its start). A refused link is logged with the reason and at most
-80 characters of its text, at most one refusal per ten seconds: the
-others are counted, and the next logged refusal is preceded by one line
-"deep link: N more link(s) refused in the last 10 s (not listed)", so a
-flood of refused links cannot push a run's own lines out of the capped
-log or pad the run's full log (the first drop of a window still reaches
-it). The manifest is unchanged: the same permissions, no
-`web_accessible_resources`, no `externally_connectable`, no `omnibox`.
+popup has no query string. The tab's URL becomes `popup.html?tab=1` once
+the link is read (the query is removed with `history.replaceState`,
+accepted or refused), so a reload or a session restore of the tab shows
+the form as it is instead of asking again; a bookmark or a link pasted
+again opens fresh. A link that opens while a run is active is dropped
+with one error line in the popup (nothing filled). The manifest is
+unchanged: the same permissions, no `web_accessible_resources`, no
+`externally_connectable`, no `omnibox`.
 
 ## Run a dry run
 
@@ -658,7 +639,7 @@ every use and fall back to the constants when nothing is stored.
 | `content/selectors.js` | Every console DOM locator and URL check, written from `docs/dom-map.md`. |
 | `content/badge.js` | Floating status badge (job, step with timeout, plan, next job), the step-by-step panel and the end-of-run summary. |
 | `content/actions.js` | Per-page handlers, the step-by-step wait and `clickAgreeGuarded()`, the only function that clicks Agree. |
-| `content/main.js` | Page loop: detects the page and runs the handler; sends a `#mgc=` fragment to the worker once, as text. |
+| `content/main.js` | Page loop: detects the page and runs the handler. |
 | `popup/` | Start/stop UI (popup and tab layouts), mode banner, missing-options notice, step mirror, results table, the last 50 log lines, the link to the Runs page, and the deep-link confirm, fill and banner (tab layout only). |
 | `options/` | Questionnaire values (dropdowns with "Other"), the DRY RUN and step-by-step boxes, the advanced timing JSON and the Logs section (Runs to keep, Purge all). |
 | `runs/` | The Runs page: every run's full log, newest first, with Download log, Delete, Download all and Purge all. |

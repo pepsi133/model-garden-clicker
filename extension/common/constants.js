@@ -27,8 +27,7 @@
     SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
     RUNS_KEEP: "runs_keep",         // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
     PAUSED: "paused",               // boolean: the popup's Pause; the worker starts no new job while true (the job in progress finishes); cleared by Resume, Stop and the run's end
-    PURCHASED_PAIRS: "purchased_pairs", // array of "project/model" (lower-cased): every pair with an Agree click or an observed purchase on record, in any run; never pruned by "Runs to keep" and not cleared by a purge of the run logs
-    PENDING_LINK: "pending_link"    // { token, raw, receivedAt }: one deep link (form B) accepted by the worker, waiting for the popup tab it opened; deleted on first read or after DEEP_LINK.MAX_AGE_MS
+    PURCHASED_PAIRS: "purchased_pairs" // array of "project/model" (lower-cased): every pair with an Agree click or an observed purchase on record, in any run; never pruned by "Runs to keep" and not cleared by a purge of the run logs
   };
 
   /*
@@ -102,8 +101,7 @@
     RUNS_PURGE: "mgc:runs-purge",   // runs or options page -> worker: delete every full log (the run in progress is kept)
     PAUSE: "mgc:pause",             // popup -> worker: start no new job until RESUME (the job in progress finishes)
     RESUME: "mgc:resume",           // popup -> worker: clear the pause and start the next pending job
-    GUARD_PREVIEW: "mgc:guard-preview", // popup -> worker { projects, models }: { total, done, skipped } for the full-run confirm (read-only)
-    DEEP_LINK: "mgc:deep-link"      // content (console origin only) -> worker { raw, length }: the "#mgc=..." fragment as text; the reply is { ok } or { ok: false, error }
+    GUARD_PREVIEW: "mgc:guard-preview" // popup -> worker { projects, models }: { total, done, skipped } for the full-run confirm (read-only)
   };
 
   /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
@@ -593,34 +591,28 @@
   /*
    * Deep links (docs/scoping/03-deep-links.md): a link opens the popup in
    * a tab with the project IDs and the models filled in, after a confirm.
-   * It never starts a run and never touches a setting. Two forms carry the
-   * same three keys:
-   *   A  chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest
-   *   B  https://console.cloud.google.com/...#mgc=v1;projects=p-a,p-b;models=latest
+   * It never starts a run and never touches a setting. The link is the
+   * popup page's own query string:
+   *   chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest
    * The limits are the parser's refusals, not advice.
    */
   MGC.DEEP_LINK = {
-    VERSION: "1",                   // the only format version: v=1 (form A) or mgc=v1 (form B)
+    VERSION: "1",                   // the only format version: v=1
     MAX_RAW: 4096,                  // a longer link (characters, before decoding) is refused as a whole
     MAX_PROJECTS: 23,
     MAX_MODELS: 13,
-    MAX_AGE_MS: 10 * 60 * 1000,     // a pending link older than this is deleted unread
-    MIN_INTERVAL_MS: 2000,          // the worker drops a second link within this many ms of an accepted one
-    LOG_RAW_CHARS: 80,              // a refused link is logged with at most this much of its text
-    REFUSAL_LOG_WINDOW_MS: 10000,   // the worker logs one refusal per this many ms; the rest are counted into one summary line
     CONFIRM_ROWS: 24,               // the confirm() text is budgeted to this many rows ...
     CONFIRM_COLS: 80                // ... of this many columns (Chromium elides a longer dialog message)
   };
 
   /**
-   * Parse the text of a deep link: the query string of form A without its
-   * "?" ("v=1&projects=a,b&models=latest") or the fragment of form B
-   * without its "#" ("mgc=v1;projects=a,b;models=latest"). Pure: no DOM,
+   * Parse the text of a deep link: the popup's query string without its
+   * "?" and without "tab=1" ("v=1&projects=a,b&models=latest"). Pure: no DOM,
    * no storage, nothing from the link is used as a key, a URL or a
    * pattern. Returns
    *   { ok: true, error: null, projects: [ids], models: [slugs], latest, dropped: [slugs] }
    *   { ok: false, error: "<one sentence naming the first problem>", projects: [], models: [], latest: false, dropped: [] }
-   * The pairs are split on "&" and ";" and the lists on "," BEFORE any
+   * The pairs are split on "&" and the lists on "," BEFORE any
    * percent-decoding, so an encoded separator stays inside its value (and
    * then fails the id or slug rule). Every key and value is decoded with
    * decodeURIComponent inside a try/catch; a bad sequence refuses the link.
@@ -649,7 +641,7 @@
     const decode = (s) => { try { return decodeURIComponent(s); } catch (e) { return null; } };
     let version = null, projectsText = null, modelsText = null;
     let versionSeen = false, projectsSeen = false, modelsSeen = false;
-    for (const pair of raw.split(/[&;]/)) {
+    for (const pair of raw.split("&")) {
       if (!pair) return refused("the link holds an empty part (two separators in a row, or a separator at the end)");
       const eq = pair.indexOf("=");
       if (eq < 0) return refused(`the part ${keyName(pair)} has no "=" and no value`);
@@ -657,12 +649,12 @@
       if (key === null) return refused("a key of the link holds a percent-encoding that cannot be decoded");
       const pieces = pair.slice(eq + 1).split(",").map(decode);
       if (pieces.some((p) => p === null)) return refused(`the value of ${keyName(key)} holds a percent-encoding that cannot be decoded`);
-      if (key === "v" || key === "mgc") {
+      if (key === "v") {
         if (versionSeen) return refused('the key "v" (the format version) is repeated');
         versionSeen = true;
         if (pieces.length !== 1) return refused('the key "v" must hold one value');
         version = pieces[0];
-        if (version !== (key === "mgc" ? `v${L.VERSION}` : L.VERSION)) return refused(`the format version must be ${L.VERSION} (v=${L.VERSION} or mgc=v${L.VERSION})`);
+        if (version !== L.VERSION) return refused(`the format version must be ${L.VERSION} (v=${L.VERSION})`);
       } else if (key === "projects") {
         if (projectsSeen) return refused('the key "projects" is repeated');
         projectsSeen = true;

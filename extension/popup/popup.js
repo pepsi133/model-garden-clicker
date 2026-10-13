@@ -332,14 +332,11 @@
   /*
    * A deep link (docs/scoping/03-deep-links.md) fills the project IDs and
    * the models after a confirm. It runs only when the page is a tab:
-   *   form A  popup.html?tab=1&v=1&projects=p-a,p-b&models=latest, from the
-   *           address bar or a bookmark; the query string is the link;
-   *   form B  popup.html?tab=1&link=<token>: the worker opened this tab for
-   *           a "#mgc=" fragment it accepted on a console page and stored
-   *           the link's text under KEYS.PENDING_LINK with a random token.
-   * Both end in the same path: parseDeepLink (constants.js) over the text,
-   * a confirm() built from the validated values, and on OK the textarea,
-   * the checklist and the extra-slugs field, saved as a manual edit is,
+   * popup.html?tab=1&v=1&projects=p-a,p-b&models=latest, from the address
+   * bar or a bookmark; the query string is the link. The path:
+   * parseDeepLink (constants.js) over the text, a confirm() built from
+   * the validated values, and on OK the textarea, the checklist and the
+   * extra-slugs field, saved as a manual edit is,
    * with a banner that names what came from the link. Nothing here sends a
    * message, starts a run or touches a setting, the mode, step-by-step,
    * the include-done box or the timing. Every text reaches the page
@@ -347,35 +344,13 @@
    * attribute, a selector, a storage key or a pattern.
    */
 
-  /** The link text of this page, or { error } for a refusal, or null when the page carries no link. */
-  async function pendingLinkText() {
+  /** The link text of this page, or null when the page carries no link. */
+  function pendingLinkText() {
     const search = location.search;
     const pairs = search.startsWith("?") && search.length > 1 ? search.slice(1).split("&") : [];
     const rawKey = (pair) => pair.slice(0, pair.indexOf("=") < 0 ? pair.length : pair.indexOf("="));
-    const tokens = pairs.filter((p) => rawKey(p) === "link");
-    const rest = pairs.filter((p) => rawKey(p) !== "tab" && rawKey(p) !== "link");
-    if (tokens.length) {
-      // Form B: the token selects the stored record, by string equality
-      // only. The record is deleted at once, whatever comes of it.
-      const token = tokens[0].slice("link=".length);
-      const o = await chrome.storage.local.get(KEYS.PENDING_LINK);
-      const rec = o[KEYS.PENDING_LINK];
-      await chrome.storage.local.remove(KEYS.PENDING_LINK);
-      if (rest.length) return { error: "the page carries a link token and link values together; use one or the other" };
-      if (tokens.length > 1) return { error: "the page carries more than one link token" };
-      // The token leaves the URL, so a reload of this tab shows the form as
-      // it is instead of a refusal line for a record that is gone.
-      try { history.replaceState(null, "", location.pathname + "?tab=1"); } catch (e) { /* ignore */ }
-      if (!rec || typeof rec !== "object" || typeof rec.token !== "string" || !token || rec.token !== token) {
-        return { error: "the link token does not match the pending link (it was used, replaced or never existed); open the link again" };
-      }
-      if (typeof rec.receivedAt !== "number" || Date.now() - rec.receivedAt > K.DEEP_LINK.MAX_AGE_MS || rec.receivedAt > Date.now() + K.DEEP_LINK.MIN_INTERVAL_MS) {
-        return { error: "the pending link is older than 10 minutes and was discarded; open the link again" };
-      }
-      if (typeof rec.raw !== "string") return { error: "the pending link holds no text" };
-      return rec.raw;
-    }
-    // Form A: the query string itself, without the tab marker. The link
+    const rest = pairs.filter((p) => rawKey(p) !== "tab");
+    // The query string itself, without the tab marker. The link
     // leaves the URL before it is judged, so a reload or a session restore
     // of this tab shows the form as it is (with the edits made since)
     // instead of asking again, for a refused link as for an accepted one;
@@ -422,10 +397,9 @@
    */
   async function applyDeepLink() {
     if (!document.documentElement.classList.contains("tab")) return;
-    const text = await pendingLinkText();
+    const text = pendingLinkText();
     if (text === null) return;
-    if (typeof text !== "string") { showError(`link refused: ${text.error}`); return; }
-    // A link during a run is dropped in both forms (the worker drops form B).
+    // A link during a run is dropped.
     const state = await chrome.storage.local.get(KEYS.RUNNING);
     if (state[KEYS.RUNNING] === true) { showError("link refused: a run is active; the link is dropped"); return; }
     const parsed = K.parseDeepLink(text, currentModels);

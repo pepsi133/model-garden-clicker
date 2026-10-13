@@ -12,18 +12,15 @@ python3 -I scripts/deep-link/mgc_link.py my-proj-a my-proj-b --models latest
 sh scripts/deep-link/mgc-link.sh my-proj-a,my-proj-b latest
 ```
 
-Both print the console form:
+Both print the popup-page link, for the address bar and bookmarks:
 
 ```text
-https://console.cloud.google.com/agent-platform/model-garden?project=my-proj-a#mgc=v1;projects=my-proj-a,my-proj-b;models=latest
+chrome-extension://fmfhgpbcpacoddjpfemghhpinhodcglp/popup/popup.html?tab=1&v=1&projects=my-proj-a,my-proj-b&models=latest
 ```
 
-With `--extension-id <id>` (Python) or `MGC_EXTENSION_ID=<id>` (shell) a
-second line holds the popup-page form for the address bar and bookmarks:
-
-```text
-chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=my-proj-a,my-proj-b&models=latest
-```
+The default id is the Chrome Web Store install's. An unpacked copy has
+another id (shown on `chrome://extensions`); pass it with
+`--extension-id <id>` (Python) or `MGC_EXTENSION_ID=<id>` (both).
 
 `--models` (or the second argument) takes a comma list of slugs or
 `latest`. Leave it out to open the popup with no model ticked. At most 23

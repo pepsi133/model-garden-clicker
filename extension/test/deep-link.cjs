@@ -2,8 +2,8 @@
  * MGC.parseDeepLink (common/constants.js), the pure parser behind the deep
  * links of docs/scoping/03-deep-links.md, in node without jsdom. The
  * parser tests P1 to P8 of the feasibility review, each with a control
- * case: both syntaxes (the query string of form A and the fragment of form
- * B), every refusal of decision D2 (missing or wrong version, unknown,
+ * case: the query-string syntax ("&" between pairs; ";" and the old
+ * "mgc=v1" fragment spelling are refused), every refusal of decision D2 (missing or wrong version, unknown,
  * repeated or prototype-named keys, the note key, invalid ids and slugs,
  * repeated ids, the 23 / 13 / 4096 limits), the percent-encoding rules
  * (split before decode, a bad sequence, an encoded separator, double
@@ -30,9 +30,9 @@ const accepted = (raw, label, known) => {
   return r;
 };
 
-console.log("--- constants: the keys, the message type and the limits");
-ok(K.KEYS.PENDING_LINK === "pending_link" && K.MSG.DEEP_LINK === "mgc:deep-link", "KEYS.PENDING_LINK and MSG.DEEP_LINK exist");
-ok(K.DEEP_LINK.VERSION === "1" && K.DEEP_LINK.MAX_RAW === 4096 && K.DEEP_LINK.MAX_PROJECTS === 23 && K.DEEP_LINK.MAX_MODELS === 13 && K.DEEP_LINK.MAX_AGE_MS === 600000 && K.DEEP_LINK.MIN_INTERVAL_MS === 2000 && K.DEEP_LINK.LOG_RAW_CHARS === 80 && K.DEEP_LINK.REFUSAL_LOG_WINDOW_MS === 10000 && K.DEEP_LINK.CONFIRM_ROWS === 24 && K.DEEP_LINK.CONFIRM_COLS === 80, "DEEP_LINK limits: version 1, 4096 characters, 23 projects, 13 models, 10 minutes, 2 seconds, 80 logged characters, one logged refusal per 10 s, a confirm of 24 rows x 80 columns", JSON.stringify(K.DEEP_LINK));
+console.log("--- constants: the limits; the console-link key and message are gone");
+ok(!("PENDING_LINK" in K.KEYS) && !("DEEP_LINK" in K.MSG) && !Object.values(K.KEYS).includes("pending_link") && !Object.values(K.MSG).includes("mgc:deep-link"), "no KEYS.PENDING_LINK and no MSG.DEEP_LINK (the console-link path was dropped in 0.9.0)");
+ok(K.DEEP_LINK.VERSION === "1" && K.DEEP_LINK.MAX_RAW === 4096 && K.DEEP_LINK.MAX_PROJECTS === 23 && K.DEEP_LINK.MAX_MODELS === 13 && K.DEEP_LINK.CONFIRM_ROWS === 24 && K.DEEP_LINK.CONFIRM_COLS === 80 && Object.keys(K.DEEP_LINK).sort().join() === "CONFIRM_COLS,CONFIRM_ROWS,MAX_MODELS,MAX_PROJECTS,MAX_RAW,VERSION", "DEEP_LINK limits: version 1, 4096 characters, 23 projects, 13 models, a confirm of 24 rows x 80 columns, and nothing else", JSON.stringify(K.DEEP_LINK));
 ok(typeof K.parseDeepLink === "function", "MGC.parseDeepLink is a function");
 
 console.log("--- (P1) the ok case fills every field; a missing or wrong version, an unknown, note or repeated key refuse naming the key");
@@ -91,20 +91,20 @@ console.log("--- (P2) ids and slugs are matched exactly as written: upper case, 
   ok(K.isValidProjectId("p-one-1") && !K.isValidProjectId("р-one-1") && !K.isValidProjectId("P-ONE-1") && K.isValidModelSlug("claude-haiku-4-5") && !K.isValidModelSlug("<b>x"), "P2 control: the validators themselves refuse the confusable, upper case and <");
 }
 
-console.log("--- (P3) ; and & both separate pairs; %3B, %26 and %2C stay inside their value (split before decode)");
+console.log("--- (P3) only & separates pairs; ; and the mgc key are refused; %3B, %26 and %2C stay inside their value (split before decode)");
 {
   const a = accepted("v=1&projects=p-one-1&models=claude-haiku-4-5", "P3 & separates");
-  const b = accepted("v=1;projects=p-one-1;models=claude-haiku-4-5", "P3 ; separates");
-  const c = accepted("mgc=v1;projects=p-one-1;models=claude-haiku-4-5", "P3 form B (mgc=v1 with ;)");
-  const d = accepted("v=1;projects=p-one-1&models=claude-haiku-4-5", "P3 mixed separators");
-  ok([a, b, c, d].every((r) => JSON.stringify(r) === JSON.stringify(a)), "P3 all four spellings give the same result", JSON.stringify([a, b, c, d]));
+  ok(a.projects.join() === "p-one-1" && a.models.join() === "claude-haiku-4-5", "P3 control: the & spelling gives the id and the slug", JSON.stringify(a));
+  refused("v=1;projects=p-one-1;models=claude-haiku-4-5", /format version must be 1/, "P3 ; does not separate: the version value swallows the rest");
+  refused("v=1&projects=p-one-1;models=claude-haiku-4-5", /project ID \(not a plain name, so not shown\)/, "P3 ; inside a value: the id ends up invalid");
+  refused("mgc=v1;projects=p-one-1;models=claude-haiku-4-5", /the key "mgc" is not one of v, projects, models/, "P3 the old console-fragment spelling (mgc=v1 with ;) is refused");
+  refused("mgc=v1&projects=p-one-1", /the key "mgc" is not one of v, projects, models/, "P3 mgc=v1 with & is refused too: mgc is not a key");
   refused("v=1&projects=p-one-1%3Bmodels=claude-haiku-4-5", /project ID \(not a plain name, so not shown\)/, "P3 %3B stays in the value: the id ends up invalid, no models key appears");
   refused("v=1&projects=p-one-1%26models=claude-haiku-4-5", /project ID \(not a plain name, so not shown\)/, "P3 %26 stays in the value");
   refused("v=1&projects=p-one-1%2Cp-two-2", /project ID \(not a plain name, so not shown\)/, "P3 %2C does not split an id: the one id is invalid");
   refused("v=1&projects=p-one-1%3Dx", /project ID \(not a plain name, so not shown\)/, "P3 %3D stays in the value");
   refused("v=1&projects=p-one-1&models%3Dlatest=1", /the key "models=latest" is not one of|the key \(not a plain name, so not shown\) is not one of/, "P3 %3D in a key does not make it a known key");
-  refused("mgc=v1&v=1&projects=p-one-1", /the key "v" \(the format version\) is repeated/, "P3 mgc=v1 and v=1 together count as a repeated version key");
-  refused("mgc=1&projects=p-one-1", /format version must be 1/, "P3 mgc=1 (no v) is a wrong version");
+  refused("v=1&mgc=v1&projects=p-one-1", /the key "mgc" is not one of v, projects, models/, "P3 mgc=v1 next to v=1 is an unknown key");
   refused("v=v1&projects=p-one-1", /format version must be 1/, "P3 v=v1 is a wrong version");
   refused("%76=1&projects=p-one-1&v=1", /the key "v" \(the format version\) is repeated/, "P3 an encoded key (%76 = v) is decoded and counts as the same key");
   const e = accepted("%76=1&projects=p-one-1", "P3 control: %76=1 alone is v=1");
@@ -197,8 +197,6 @@ console.log("--- (P8) a slug not in models.json goes to dropped; models=latest g
   ok(JSON.stringify(r.models) === '["claude-haiku-4-5"]' && JSON.stringify(r.dropped) === '["my-own-slug"]', "P8 the known list may be plain slugs too", JSON.stringify(r));
   r = accepted("v=1&projects=p-one-1&models=latest", "P8 models=latest", MODELS_FILE);
   ok(r.latest === true && r.models.length === 0 && r.dropped.length === 0, "P8 latest true, empty models (the popup resolves it)", JSON.stringify(r));
-  r = accepted("mgc=v1;projects=p-one-1;models=latest", "P8 models=latest in form B", MODELS_FILE);
-  ok(r.latest === true && r.models.length === 0, "P8 form B latest");
   refused("v=1&projects=p-one-1&models=latest,claude-haiku-4-5", /"latest" cannot be combined with a list/, "P8 latest plus a list refuses");
   refused("v=1&projects=p-one-1&models=claude-haiku-4-5,latest", /"latest" cannot be combined with a list/, "P8 a list plus latest refuses");
   refused("v=1&projects=p-one-1&models=Latest", /"latest" is a keyword, written alone and in lower case/, "P8 Latest (capital) is refused, not taken as a slug");
@@ -216,7 +214,7 @@ console.log("--- purity: no DOM, no storage, no chrome in the parser");
   ok(start > 0 && end > start && body.length > 500, "the parser body was located in constants.js", body.length);
   ok(!/document\.|window\.|chrome\.|localStorage|fetch\(|new URL\(|RegExp\(|eval\(|Function\(|setTimeout\(|innerHTML/.test(body), "the parser body touches no document, window, chrome, storage, URL, RegExp, eval, Function or timer");
   ok(/decodeURIComponent\(s\)/.test(body) && /try \{ return decodeURIComponent/.test(body), "decoding is decodeURIComponent inside a try/catch");
-  ok(/split\(\/\[&;\]\/\)/.test(body) && /split\(","\)\.map\(decode\)/.test(body), "the pairs are split on & and ; and the lists on , before the decode");
+  ok(/raw\.split\("&"\)/.test(body) && !/;/.test(body.match(/raw\.split\([^)]*\)/)[0]) && /split\(","\)\.map\(decode\)/.test(body), "the pairs are split on & only and the lists on , before the decode");
   ok(/MGC\.parseConfig\(\{ popup: \{ projects, models \} \}\)/.test(body) && /MGC\.isValidProjectId\(id\)/.test(body) && /MGC\.isValidModelSlug\(slug\)/.test(body), "the parser reuses parseConfig and the two validators");
 }
 

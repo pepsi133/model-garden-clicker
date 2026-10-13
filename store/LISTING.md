@@ -1,8 +1,9 @@
 # Chrome Web Store listing: Model Garden Clicker
 
 **Re-paste needed.** The Description below changed for 0.9.0: step 2 names
-the "latest" link and the deep links (with a pointer to the README's
-Deep links section), and the `skipped` wording is shorter.
+the "latest" link and the deep link (the popup-page link only; with a
+pointer to the README's Deep links section), and the `skipped` wording
+is shorter.
 Paste the new Description into the Store listing tab and save the draft.
 (The 0.8.0 change, the cross-run guard in `skipped`, is in it as well.)
 

@@ -86,7 +86,8 @@ it. The header (photo, title, the two header buttons, **Open in a tab**,
 checklist, the extra-slugs field, Start and Stop, the status line) keep
 their natural size and never sit inside a scroll region. The checklist is
 a four-column grid, so the thirteen models of `models.json` are all visible
-without a scrollbar (a longer list scrolls inside the box). The results
+without a scrollbar (a longer list scrolls inside the box). The list is
+sorted by release date, newest first. The results
 table and the log share the remaining height below them with their own
 scroll, so unfolding the log never scrolls the whole popup. The log starts
 unfolded while a run is active. **Open in a tab** opens the same page in a
@@ -98,12 +99,101 @@ worker tells that page apart from a console tab by its extension URL, not
 by its tab id). The geometry is checked in headless Chrome by
 `python/scripts/popup_layout.py`.
 
+## Open the popup from a link
+
+A deep link opens the popup in a tab with the project IDs entered and the
+models ticked, after a confirmation. It fills the form and nothing else: it
+never starts a run and never changes the DRY RUN mode, step-by-step, the
+"Include pairs already done" box, the questionnaire values or the timing.
+The design and its threat model are in `docs/scoping/03-deep-links.md`.
+
+| Form | Link | Works from |
+|---|---|---|
+| A | `chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest` | the address bar and bookmarks of a browser with the extension (`<id>` is the extension id; web pages cannot open it, `popup.html` is not a web-accessible resource) |
+| B | `https://console.cloud.google.com/agent-platform/model-garden#mgc=v1;projects=p-a,p-b;models=latest` | any page, chat or ticket, in a browser that is signed in to the console and has the extension (the fragment never reaches Google; the content script reads it once, sends it to the worker and removes it from the URL) |
+
+Form B is expected to work on a signed-in console; the offline suite
+proves the content script, the worker and the popup, and one check in a
+signed-in browser is still to be done (the console is a single-page app
+and may rewrite the URL before the content script runs at `document_end`).
+
+The keys, in either form (`&` or `;` separate them):
+
+| Key | Value | Required | Meaning |
+|---|---|---|---|
+| `v` (form A) / `mgc` (form B) | `1` / `v1` | yes | The format version. The parser accepts either spelling in either form; the forms differ only in where the text sits (query string or fragment). |
+| `projects` | comma list of project IDs | yes | Each must be a valid Cloud project ID exactly as written (lower-case, 6-30 characters), none repeated, at most 23. |
+| `models` | comma list of model slugs, or `latest`, or absent | no | Slugs exactly as written, none repeated, at most 13. A slug in `models.json` is ticked; any other goes to the extra-slugs field, as the settings import does. `latest` ticks the newest GA model of each line on this machine (the same set as the `latest` link). Absent: nothing is ticked and the banner says so. |
+
+Limits and refusals: a link longer than 4,096 characters, any other key
+(there is no note or free-text key), a repeated key, a missing or wrong
+version, an invalid, empty or repeated id or slug, more than 23 projects
+or 13 models, `latest` next to a slug list, a percent-encoding that cannot
+be decoded, or a joined list over the settings import's 2,000-character
+cap refuses the whole link with one reason in the popup's error line.
+Nothing is filled on a refusal. Keys and values are percent-decoded after
+the split, so an encoded `&`, `;`, `,` or `=` stays inside its value (and
+then fails the id or slug rule). A key that is not a plain name is not
+echoed in the reason.
+
+What the popup tab does with an accepted link: a confirmation dialog
+(`window.confirm`, the same kind the DRY RUN switch uses) states the
+number of project IDs and of models, the model slugs (or `latest` resolved
+to the slugs of this machine, or "no models"), the extra slugs, that OK
+replaces the three inputs and that nothing starts until Start is pressed,
+and then the first 16 project IDs with "and N more". Chromium cuts a long
+dialog message short, so the text is budgeted to 24 rows of 80 columns
+(the worst case of 23 IDs and 13 slugs fits) and the counts, the slugs and
+the "nothing starts" sentence come first; the banner and the textarea list
+every ID after OK. Cancel leaves the form as it was and discards the link.
+OK fills the textarea, the checklist and the extra-slugs field, saves them
+as a manual edit would, and shows a "Filled from a link" banner above the
+inputs that repeats those facts, with a **Clear** button that empties the
+three inputs and hides the banner. The banner also goes when Start is
+pressed. The link path runs only in the tab layout (`?tab=1`); the action
+popup has no query string. Either form leaves the tab's URL as
+`popup.html?tab=1` once the link is read (form A's query and form B's
+token are removed with `history.replaceState`, accepted or refused), so a
+reload or a session restore of the tab shows the form as it is instead of
+asking again; a bookmark or a link pasted again opens fresh.
+
+The worker, for form B: it accepts the message only from this extension's
+own content script, in a tab, on the origin `https://console.cloud.google.com`
+exactly; the popup page in a tab and any other origin are refused before
+the text is read, in the reply only (a sender refusal writes no log line:
+none of them can come from your own link). A link that arrives while a
+run is active is dropped with one log line (nothing stored, no tab). A
+second link within two seconds of an accepted one is dropped. An accepted
+link is stored under `pending_link` as `{ token, raw, receivedAt }` with a
+random token and exactly one tab opens `popup/popup.html?tab=1&link=<token>`;
+if that tab cannot be opened (no browser window), the record is removed
+again, one warning line says so and the next link is not held back. The
+popup reads the record under that fixed key, compares the token by string
+equality, deletes the record at once, and refuses a record older than ten
+minutes (the worker also deletes such a record when a new link arrives
+and at its start). A refused link is logged with the reason and at most
+80 characters of its text, at most one refusal per ten seconds: the
+others are counted, and the next logged refusal is preceded by one line
+"deep link: N more link(s) refused in the last 10 s (not listed)", so a
+flood of refused links cannot push a run's own lines out of the capped
+log or pad the run's full log (the first drop of a window still reaches
+it). The manifest is unchanged: the same permissions, no
+`web_accessible_resources`, no `externally_connectable`, no `omnibox`.
+
 ## Run a dry run
 
 1. Sign in to the Cloud console in this Chrome profile.
 2. Click the extension icon. The banner must read **MODE: DRY RUN**.
 3. Paste project IDs into the text area, one per line.
-4. Tick the models you want. No model is ticked when the popup is first
+4. Tick the models you want. The list is sorted by release date, newest
+   first (the date is in each row's tooltip). The **all** and **none**
+   links tick or untick every model. The **latest** link ticks the newest
+   GA model of each model line (opus, sonnet, haiku, fable, and any new
+   line) and writes a note under the list. A line whose newest model needs
+   a manual consent step on its model page (Fable 5.1, marked
+   `GA · manual step`) is left out and named in the note. A line under the
+   list counts the pairs: `P project(s) × M model(s) = K pair(s)`.
+   No model is ticked when the popup is first
    opened; the selection you make is kept in the extension's local storage
    and shown again next time, as are the project IDs and the extra slugs.
    The first time the popup opens after an update, the model selection is
@@ -558,8 +648,8 @@ every use and fall back to the constants when nothing is stored.
 | Path | Purpose |
 |---|---|
 | `manifest.json` | Extension manifest (MV3). |
-| `models.json` | Model list shown in the popup (from `docs/models.md`); replace it to change the list. |
-| `common/constants.js` | Storage keys, phases, statuses, time budget and its validation, required-settings check, URL builder. Shared by every part. |
+| `models.json` | Model list shown in the popup, with a release date, the API order and the consent flag per model (see `docs/models.md`, and "Updating the model list" in `docs/MAINTENANCE.md`). The popup sorts it by release date, so the file order does not matter. |
+| `common/constants.js` | Storage keys, phases, statuses, time budget and its validation, required-settings check, URL builder, the deep-link parser (`parseDeepLink`). Shared by every part. |
 | `common/option-lists.js` | The questionnaire dropdown option texts for the options page. |
 | `common/runlog.js` | The per-run logs in IndexedDB: the record shape, one-transaction reads and writes, retention, the plain-text format and file names. |
 | `common/theme.css` | The palette (CSS variables) shared by the popup, the options page and the Runs page; see "Theme". |
@@ -568,12 +658,12 @@ every use and fall back to the constants when nothing is stored.
 | `content/selectors.js` | Every console DOM locator and URL check, written from `docs/dom-map.md`. |
 | `content/badge.js` | Floating status badge (job, step with timeout, plan, next job), the step-by-step panel and the end-of-run summary. |
 | `content/actions.js` | Per-page handlers, the step-by-step wait and `clickAgreeGuarded()`, the only function that clicks Agree. |
-| `content/main.js` | Page loop: detects the page and runs the handler. |
-| `popup/` | Start/stop UI (popup and tab layouts), mode banner, missing-options notice, step mirror, results table, the last 50 log lines and the link to the Runs page. |
+| `content/main.js` | Page loop: detects the page and runs the handler; sends a `#mgc=` fragment to the worker once, as text. |
+| `popup/` | Start/stop UI (popup and tab layouts), mode banner, missing-options notice, step mirror, results table, the last 50 log lines, the link to the Runs page, and the deep-link confirm, fill and banner (tab layout only). |
 | `options/` | Questionnaire values (dropdowns with "Other"), the DRY RUN and step-by-step boxes, the advanced timing JSON and the Logs section (Runs to keep, Purge all). |
 | `runs/` | The Runs page: every run's full log, newest first, with Download log, Delete, Download all and Purge all. |
 | `icons/` | Toolbar icons, the 96 px header avatar (`avatar96.png`) and the 512 px master the sizes are made from (`icon-master.png`, kept in the repository, left out of the release zip). |
-| `test/` | Offline tests; see `python/README.md` (developer manual). |
+| `test/` | Offline tests, the `models.json` lint (`test/models-json.cjs`) included. The harness table is in `python/README.md` (developer manual). |
 
 ## Package for the Chrome Web Store
 
@@ -606,6 +696,9 @@ further permission. The per-run logs need none either: IndexedDB is
 available to an extension without a permission (and without
 `unlimitedStorage`, under the normal origin quota), and a log is saved
 through a link with the `download` attribute, not the `downloads` API.
+The deep links added nothing: `popup.html` is not a web-accessible
+resource, no site is `externally_connectable`, and there is no omnibox
+keyword or protocol handler.
 
 ## Development
 

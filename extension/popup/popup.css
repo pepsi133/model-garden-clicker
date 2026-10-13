@@ -51,6 +51,11 @@ textarea, input[type="text"] { width: 100%; box-sizing: border-box; font: 12px v
 html.tab .models { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .models label { min-width: 0; box-sizing: border-box; padding: 1px 8px 1px 0; font-weight: 400; margin: 0; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .models .stage { color: var(--mgc-muted); font-size: 11px; }
+/* Two muted lines under the checklist: the pair count (projects x models)
+ * and the note the latest link writes (hidden until then). Both keep the
+ * UA's [hidden] { display: none }: no rule here sets display on them. */
+.pairs, .models-note { color: var(--mgc-muted); font-size: 11px; margin: 0 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pairs:empty { display: none; }
 .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
 button { padding: 6px 14px; font-size: 13px; }
 button.primary { font-size: 15px; padding: 8px 28px; }
@@ -58,6 +63,10 @@ button.primary { font-size: 15px; padding: 8px 28px; }
 /* The notice keeps the UA's [hidden] { display: none }: no rule here sets
  * display on it, so the hidden attribute always wins. */
 .missing { margin: 0 0 4px; padding: 5px 10px; }
+/* The "Filled from a link" banner above the inputs (popup.js, deep links):
+ * text only, with its Clear button; it keeps the UA's [hidden] too. */
+.link-banner { margin: 0 0 6px; padding: 5px 8px; background: var(--mgc-surface); border: 1px solid var(--mgc-accent-dark); border-radius: 4px; font-size: 12px; word-break: break-word; }
+.link-banner button { margin-left: 6px; padding: 2px 8px; font-size: 12px; }
 .status { padding: 4px 8px; background: var(--mgc-neutral); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .step { margin-top: 4px; padding: 4px 8px; background: var(--mgc-surface); color: var(--mgc-info); border: 1px solid var(--mgc-border); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .error { margin-top: 6px; padding: 6px 8px; }

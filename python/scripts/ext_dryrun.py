@@ -557,6 +557,15 @@ def check_runs_page(driver, ext_id: str, out_dir: Path, run: dict, log_lines: li
     """
     ok = True
     print()
+    # The storage log is a rolling log of up to LOG_CAP lines across runs:
+    # compare with this run's slice only, from its "run <id> started" line
+    # (the log's first line when that one was capped out) through its
+    # "run finished" line, the last line of the run record; lines logged
+    # after the run (a deep link, say) are not part of it.
+    run_id = run.get("runId")
+    start = next((i for i, l in enumerate(log_lines) if run_id and f"run {run_id} started" in l), 0)
+    end = next((i + 1 for i in range(start, len(log_lines)) if "worker: run finished" in log_lines[i]), len(log_lines))
+    log_lines = log_lines[start:end]
     driver.get(f"chrome-extension://{ext_id}/runs/runs.html")
     got = set_viewport(driver, RUNS_W, RUNS_H)
     time.sleep(1.5)
@@ -565,7 +574,6 @@ def check_runs_page(driver, ext_id: str, out_dir: Path, run: dict, log_lines: li
     shot = out_dir / f"runs-{RUNS_W}x{RUNS_H}.png"
     driver.save_screenshot(str(shot))
     log(f"runs page screenshot at a {got[0]} x {got[1]} viewport: {shot}")
-    run_id = run.get("runId")
     print(f"runs page: title {page['title']!r}, {len(rows)} run(s) listed, runs to keep {page['keep']}, notice {page['noticeText']!r}")
     for r in rows[:5]:
         print(f"  {r['runId']}: {' | '.join(r['cells'][:5])}")
@@ -580,7 +588,7 @@ def check_runs_page(driver, ext_id: str, out_dir: Path, run: dict, log_lines: li
         return False
     m = re.match(r"(\d+) lines · ([\d.]+ (?:B|KB|MB))$", mine["cells"][4])
     good = bool(m) and int(m.group(1)) >= len(log_lines) and "dry-run" in mine["cells"][3]
-    print(f"{'PASS' if good else 'FAIL'} its row shows the log size and line count ({mine['cells'][4]!r}; the storage log holds {len(log_lines)} lines) and the counts ({mine['cells'][3]!r})")
+    print(f"{'PASS' if good else 'FAIL'} its row shows the log size and line count ({mine['cells'][4]!r}; this run's slice of the storage log holds {len(log_lines)} lines) and the counts ({mine['cells'][3]!r})")
     ok = ok and good
     good = mine["deleteDisabled"] is False and not page["purgeDisabled"]
     print(f"{'PASS' if good else 'FAIL'} Delete and Purge all are enabled for a finished run")
@@ -611,7 +619,7 @@ def check_runs_page(driver, ext_id: str, out_dir: Path, run: dict, log_lines: li
     print(f"{'PASS' if good else 'FAIL'} the file opens with the header block naming this run id and mode DRY RUN")
     ok = ok and good
     good = log_start > 0 and len(entries) >= len(log_lines) and all(re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z (worker|content|ui) \[\w+\] ", l) for l in entries)
-    print(f"{'PASS' if good else 'FAIL'} the log section holds {len(entries)} entries (at least the {len(log_lines)} of the storage log), each '<ISO> <source> [<level>] <message>'")
+    print(f"{'PASS' if good else 'FAIL'} the log section holds {len(entries)} entries (at least the {len(log_lines)} of this run's slice of the storage log), each '<ISO> <source> [<level>] <message>'")
     ok = ok and good
     # The extension reports every error it catches (a tick, a handler, a
     # worker message handler, a failed delete) as an error-level line, so

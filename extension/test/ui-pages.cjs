@@ -23,7 +23,12 @@
  *   second box; neither changes during a run; the popup's header toggles
  *   (the MODE banner and the slow mode / kubardy mode button) write the same
  *   settings through the same path and are refused the same way; the options
- *   page's boxes follow a change made in the popup. Manifest: permissions
+ *   page's boxes follow a change made in the popup. Model list: the recency
+ *   helpers in constants.js (release date, model line, version key, the
+ *   comparator and the latest set), the checklist sorted newest first with
+ *   the date in the tooltip and the stage markers, the latest link with its
+ *   note, the pair count line, the parse tolerance for bad fields and the
+ *   full-run confirm sentences. Manifest: permissions
  *   are storage and alarms only (no "tabs": the install prompt must not
  *   mention browsing history), host access is the console origin only.
  */
@@ -46,6 +51,8 @@ const RLNODE = globalThis.MGC_RUNLOG;
 
 const FULL = { business_name: "b", business_website: "https://b.example", contact_email: "a@b.example", headquarters: "Elsewhere", industry: "Education", intended_users: "Internal employees", use_cases: "x", aup_additional_requirements: "no", aup_details: "", live_mode: false };
 const MANIFEST_VERSION = JSON.parse(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8")).version;
+// The packaged model list: the popup fixtures read it, so a changed file never leaves a hard-coded count behind.
+const MODELS_FILE = JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8"));
 
 function fakeChrome(store, extra) {
   const listeners = [];
@@ -53,7 +60,8 @@ function fakeChrome(store, extra) {
     storage: {
       local: {
         get: async (keys) => { const ks = Array.isArray(keys) ? keys : [keys]; const o = {}; for (const k of ks) if (k in store) o[k] = JSON.parse(JSON.stringify(store[k])); return o; },
-        set: async (obj) => { Object.assign(store, JSON.parse(JSON.stringify(obj))); }
+        set: async (obj) => { Object.assign(store, JSON.parse(JSON.stringify(obj))); },
+        remove: async (keys) => { for (const k of (Array.isArray(keys) ? keys : [keys])) delete store[k]; }
       },
       onChanged: { addListener: (fn) => listeners.push(fn) }
     },
@@ -73,14 +81,15 @@ function fakeChrome(store, extra) {
  */
 const openPages = new Set();
 let pageSeq = 0;
-async function loadPage(rel, store, scripts, query) {
+/** `models` (optional) replaces the models.json the page fetches, so a test can inject a shuffled or synthetic list; `confirmFn` (optional) replaces window.confirm before the scripts run (a deep link asks during init); `origin` (optional) replaces the chrome-extension://x/ origin of the page's URL (jsdom refuses history.replaceState on that opaque origin, so a check of the URL after it loads the page under http://x/). */
+async function loadPage(rel, store, scripts, query, models, confirmFn, origin) {
   const { VirtualConsole } = require("jsdom");
   const html = fs.readFileSync(path.join(E.EXT, rel), "utf8");
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(`jsdomError: ${e && e.message}`));
   vc.on("error", (...a) => errors.push(`console.error: ${a.map(String).join(" ")}`));
-  const dom = new JSDOM(html, { url: "chrome-extension://x/" + rel + (query || ""), runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
+  const dom = new JSDOM(html, { url: (origin || "chrome-extension://x/") + rel + (query || ""), runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
   const win = dom.window;
   win.addEventListener("error", (e) => errors.push(`window error: ${e.message}`));
   // jsdom fires no window "unhandledrejection": a rejection nobody handled
@@ -98,14 +107,14 @@ async function loadPage(rel, store, scripts, query) {
     close();
   };
   win.chrome = fakeChrome(store);
-  win.confirm = () => true;
+  win.confirm = confirmFn || (() => true);
   win.indexedDB = fakeIDB; // the per-run logs (common/runlog.js); fakeIDB.reset() between pages that must start empty
   win.IDBKeyRange = fakeIDB.IDBKeyRange; // the line store's index cursors use it
   win.Blob = Blob; // Node's Blob (jsdom's has no text()); a download's content is read back from it
   win.URL.createObjectURL = (blob) => { (store.__blobs = store.__blobs || []).push(blob); return `blob:x/${store.__blobs.length}`; };
   win.URL.revokeObjectURL = () => {};
   win.HTMLAnchorElement.prototype.click = function () { (store.__downloads = store.__downloads || []).push({ href: this.href, download: this.download }); };
-  win.fetch = async () => ({ json: async () => JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")) });
+  win.fetch = async () => ({ json: async () => (models ? JSON.parse(JSON.stringify(models)) : JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8"))) });
   const ctx = dom.getInternalVMContext();
   for (const f of scripts) vm.runInContext(fs.readFileSync(path.join(E.EXT, f), "utf8"), ctx, { filename: f });
   await new Promise((r) => setTimeout(r, 30)); // DOMContentLoaded + async load()
@@ -406,9 +415,11 @@ function setSelect(p, name, value) {
     for (const [js, htmlFile] of pairs) {
       const src = fs.readFileSync(path.join(E.EXT, js), "utf8");
       const page = new JSDOM(fs.readFileSync(path.join(E.EXT, htmlFile), "utf8")).window.document;
-      const ids = [...new Set([...src.matchAll(/\$\("([a-zA-Z0-9_-]+)"\)|getElementById\("([a-zA-Z0-9_-]+)"\)/g)].map((m) => m[1] || m[2]))].sort();
+      // $("id"), getElementById("id"), and popup.js's on("id", ...) and setIf("id", ...) helpers (which look the id up through $()).
+      const ids = [...new Set([...src.matchAll(/\$\("([a-zA-Z0-9_-]+)"\)|getElementById\("([a-zA-Z0-9_-]+)"\)|\bon\("([a-zA-Z0-9_-]+)",|\bsetIf\("([a-zA-Z0-9_-]+)",/g)].map((m) => m[1] || m[2] || m[3] || m[4]))].sort();
       const missing = ids.filter((id) => !page.getElementById(id));
       ok(ids.length >= 7 && missing.length === 0, `${js}: every id it references (${ids.length}) exists in ${htmlFile}`, `missing: ${missing.join(", ") || "none"}; referenced: ${ids.join(", ")}`);
+      if (js === "popup/popup.js") ok(["models-latest", "pairs", "models-note"].every((id) => ids.includes(id)), "popup.js references models-latest, pairs and models-note, so the coverage check above covers the latest link, the pair line and the note", ids.join(", "));
     }
     // Robustness: popup.html without the optional #step, #icon-warning and #log-details elements still renders
     // the banner, the status, the results and wires Start (no TypeError aborts the render or init).
@@ -466,7 +477,7 @@ function setSelect(p, name, value) {
         await tick(); await tick(); await tick();
         process.off("unhandledRejection", onRejection);
         const d = dom.window.document;
-        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === 13 && d.querySelectorAll("#models input:checked").length === 0 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
+        const rendered = rel.startsWith("popup") ? /MODE: DRY RUN/.test(d.getElementById("mode").textContent) && d.querySelectorAll("#models input").length === MODELS_FILE.length && d.querySelectorAll("#models input:checked").length === 0 && (stateName === "idle" ? d.getElementById("status").textContent === "idle" : d.getElementById("summary").hidden === false && d.querySelectorAll("#results tbody tr").length === 2)
           : rel.startsWith("runs") ? d.getElementById("empty").hidden === false && d.getElementById("notice").hidden === true && d.getElementById("keep").textContent === "50"
           : d.getElementById("form").elements.business_name.value === "b" && d.getElementById("form").elements.industry_choice && d.getElementById("form").elements.industry_choice.value === "Education" && d.getElementById("form").elements.runs_keep.value === "50";
         ok(errors.length === 0 && rendered, `${rel} in the ${stateName} state: loaded, initialised and rendered with no thrown error and no unhandled rejection`, errors.join(" | ") || (rendered ? "" : "render check failed"));
@@ -480,7 +491,7 @@ function setSelect(p, name, value) {
     const store = { settings: Object.assign({}, FULL), running: false };
     let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     let d = p.document;
-    ok(d.querySelectorAll("#models input").length === 13 && d.querySelectorAll("#models input:checked").length === 0 && store.popup_state && store.popup_state.models.length === 0 && store.popup_state.version === MANIFEST_VERSION, "first use (no popup_state): thirteen models, none ticked; the version marker is stored with an empty selection", `${d.querySelectorAll("#models input:checked").length} ticked, ps ${JSON.stringify(store.popup_state)}`);
+    ok(d.querySelectorAll("#models input").length === MODELS_FILE.length && d.querySelectorAll("#models input:checked").length === 0 && store.popup_state && store.popup_state.models.length === 0 && store.popup_state.version === MANIFEST_VERSION, `first use (no popup_state): every model of the file (${MODELS_FILE.length}), none ticked; the version marker is stored with an empty selection`, `${d.querySelectorAll("#models input").length} rendered, ${d.querySelectorAll("#models input:checked").length} ticked, ps ${JSON.stringify(store.popup_state)}`);
     d.getElementById("projects").value = "proj-one";
     d.getElementById("start").click(); await tick();
     ok(/select at least one model/.test(d.getElementById("error").textContent) && !(store.__messages || []).some((m) => m.type === p.K.MSG.START), "Start with nothing ticked is refused in the popup, no START message", d.getElementById("error").textContent);
@@ -494,12 +505,273 @@ function setSelect(p, name, value) {
     // loadPage stubs HTMLAnchorElement.prototype.click (download capture), so the links get a dispatched click.
     const clickLink = (id) => d.getElementById(id).dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true }));
     clickLink("models-all"); await tick();
-    ok(d.querySelectorAll("#models input:checked").length === 13 && store.popup_state.models.length === 13, "the all link ticks every model and stores it", JSON.stringify(store.popup_state.models));
+    ok(d.querySelectorAll("#models input:checked").length === MODELS_FILE.length && store.popup_state.models.length === MODELS_FILE.length, "the all link ticks every model and stores it", JSON.stringify(store.popup_state.models));
     clickLink("models-none"); await tick();
     ok(d.querySelectorAll("#models input:checked").length === 0 && store.popup_state.models.length === 0, "the none link unticks every model and stores the empty selection", JSON.stringify(store.popup_state.models));
     p.win.close();
     p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS); d = p.document;
     ok(d.querySelectorAll("#models input:checked").length === 0, "a stored empty selection reopens with nothing ticked (never all)");
+    p.win.close();
+  }
+
+  console.log("--- (latest) constants.js: parseReleaseDate, modelFamily, modelVersionKey, compareModelsByRecency, sortModelsByRecency, latestModelSlugs");
+  {
+    const K = globalThis.MGC;
+    const EXPECTED = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-5", "claude-haiku-4-5"];
+    const slugs = (list) => list.map((m) => m.slug);
+    ok(["parseReleaseDate", "modelFamily", "modelVersionKey", "compareModelsByRecency", "sortModelsByRecency", "latestModelSlugs"].every((f) => typeof K[f] === "function") && !("MODEL_FAMILY_RANK" in K), "the six helpers exist on MGC and the family rank table is not a public member");
+    ok(K.parseReleaseDate("2026-10-07") === "2026-10-07" && K.parseReleaseDate("2028-02-29") === "2028-02-29" && K.parseReleaseDate("0000-01-01") === "0000-01-01" && K.parseReleaseDate("0099-12-31") === "0099-12-31", "parseReleaseDate accepts a strict YYYY-MM-DD calendar date (a leap day and the years 0000-0099 included)");
+    const badDates = ["2026-13-40", "2026-02-30", "2027-02-29", "", 123, "soon", "2026-1-7", "2026/10/07", "2026-10-07T00:00", null, undefined, "20261007"];
+    ok(badDates.every((d) => K.parseReleaseDate(d) === null), "parseReleaseDate returns null for a bad month or day, a non-leap 29 February, an empty string, a number, a word, a short, slashed or timestamped form, null and undefined", JSON.stringify(badDates.map((d) => [d, K.parseReleaseDate(d)])));
+    ok(K.modelFamily("claude-fable-5-1") === "fable" && K.modelFamily("claude-opus-4-8") === "opus" && K.modelFamily("Claude-Haiku-5-5") === "haiku" && K.modelFamily("claude-mythos-5-1") === "mythos", "modelFamily is the lower-cased second slug token (a new line like mythos included)");
+    ok(K.modelFamily("claude-3-opus") === null && K.modelFamily("my-custom-model") === null && K.modelFamily("claude-opus") === null && K.modelFamily("claude-opus-5-5@20260922") === null && K.modelFamily("") === null && K.modelFamily(undefined) === null, "modelFamily is null for claude-3-opus, my-custom-model, a slug without a version, a pinned slug, an empty string and undefined");
+    ok(JSON.stringify([K.modelVersionKey("claude-opus-4-8"), K.modelVersionKey("claude-sonnet-5"), K.modelVersionKey("claude-fable-5-1"), K.modelVersionKey("claude-haiku-5-5"), K.modelVersionKey("my-custom-model"), K.modelVersionKey("claude-3-opus")]) === "[[4,8],[5],[5,1],[5,5],[],[]]", "modelVersionKey: integers from the version part, [] when unparseable");
+    const versions = K.sortModelsByRecency([{ slug: "claude-opus-5" }, { slug: "claude-opus-4-8" }, { slug: "claude-opus-5-5" }, { slug: "claude-opus-5-1" }]);
+    ok(slugs(versions).join(",") === "claude-opus-5-5,claude-opus-5-1,claude-opus-5,claude-opus-4-8", "the version key orders 4-8 < 5 < 5-1 < 5-5 (newest first in the sort)", slugs(versions).join(","));
+
+    const real = JSON.parse(JSON.stringify(MODELS_FILE));
+    const before = JSON.stringify(real);
+    ok(JSON.stringify(slugs(K.sortModelsByRecency(real))) === JSON.stringify(EXPECTED), `sortModelsByRecency on the ${MODELS_FILE.length} real entries gives the release order, haiku-5-5 first and haiku-4-5 last`, slugs(K.sortModelsByRecency(real)).join(","));
+    // A deterministic shuffle: odd positions, then even positions reversed.
+    const shuffled = real.filter((_, i) => i % 2).concat(real.filter((_, i) => !(i % 2)).reverse());
+    ok(slugs(shuffled).join() !== slugs(real).join() && JSON.stringify(slugs(K.sortModelsByRecency(shuffled))) === JSON.stringify(EXPECTED), "a shuffled copy sorts to the same order", slugs(shuffled).join(","));
+    const once = K.sortModelsByRecency(shuffled);
+    ok(JSON.stringify(real) === before && slugs(shuffled).join() !== slugs(once).join() && once !== shuffled, "the input array is not mutated and a new array comes back");
+    ok(JSON.stringify(slugs(K.sortModelsByRecency(once))) === JSON.stringify(slugs(once)), "sorting twice gives the same output");
+    ok(JSON.stringify(slugs(K.sortModelsByRecency(real.slice().reverse()))) === JSON.stringify(EXPECTED), "the file reversed sorts back to the release order");
+    ok(K.sortModelsByRecency(null).length === 0 && K.sortModelsByRecency(undefined).length === 0 && K.sortModelsByRecency("x").length === 0, "a non-array gives an empty array");
+    const sameDate = K.sortModelsByRecency([{ slug: "claude-opus-5", releaseDate: "2026-07-24", apiOrder: 2 }, { slug: "claude-sonnet-5", releaseDate: "2026-07-24", apiOrder: 9 }, { slug: "claude-haiku-5", releaseDate: "2026-07-24" }]);
+    ok(slugs(sameDate).join(",") === "claude-sonnet-5,claude-opus-5,claude-haiku-5", "equal dates fall back to apiOrder desc, and an entry without apiOrder sorts below those with one", slugs(sameDate).join(","));
+    const undated = K.sortModelsByRecency([{ slug: "claude-opus-5-5" }, { slug: "claude-haiku-4-5", releaseDate: "2025-10-15", apiOrder: 1 }, { slug: "claude-opus-6" }, { slug: "claude-sonnet-5-5" }]);
+    ok(slugs(undated).join(",") === "claude-haiku-4-5,claude-opus-6,claude-opus-5-5,claude-sonnet-5-5", "undated entries sort below every dated entry, and among them opus-6 is above opus-5-5 (version desc) and opus above sonnet at the same version (family rank)", slugs(undated).join(","));
+    const malformed = K.sortModelsByRecency([{ slug: "claude-test" }, { slug: "claude-opus-5-5", releaseDate: "2026-13-40" }, { slug: "claude-haiku-4-5", releaseDate: "2025-10-15", apiOrder: 1 }, { slug: "claude-sonnet-5-5", releaseDate: "" }, { slug: "claude-fable-5-1", releaseDate: 123 }, { slug: "claude-opus-5", releaseDate: "soon" }]);
+    ok(slugs(malformed)[0] === "claude-haiku-4-5" && slugs(malformed)[slugs(malformed).length - 1] === "claude-test" && slugs(malformed).join(",") === "claude-haiku-4-5,claude-opus-5-5,claude-sonnet-5-5,claude-fable-5-1,claude-opus-5,claude-test", "malformed dates (2026-13-40, empty, 123, soon) sink below the dated entry and sort by version, and the undated non-numeric slug claude-test sinks last", slugs(malformed).join(","));
+    const tie = K.sortModelsByRecency([{ slug: "claude-zeta-5" }, { slug: "claude-alpha-5" }, { slug: "claude-beta-5" }, { slug: "zz-custom" }, { slug: "aa-custom" }]);
+    ok(slugs(tie).join(",") === "claude-alpha-5,claude-beta-5,claude-zeta-5,aa-custom,zz-custom", "slug asc is the final tie (unknown families at the same version, then the unparseable slugs)", slugs(tie).join(","));
+    ok(K.compareModelsByRecency({ slug: "claude-opus-5" }, { slug: "claude-opus-5" }) === 0 && K.compareModelsByRecency({ slug: "claude-opus-5-5", releaseDate: "2026-09-22" }, { slug: "claude-haiku-5-5", releaseDate: "2026-10-07" }) > 0, "compareModelsByRecency: 0 for equal entries, positive when the first is older");
+    const oldShape = K.sortModelsByRecency(MODELS_FILE.map((m) => ({ slug: m.slug, name: m.name, launchStage: m.launchStage })));
+    ok(slugs(oldShape).join(",") === "claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5,claude-fable-5-1,claude-opus-5,claude-sonnet-5,claude-fable-5,claude-opus-4-8,claude-opus-4-7,claude-opus-4-6,claude-sonnet-4-6,claude-opus-4-5,claude-haiku-4-5", "the 0.8.0 file shape (no dates, no apiOrder) keeps the 0.8.0 order: version desc with the family rank", slugs(oldShape).join(","));
+
+    let latest = K.latestModelSlugs(real);
+    ok(JSON.stringify(latest.ticked) === JSON.stringify(["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]) && JSON.stringify(latest.leftOut) === JSON.stringify([{ slug: "claude-fable-5-1", name: "Claude Fable 5.1" }]), "latestModelSlugs on the real file with fable-5-1 flagged: haiku-5-5, sonnet-5-5 and opus-5-5 ticked (recency order), Fable 5.1 left out by name", JSON.stringify(latest));
+    ok(JSON.stringify(K.latestModelSlugs(shuffled)) === JSON.stringify(latest), "the same set from a shuffled list");
+    const unflagged = real.map((m) => Object.assign({}, m, { requiresManualConsent: false }));
+    latest = K.latestModelSlugs(unflagged);
+    ok(JSON.stringify(latest.ticked) === JSON.stringify(["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]) && latest.leftOut.length === 0, "unflagged, fable-5-1 joins the ticked set and nothing is left out", JSON.stringify(latest));
+    const deprecated = unflagged.map((m) => (m.slug === "claude-haiku-5-5" ? Object.assign({}, m, { deprecated: true }) : m));
+    ok(JSON.stringify(K.latestModelSlugs(deprecated).ticked) === JSON.stringify(["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5"]), "deprecated: true excludes the entry and the line falls to the next dated GA entry (haiku-4-5)", JSON.stringify(K.latestModelSlugs(deprecated)));
+    const preview = unflagged.map((m) => (m.slug === "claude-sonnet-5-5" ? Object.assign({}, m, { launchStage: "PREVIEW" }) : m));
+    ok(JSON.stringify(K.latestModelSlugs(preview).ticked) === JSON.stringify(["claude-haiku-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5"]), 'launchStage "PREVIEW" excludes the entry and the sonnet line falls to sonnet-5', JSON.stringify(K.latestModelSlugs(preview)));
+    const undatedOpus6 = unflagged.concat([{ slug: "claude-opus-6", name: "Claude Opus 6", launchStage: "GA" }]);
+    ok(JSON.stringify(K.latestModelSlugs(undatedOpus6).ticked) === JSON.stringify(["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]), "an undated newer opus-6 is never latest, and dated opus-5-5 stays", JSON.stringify(K.latestModelSlugs(undatedOpus6)));
+    const mythos = real.concat([{ slug: "claude-mythos-5-1", name: "Claude Mythos 5.1", launchStage: "GA", releaseDate: "2026-10-01", apiOrder: 14 }]);
+    latest = K.latestModelSlugs(mythos);
+    ok(latest.ticked.length + latest.leftOut.length === 5 && latest.ticked.includes("claude-mythos-5-1") && JSON.stringify(latest.ticked) === JSON.stringify(["claude-haiku-5-5", "claude-mythos-5-1", "claude-sonnet-5-5", "claude-opus-5-5"]), "a dated claude-mythos-5-1 forms its own line (5 lines in all) and auto-joins the ticked set in recency order", JSON.stringify(latest));
+    const custom = real.concat([{ slug: "my-custom-model", name: "Custom", launchStage: "GA", releaseDate: "2026-12-01", apiOrder: 15 }, { slug: "claude-3-opus", launchStage: "GA", releaseDate: "2026-12-02" }]);
+    latest = K.latestModelSlugs(custom);
+    ok(!latest.ticked.includes("my-custom-model") && !latest.ticked.includes("claude-3-opus") && latest.ticked.length === 3, "a slug without a model line (my-custom-model, claude-3-opus) is never latest even when dated and GA", JSON.stringify(latest));
+    ok(JSON.stringify(K.latestModelSlugs(oldShape)) === JSON.stringify({ ticked: [], leftOut: [] }) && JSON.stringify(K.latestModelSlugs([])) === JSON.stringify({ ticked: [], leftOut: [] }) && JSON.stringify(K.latestModelSlugs(null)) === JSON.stringify({ ticked: [], leftOut: [] }), "an undated list, an empty list and a non-array give nothing ticked and nothing left out");
+    ok(JSON.stringify(K.latestModelSlugs([{ slug: "claude-opus-5-5", launchStage: "GA", releaseDate: "2026-09-22", requiresManualConsent: true }]).leftOut) === JSON.stringify([{ slug: "claude-opus-5-5", name: "claude-opus-5-5" }]), "a left-out entry without a name is named by its slug");
+  }
+
+  console.log("--- (latest) popup: the checklist in recency order with the date in the tooltip and the stage markers, the latest link, its note and the pair count line");
+  {
+    const K = globalThis.MGC;
+    const EXPECTED = K.sortModelsByRecency(MODELS_FILE).map((m) => m.slug);
+    // A shuffled copy of the real file, plus a deprecated entry: the page must sort it itself.
+    const shuffled = MODELS_FILE.filter((_, i) => i % 2).concat(MODELS_FILE.filter((_, i) => !(i % 2)).reverse());
+    const store = { settings: Object.assign({}, FULL), running: false };
+    let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS, "", shuffled);
+    let d = p.document;
+    const labels = () => Array.from(d.querySelectorAll("#models label"));
+    const rendered = () => Array.from(d.querySelectorAll("#models input")).map((cb) => cb.value);
+    const ticked = () => Array.from(d.querySelectorAll("#models input:checked")).map((cb) => cb.value);
+    ok(rendered().length === MODELS_FILE.length && JSON.stringify(rendered()) === JSON.stringify(EXPECTED), `the shuffled file renders ${MODELS_FILE.length} models in recency order (sorted at load, not in the file)`, rendered().join(","));
+    ok(rendered()[0] === "claude-haiku-5-5" && rendered()[rendered().length - 1] === "claude-haiku-4-5" && labels()[0].textContent.trim().startsWith("Claude Haiku 5.5") && labels()[labels().length - 1].textContent.trim().startsWith("Claude Haiku 4.5"), "the first rendered label is the newest date (Claude Haiku 5.5, 2026-10-07) and the last the oldest (Claude Haiku 4.5, 2025-10-15)", `${labels()[0].textContent.trim()} ... ${labels()[labels().length - 1].textContent.trim()}`);
+    ok(labels()[0].title === "claude-haiku-5-5 · released 2026-10-07" && labels().every((l) => /^claude-[a-z]+-[0-9-]+ · released \d{4}-\d{2}-\d{2}( · manual step)?$/.test(l.title)), 'label.title is "<slug> · released <releaseDate>" on every row', labels()[0].title);
+    const fable = labels().find((l) => l.querySelector("input").value === "claude-fable-5-1");
+    ok(fable && fable.querySelector(".stage") && fable.querySelector(".stage").textContent === " (GA · manual step)", 'the flagged Fable 5.1 row shows "(GA · manual step)" in its stage span', fable && fable.querySelector(".stage") && fable.querySelector(".stage").textContent);
+    // The four-column grid cuts the stage span with an ellipsis, so the tooltip repeats the flag (the plain rows carry none).
+    ok(fable && fable.title === "claude-fable-5-1 · released 2026-09-01 · manual step" && labels().filter((l) => / · manual step$/.test(l.title)).length === 1, 'the Fable 5.1 tooltip repeats the flag: "<slug> · released <date> · manual step", no other row does', fable && fable.title);
+    const plainRows = MODELS_FILE.filter((m) => m.requiresManualConsent !== true && m.deprecated !== true).length;
+    ok(labels().filter((l) => l.querySelector(".stage") && l.querySelector(".stage").textContent === " (GA)").length === plainRows && plainRows === MODELS_FILE.length - 1, "every other row shows the launch stage as before (today every row but Fable 5.1)", labels().map((l) => l.querySelector(".stage") && l.querySelector(".stage").textContent).join("|"));
+    ok(d.querySelectorAll(".models label").length === MODELS_FILE.length && !d.querySelector("#models .date"), "no new column: the rows hold the checkbox, the name and the stage span only");
+    const link = d.getElementById("models-latest");
+    const links = d.querySelector(".models-section .links");
+    ok(link && link.tagName === "A" && link.textContent === "latest" && link.title === "newest GA model of each line (opus, sonnet, haiku, fable)" && links.contains(link) && link.previousElementSibling === d.getElementById("models-none") && /none<\/a> · <a/.test(links.innerHTML), 'the third link "latest" follows "none", separated by " · ", with the title that names the lines', links && links.textContent);
+    const pairs = d.getElementById("pairs");
+    const note = d.getElementById("models-note");
+    ok(pairs && note && note.hidden === true && pairs.textContent === "" && pairs.closest(".models-section") && note.closest(".models-section") && pairs.previousElementSibling === d.getElementById("models") && note.previousElementSibling === pairs && note.nextElementSibling.getAttribute("for") === "extra-models", "the pairs line and the hidden note sit under the checklist, before the extra-models label, both empty at first use");
+    const css = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
+    ok(/\.pairs, \.models-note\s*\{[^}]*color:\s*var\(--mgc-muted\)[^}]*font-size:\s*11px/.test(css) && !/\.models-note[^{]*\{[^}]*display\s*:/.test(css.replace(/\.pairs:empty[^}]*\}/, "")), "popup.css styles both lines like .stage (muted, 11px) and sets no display on the note (the hidden attribute wins)");
+    // loadPage stubs HTMLAnchorElement.prototype.click (download capture), so the links get a dispatched click.
+    const clickLink = (id) => d.getElementById(id).dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    d.getElementById("extra-models").value = "claude-x-1"; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    clickLink("models-latest"); await tick();
+    const LATEST = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"];
+    ok(JSON.stringify(ticked()) === JSON.stringify(LATEST), "the latest link ticks exactly the latest set: haiku-5-5, sonnet-5-5, opus-5-5 (Fable 5.1 left out)", ticked().join(","));
+    ok(JSON.stringify(store.popup_state.models) === JSON.stringify(LATEST) && store.popup_state.version === MANIFEST_VERSION, "popup_state.models stores the same three concrete slugs in the file's spelling (no latest marker)", JSON.stringify(store.popup_state));
+    ok(d.getElementById("extra-models").value === "claude-x-1" && store.popup_state.extra === "claude-x-1", "the extra slugs field is untouched");
+    ok(note.hidden === false && note.textContent === "latest: 3 ticked, Claude Fable 5.1 left out, needs a manual step on its model page" && note.title === note.textContent, "the note names the count and the left-out model, and its tooltip repeats the text (the line is cut with an ellipsis)", note.textContent);
+    ok(pairs.textContent === "", "no project ID yet: the pairs line stays empty");
+    d.getElementById("projects").value = "proj-one\nproj-two"; d.getElementById("projects").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    ok(pairs.textContent === "2 project(s) × 4 model(s) = 8 pair(s)", "with two projects, three ticked models and one extra slug the pairs line reads 2 × 4 = 8", pairs.textContent);
+    d.getElementById("extra-models").value = ""; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    ok(pairs.textContent === "2 project(s) × 3 model(s) = 6 pair(s)" && note.hidden === false, "clearing the extra slugs updates the pairs line (2 × 3 = 6), the note stays", pairs.textContent);
+    // A model checkbox change hides the note.
+    const opus5 = Array.from(d.querySelectorAll("#models input")).find((cb) => cb.value === "claude-opus-5");
+    opus5.checked = true; opus5.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    ok(note.hidden === true && note.textContent === "" && pairs.textContent === "2 project(s) × 4 model(s) = 8 pair(s)", "ticking another model hides the note and updates the pairs line", `${note.hidden} ${pairs.textContent}`);
+    clickLink("models-all"); await tick();
+    ok(ticked().length === MODELS_FILE.length && note.hidden === true && pairs.textContent === `2 project(s) × ${MODELS_FILE.length} model(s) = ${2 * MODELS_FILE.length} pair(s)`, "all ticks every model (the flagged one included, unchanged) and the note stays hidden", pairs.textContent);
+    clickLink("models-latest"); await tick();
+    ok(JSON.stringify(ticked()) === JSON.stringify(LATEST) && note.hidden === false, "latest after all unticks the models that are not the newest of their line", ticked().join(","));
+    clickLink("models-none"); await tick();
+    ok(ticked().length === 0 && store.popup_state.models.length === 0 && note.hidden === true && pairs.textContent === "", "none unticks everything, hides the note and empties the pairs line");
+    clickLink("models-latest"); await tick();
+    ok(JSON.stringify(ticked()) === JSON.stringify(LATEST), "latest again ticks the set again");
+    p.win.close();
+    // Reopening restores the stored latest set and shows the pairs line at once. The note is gone.
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS, "", shuffled); d = p.document;
+    ok(JSON.stringify(ticked()) === JSON.stringify(LATEST) && d.getElementById("models-note").hidden === true && d.getElementById("pairs").textContent === "2 project(s) × 3 model(s) = 6 pair(s)", "reopening restores the three ticked models and renders the pairs line at init, the note is hidden", `${ticked().join(",")} | ${d.getElementById("pairs").textContent}`);
+    p.win.close();
+    // (U3) a version change resets the selection even when the stored set is the latest set.
+    const storeOld = { settings: Object.assign({}, FULL), popup_state: { projects: "proj-one", models: LATEST.slice(), extra: "", version: "0.0.1" } };
+    p = await loadPage("popup/popup.html", storeOld, POPUP_SCRIPTS); d = p.document;
+    ok(ticked().length === 0 && storeOld.popup_state.models.length === 0 && storeOld.popup_state.version === MANIFEST_VERSION, "after a version change none is ticked, even when the stored set is the latest set, and the marker is updated");
+    p.win.close();
+    // The 0.8.0 file shape: nothing dated, so latest ticks nothing and says so. The tooltip is the bare slug, and the order is the 0.8.0 order.
+    const oldShape = MODELS_FILE.map((m) => ({ slug: m.slug, name: m.name, launchStage: m.launchStage }));
+    const store2 = { settings: Object.assign({}, FULL) };
+    p = await loadPage("popup/popup.html", store2, POPUP_SCRIPTS, "", oldShape); d = p.document;
+    ok(rendered()[0] === "claude-opus-5-5" && rendered()[rendered().length - 1] === "claude-haiku-4-5" && labels()[0].title === "claude-opus-5-5", "an undated file (the 0.8.0 shape) renders in the 0.8.0 order with the bare slug as tooltip", `${rendered()[0]} / ${labels()[0].title}`);
+    clickLink("models-latest"); await tick();
+    ok(ticked().length === 0 && store2.popup_state.models.length === 0 && d.getElementById("models-note").hidden === false && d.getElementById("models-note").textContent === "latest: nothing ticked, no model carries a release date", "latest on an undated file ticks nothing and the note says why", d.getElementById("models-note").textContent);
+    p.win.close();
+    // Parse tolerance: a bad releaseDate gives "", a non-integer apiOrder null, non-boolean flags false. A "@" slug and an invalid slug drop.
+    const tolerant = [
+      { slug: "claude-opus-5-5", name: "Claude Opus 5.5", launchStage: "GA", releaseDate: "2026-13-40", apiOrder: 11 },
+      { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", launchStage: "GA", releaseDate: "2026-09-28", apiOrder: "12", requiresManualConsent: "yes", deprecated: 1 },
+      { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5", launchStage: "GA", releaseDate: "2026-10-07", apiOrder: 13, deprecated: true },
+      { slug: "claude-haiku-5-5@20261005", name: "pinned", launchStage: "GA", releaseDate: "2026-10-07", apiOrder: 14 },
+      { slug: "bad slug!", name: "bad", launchStage: "GA" },
+      { slug: "claude-fable-5-1", name: "Claude Fable 5.1", launchStage: "GA", releaseDate: "2026-09-01", apiOrder: 10, requiresManualConsent: true },
+      { slug: "claude-opus-5", name: "Claude Opus 5", launchStage: "GA", releaseDate: "2026-07-24", apiOrder: 9.5 }
+    ];
+    const store3 = { settings: Object.assign({}, FULL) };
+    p = await loadPage("popup/popup.html", store3, POPUP_SCRIPTS, "", tolerant); d = p.document;
+    ok(rendered().length === 5 && !rendered().some((s) => s.includes("@")) && !rendered().includes("bad slug!"), 'the "@" slug and the invalid slug are dropped; the five others render', rendered().join(","));
+    ok(JSON.stringify(rendered()) === JSON.stringify(["claude-haiku-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-5", "claude-opus-5-5"]), "a bad releaseDate makes the entry undated (sorted last, by its apiOrder), a non-integer apiOrder still sorts by date", rendered().join(","));
+    const byValue = (v) => labels().find((l) => l.querySelector("input").value === v);
+    ok(byValue("claude-opus-5-5").title === "claude-opus-5-5" && byValue("claude-opus-5").title === "claude-opus-5 · released 2026-07-24", "a bad releaseDate leaves the bare slug as tooltip, a non-integer apiOrder does not touch the date", byValue("claude-opus-5-5").title);
+    ok(byValue("claude-haiku-5-5").title === "claude-haiku-5-5 · released 2026-10-07 · deprecated" && byValue("claude-sonnet-5-5").title === "claude-sonnet-5-5 · released 2026-09-28", 'a deprecated entry\'s tooltip ends with "· deprecated"; a non-boolean flag adds nothing', byValue("claude-haiku-5-5").title);
+    ok(byValue("claude-sonnet-5-5").querySelector(".stage").textContent === " (GA)" && byValue("claude-haiku-5-5").querySelector(".stage").textContent === " (deprecated)" && byValue("claude-fable-5-1").querySelector(".stage").textContent === " (GA · manual step)", 'non-boolean flags count as false ("(GA)"), deprecated: true shows "(deprecated)", the manual-step marker shows for the flagged entry', labels().map((l) => l.querySelector(".stage").textContent).join("|"));
+    clickLink("models-latest"); await tick();
+    ok(JSON.stringify(ticked()) === JSON.stringify(["claude-sonnet-5-5", "claude-opus-5"]) && d.getElementById("models-note").textContent === "latest: 2 ticked, Claude Fable 5.1 left out, needs a manual step on its model page", "latest on the tolerant fixture: the deprecated haiku and the undated opus-5-5 are never latest, sonnet-5-5 (flag not boolean) and opus-5 are, Fable 5.1 is left out", `${ticked().join(",")} | ${d.getElementById("models-note").textContent}`);
+    p.win.close();
+    // Two left-out lines: a flagged new line (mythos) next to Fable 5.1. The names are joined with " and " and the verb is plural.
+    const twoFlagged = MODELS_FILE.concat([{ slug: "claude-mythos-5-1", name: "Claude Mythos 5.1", launchStage: "GA", releaseDate: "2026-10-10", apiOrder: 14, requiresManualConsent: true }]);
+    const store4 = { settings: Object.assign({}, FULL) };
+    p = await loadPage("popup/popup.html", store4, POPUP_SCRIPTS, "", twoFlagged); d = p.document;
+    const mythos = labels().find((l) => l.querySelector("input").value === "claude-mythos-5-1");
+    ok(rendered()[0] === "claude-mythos-5-1" && mythos.querySelector(".stage").textContent === " (GA · manual step)", "a flagged new line renders first (newest date) with the manual-step marker", rendered()[0]);
+    clickLink("models-latest"); await tick();
+    ok(JSON.stringify(ticked()) === JSON.stringify(LATEST) && d.getElementById("models-note").textContent === "latest: 3 ticked, Claude Mythos 5.1 and Claude Fable 5.1 left out, need a manual step on their model pages", 'two left-out lines: the note joins the names with " and " and takes the plural verb', d.getElementById("models-note").textContent);
+    p.win.close();
+    // A flagged entry whose launch stage is not GA: the marker keeps the stage it has.
+    const stages = [
+      { slug: "claude-opus-5-5", name: "Claude Opus 5.5", launchStage: "PREVIEW", releaseDate: "2026-09-22", apiOrder: 11, requiresManualConsent: true },
+      { slug: "claude-opus-5", name: "Claude Opus 5", releaseDate: "2026-07-24", apiOrder: 9, requiresManualConsent: true }
+    ];
+    const store5 = { settings: Object.assign({}, FULL) };
+    p = await loadPage("popup/popup.html", store5, POPUP_SCRIPTS, "", stages); d = p.document;
+    ok(byValue("claude-opus-5-5").querySelector(".stage").textContent === " (PREVIEW · manual step)" && byValue("claude-opus-5").querySelector(".stage").textContent === " (manual step)", 'a flagged PREVIEW entry reads "(PREVIEW · manual step)" and a flagged entry without a stage "(manual step)"', labels().map((l) => l.querySelector(".stage").textContent).join("|"));
+    clickLink("models-latest"); await tick();
+    ok(ticked().length === 0 && d.getElementById("models-note").textContent === "latest: 0 ticked", "neither flagged non-GA entry is latest or left out: the note reads 0 ticked", d.getElementById("models-note").textContent);
+    p.win.close();
+  }
+
+  console.log("--- (latest) popup: the full-run confirm names the models that are not the newest of their line and the manual-step model, a dry run asks nothing");
+  {
+    const LATEST = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"];
+    const store = { settings: Object.assign({}, FULL, { live_mode: true }), popup_state: { projects: "proj-z", models: LATEST.concat(["claude-fable-5-1", "claude-opus-5"]), extra: "", version: MANIFEST_VERSION } };
+    let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    let d = p.document;
+    const confirms = []; p.win.confirm = (m) => { confirms.push(m); return false; };
+    store.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 5, done: 0, skipped: 0 } : { ok: true });
+    ok(d.getElementById("pairs").textContent === "1 project(s) × 5 model(s) = 5 pair(s)", "the pairs line shows the stored selection at init", d.getElementById("pairs").textContent);
+    d.getElementById("start").click(); await tick();
+    ok(confirms.length === 1 && /for up to 5 of 5 project\/model pair\(s\)/.test(confirms[0]), "a full run asks once with the pair count", confirms[0]);
+    ok(/ The selection includes 2 model\(s\) that are not the newest of their line\./.test(confirms[0]), "the confirm says the selection includes 2 models that are not the newest of their line (a strict superset of the latest set)", confirms[0]);
+    ok(/ Claude Fable 5\.1 needs a manual step on its model page and will fail, not enable\./.test(confirms[0]) && / not enable\. Continue\?$/.test(confirms[0]), "it names Claude Fable 5.1 as a job that fails, right before Continue?", confirms[0]);
+    ok(!(store.__messages || []).some((m) => m.type === p.K.MSG.START), "cancelled: no START sent");
+    // Exactly the latest set: neither sentence.
+    const clickLink = (id) => d.getElementById(id).dispatchEvent(new p.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    clickLink("models-latest"); await tick();
+    store.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 3, done: 0, skipped: 0 } : { ok: true });
+    d.getElementById("start").click(); await tick();
+    ok(confirms.length === 2 && !/not the newest of their line/.test(confirms[1]) && !/manual step/.test(confirms[1]) && / Continue\?$/.test(confirms[1]), "with exactly the latest set ticked the confirm carries neither sentence", confirms[1]);
+    // A subset of the latest set (not a superset): no superset sentence, a flagged model alone still names it.
+    clickLink("models-none"); await tick();
+    const fable = Array.from(d.querySelectorAll("#models input")).find((cb) => cb.value === "claude-fable-5-1");
+    fable.checked = true; fable.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    d.getElementById("start").click(); await tick();
+    ok(confirms.length === 3 && !/not the newest of their line/.test(confirms[2]) && / Claude Fable 5\.1 needs a manual step on its model page and will fail, not enable\. Continue\?$/.test(confirms[2]), "Fable 5.1 alone: no superset sentence (the latest set is not included), the manual-step sentence stays", confirms[2]);
+    // The same flagged model typed as an extra slug in another case: the worker runs it lowercased, so the sentence stays.
+    clickLink("models-none"); await tick();
+    d.getElementById("extra-models").value = "Claude-Fable-5-1"; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    d.getElementById("start").click(); await tick();
+    ok(confirms.length === 4 && / Claude Fable 5\.1 needs a manual step on its model page and will fail, not enable\. Continue\?$/.test(confirms[3]), "an extra slug typed as Claude-Fable-5-1 (another case) still names the manual step, as the worker runs it lowercased", confirms[3]);
+    d.getElementById("extra-models").value = ""; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    // Extra slugs count as models that are not the newest of their line.
+    clickLink("models-latest"); await tick();
+    d.getElementById("extra-models").value = "claude-x-1"; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    d.getElementById("start").click(); await tick();
+    ok(confirms.length === 5 && / The selection includes 1 model\(s\) that are not the newest of their line\./.test(confirms[4]) && !/manual step/.test(confirms[4]), "the latest set plus one extra slug: 1 model that is not the newest of its line, no manual-step sentence", confirms[3]);
+    // Duplicates and case variants collapse the way the worker's uniqueTrimmed does, so the pair count and the superset sentence match what runs.
+    clickLink("models-none"); await tick();
+    const opus55 = Array.from(d.querySelectorAll("#models input")).find((cb) => cb.value === "claude-opus-5-5");
+    opus55.checked = true; opus55.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    d.getElementById("projects").value = "proj-a\nproj-a\n Proj-A "; d.getElementById("projects").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    d.getElementById("extra-models").value = "Claude-Opus-5-5, claude-opus-5-5"; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    ok(d.getElementById("pairs").textContent === "1 project(s) × 1 model(s) = 1 pair(s)", "a project typed three times (one in another case) and a ticked slug repeated as an extra slug count once: 1 × 1 = 1", d.getElementById("pairs").textContent);
+    store.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 1, done: 0, skipped: 0 } : { ok: true });
+    d.getElementById("start").click(); await tick();
+    ok(confirms.length === 6 && /for up to 1 of 1 project\/model pair\(s\)/.test(confirms[5]) && !/not the newest of their line/.test(confirms[5]) && !/manual step/.test(confirms[5]), "the confirm counts the same single pair and carries no superset sentence (the duplicate spelling is not a second model)", confirms[5]);
+    // Control: a genuinely different extra slug still counts.
+    d.getElementById("extra-models").value = "claude-opus-5-5, claude-x-1"; d.getElementById("extra-models").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    ok(d.getElementById("pairs").textContent === "1 project(s) × 2 model(s) = 2 pair(s)", "control: a different extra slug makes it 1 × 2 = 2", d.getElementById("pairs").textContent);
+    // Back to the stored latest set and one project for the checks below.
+    d.getElementById("projects").value = "proj-z"; d.getElementById("projects").dispatchEvent(new p.win.Event("input", { bubbles: true })); await tick();
+    clickLink("models-latest"); await tick();
+    p.win.close();
+    // An undated list (the 0.8.0 file shape) has no latest set, so a live run says nothing about the newest of a line.
+    const oldShape = MODELS_FILE.map((m) => ({ slug: m.slug, name: m.name, launchStage: m.launchStage }));
+    const storeOld = { settings: Object.assign({}, FULL, { live_mode: true }), popup_state: { projects: "proj-z", models: ["claude-opus-5-5", "claude-haiku-5-5"], extra: "", version: MANIFEST_VERSION } };
+    p = await loadPage("popup/popup.html", storeOld, POPUP_SCRIPTS, "", oldShape); d = p.document;
+    const askedOld = []; p.win.confirm = (m) => { askedOld.push(m); return false; };
+    storeOld.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 2, done: 0, skipped: 0 } : { ok: true });
+    d.getElementById("start").click(); await tick();
+    ok(askedOld.length === 1 && /for up to 2 of 2 project\/model pair\(s\)/.test(askedOld[0]) && !/not the newest of their line/.test(askedOld[0]) && !/manual step/.test(askedOld[0]) && / Continue\?$/.test(askedOld[0]), "on an undated list the full-run confirm carries neither sentence (no line has a known newest model)", askedOld[0]);
+    p.win.close();
+    // Two flagged models ticked: the names are joined with " and " and the verb is plural.
+    const twoFlagged = MODELS_FILE.concat([{ slug: "claude-mythos-5-1", name: "Claude Mythos 5.1", launchStage: "GA", releaseDate: "2026-10-10", apiOrder: 14, requiresManualConsent: true }]);
+    const storeTwo = { settings: Object.assign({}, FULL, { live_mode: true }), popup_state: { projects: "proj-z", models: LATEST.concat(["claude-fable-5-1", "claude-mythos-5-1"]), extra: "", version: MANIFEST_VERSION } };
+    p = await loadPage("popup/popup.html", storeTwo, POPUP_SCRIPTS, "", twoFlagged); d = p.document;
+    const askedTwo = []; p.win.confirm = (m) => { askedTwo.push(m); return false; };
+    storeTwo.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 5, done: 0, skipped: 0 } : { ok: true });
+    d.getElementById("start").click(); await tick();
+    ok(askedTwo.length === 1 && / The selection includes 2 model\(s\) that are not the newest of their line\. Claude Mythos 5\.1 and Claude Fable 5\.1 need a manual step on their model pages and will fail, not enable\. Continue\?$/.test(askedTwo[0]), 'two flagged models ticked: the confirm joins the names with " and " and takes the plural verb, in recency order', askedTwo[0]);
+    p.win.close();
+    // Dry run: no confirm, START sent with the selection.
+    store.settings.live_mode = false; store.__messages = []; store.popup_state.extra = "";
+    p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS); d = p.document;
+    const asked = []; p.win.confirm = (m) => { asked.push(m); return false; };
+    const opus5 = Array.from(d.querySelectorAll("#models input")).find((cb) => cb.value === "claude-opus-5");
+    opus5.checked = true; opus5.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    d.getElementById("start").click(); await tick();
+    const started = (store.__messages || []).filter((m) => m.type === p.K.MSG.START);
+    ok(asked.length === 0 && started.length === 1 && started[0].live === false && started[0].models.length === 4, "a dry run asks nothing and sends START with the four models", JSON.stringify(started.map((m) => m.models)));
     p.win.close();
   }
 
@@ -554,7 +826,7 @@ function setSelect(p, name, value) {
     ok(!/chrome\.notifications/.test(shipped) && !/action\.openPopup/.test(shipped), "no chrome.notifications and no action.openPopup (the popup is never opened by the extension)");
     ok(!/"notifications"/.test(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8")), "the manifest asks for no notifications permission");
     const creates = Array.from(shipped.matchAll(/chrome\.tabs\.create\([^;]*\)/g)).map((m) => m[0]);
-    ok(creates.length === 3 && creates.filter((c) => /active:\s*true/.test(c)).length === 1 && creates.some((c) => /runs\/runs\.html/.test(c)), "tabs.create: the worker tab (opened in front right after Start), the Open-in-a-tab page and the Runs page only", creates.join(" | "));
+    ok(creates.length === 4 && creates.filter((c) => /active:\s*true/.test(c)).length === 1 && creates.some((c) => /runs\/runs\.html/.test(c)) && creates.filter((c) => /popup\/popup\.html/.test(c)).length === 2 && creates.some((c) => /"\?tab=1&link=" \+ token/.test(c)), "tabs.create: the worker tab (opened in front right after Start), the Open-in-a-tab page, the Runs page and the deep-link popup tab (popup.html?tab=1&link=<token>, not in front) only", creates.join(" | "));
   }
 
   console.log("--- manifest: permissions are storage and alarms only, host access is the console origin only");
@@ -568,8 +840,8 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.8.0", "the manifest version is 0.8.0", manifest.version);
-    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.8.0 added no permission (Pause, export and import included): still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
+    ok(manifest.version === "0.9.0", "the manifest version is 0.9.0", manifest.version);
+    ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.8.0 and 0.9.0 added no permission (Pause, export and import, the latest link included): still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
     ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
     ok(typeof manifest.description === "string" && manifest.description.length <= 132, `the manifest description is at most 132 characters (store limit): ${manifest.description.length}`, manifest.description.length);
@@ -1017,23 +1289,23 @@ function setSelect(p, name, value) {
 
   console.log("--- (U3) first load of a new version resets the model selection to none, once; later loads keep it");
   {
-    const models12 = JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")).map((m) => m.slug);
+    const modelSlugs = JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8")).map((m) => m.slug);
     // A 0.4.0-shaped popup_state: every model ticked, no version marker.
-    const store = { settings: Object.assign({}, FULL), popup_state: { projects: "proj-one", models: models12.slice(), extra: "" } };
+    const store = { settings: Object.assign({}, FULL), popup_state: { projects: "proj-one", models: modelSlugs.slice(), extra: "" } };
     let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     let ticked = Array.from(p.document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
-    ok(models12.length >= 1 && ticked.length === 0 && store.popup_state.version === MANIFEST_VERSION && store.popup_state.models.length === 0, "a 0.4.0 popup_state (all models ticked, no version) loads with none ticked and records the version marker", `${ticked.length} ticked, version ${store.popup_state.version}`);
+    ok(modelSlugs.length >= 1 && ticked.length === 0 && store.popup_state.version === MANIFEST_VERSION && store.popup_state.models.length === 0, "a 0.4.0 popup_state (all models ticked, no version) loads with none ticked and records the version marker", `${ticked.length} ticked, version ${store.popup_state.version}`);
     p.win.close();
     // The user now picks one model; it is stored with the current version.
     p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
-    const one = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
+    const one = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === modelSlugs[0]);
     one.checked = true; one.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
-    ok(JSON.stringify(store.popup_state.models) === JSON.stringify([models12[0]]), "the user's pick is stored with the version marker");
+    ok(JSON.stringify(store.popup_state.models) === JSON.stringify([modelSlugs[0]]), "the user's pick is stored with the version marker");
     p.win.close();
     // A second load at the same version keeps the user's selection.
     p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     ticked = Array.from(p.document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
-    ok(JSON.stringify(ticked) === JSON.stringify([models12[0]]), "a later load at the same version keeps whatever the user picked (no second reset)", JSON.stringify(ticked));
+    ok(JSON.stringify(ticked) === JSON.stringify([modelSlugs[0]]), "a later load at the same version keeps whatever the user picked (no second reset)", JSON.stringify(ticked));
     p.win.close();
     // The include-done box is a per-run choice: it defaults off, is NOT
     // written to popup_state, is still sent with Start, and is cleared after
@@ -1044,8 +1316,8 @@ function setSelect(p, name, value) {
     const box = p.document.getElementById("include-done");
     box.checked = true; box.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
     p.document.getElementById("projects").value = "proj-x";
-    const haiku = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
-    haiku.checked = true; haiku.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    const first = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === modelSlugs[0]);
+    first.checked = true; first.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
     ok(!("includeDone" in (store2.popup_state || {})), "(N1) ticking the box is NOT written to popup_state (it is a per-run choice, not a saved setting)", JSON.stringify(store2.popup_state));
     p.document.getElementById("start").click(); await tick();
     const startMsg = (store2.__messages || []).find((m) => m.type === p.K.MSG.START);
@@ -1064,8 +1336,8 @@ function setSelect(p, name, value) {
     const confirms = []; p.win.confirm = (m) => { confirms.push(m); return false; };
     p.document.getElementById("include-done").checked = true;
     p.document.getElementById("projects").value = "proj-z";
-    const haiku4 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
-    haiku4.checked = true; haiku4.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    const first4 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === modelSlugs[0]);
+    first4.checked = true; first4.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
     store4.__reply = (m) => (m.type === p.K.MSG.GUARD_PREVIEW ? { ok: true, total: 1, done: 1, skipped: 0 } : { ok: true });
     p.document.getElementById("start").click(); await tick();
     ok(confirms.length === 1 && /FULL RUN/.test(confirms[0]) && /guard is off/.test(confirms[0]) && /pairs already done or skipped in earlier runs will be processed again \(1 done, 0 skipped\)/.test(confirms[0]), "(N1) the full-run confirm names the override when the box is ticked, with the counts of each kind", confirms[0]);
@@ -1089,8 +1361,8 @@ function setSelect(p, name, value) {
     p.document.getElementById("start").click(); await tick();
     ok(/enter at least one project ID/.test(p.document.getElementById("error").textContent) && box5.checked === false && !(store5.__messages || []).some((m) => m.type === p.K.MSG.START), "(P1) a Start refused by the popup's own check (no project ID) clears the box; no START sent");
     p.document.getElementById("projects").value = "Bad_ID";
-    const haiku5 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === models12[0]);
-    haiku5.checked = true; haiku5.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    const first5 = Array.from(p.document.querySelectorAll("#models input")).find((cb) => cb.value === modelSlugs[0]);
+    first5.checked = true; first5.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
     box5.checked = true;
     store5.__reply = (m) => (m.type === p.K.MSG.START ? { ok: false, error: "invalid project ID: Bad_ID" } : { ok: true });
     p.document.getElementById("start").click(); await tick();
@@ -1325,6 +1597,241 @@ function setSelect(p, name, value) {
     r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: [null, "  "], models: [null] } }));
     ok(!r.error && /popup\.projects holds no project ID, so the current ones are kept/.test(r.text) && /popup\.models holds no model slug, so the current selection is kept/.test(r.text), "a project or model list that empties to nothing keeps the current value and says so", r.text);
     p.win.close();
+  }
+
+  console.log("--- (U1-U12) deep links in the popup tab: confirm, fill, banner, Clear; a link never starts a run or touches a setting");
+  {
+    const K = globalThis.MGC;
+    const recorder = (answer) => { const calls = []; const fn = (m) => { calls.push(m); return typeof answer === "function" ? answer(m) : answer; }; fn.calls = calls; return fn; };
+    const base = () => ({ settings: Object.assign({}, FULL), popup_state: { projects: "old-proj-1", models: ["claude-opus-5"], extra: "old-x-1", version: MANIFEST_VERSION } });
+    const open = (query, store, confirmFn, models) => loadPage("popup/popup.html", store, POPUP_SCRIPTS, query, models, confirmFn);
+    const ticked = (d) => Array.from(d.querySelectorAll("#models input:checked")).map((cb) => cb.value);
+    const banner = (d) => ({ hidden: d.getElementById("link-banner").hidden, text: d.getElementById("link-text").textContent });
+    const err = (d) => ({ hidden: d.getElementById("error").hidden, text: d.getElementById("error").textContent });
+    const LATEST = K.latestModelSlugs(K.sortModelsByRecency(MODELS_FILE)).ticked;
+    // U1: OK fills; nothing is sent; Start is still a button the person must press.
+    let store = base();
+    let c = recorder(true);
+    let p = await open("?tab=1&v=1&projects=p-one-1,p-two-2&models=claude-haiku-4-5", store, c); await tick();
+    let d = p.document;
+    ok(c.calls.length === 1 && /^A link wants to fill this form with 2 project\(s\) and 1 model\(s\)\.\n/.test(c.calls[0]) && /\nProject IDs: p-one-1, p-two-2$/.test(c.calls[0]) && /\nModels: claude-haiku-4-5\n/.test(c.calls[0]) && /Nothing starts until you press Start/.test(c.calls[0]), "(U1) the confirm names 2 projects and 1 model first, the slug, that nothing starts until Start, and both ids last", c.calls[0]);
+    ok(c.calls[0].indexOf("Models:") < c.calls[0].indexOf("Nothing starts") && c.calls[0].indexOf("Nothing starts") < c.calls[0].indexOf("Project IDs:"), "(U1) order: the models, then the sentence that nothing starts, then the ids (what a dialog cut short would lose)");
+    ok(/The mode, step-by-step and the other settings are not changed/.test(c.calls[0]) && /OK replaces the project IDs, the model selection and the extra slugs/.test(c.calls[0]), "(U1) the confirm says what OK replaces and what it leaves alone");
+    ok(d.getElementById("projects").value === "p-one-1\np-two-2" && JSON.stringify(ticked(d)) === '["claude-haiku-4-5"]' && d.getElementById("extra-models").value === "", "(U1) OK fills the textarea and ticks the one box; the extra field is emptied (the link had no extra slug)", `${JSON.stringify(d.getElementById("projects").value)} ${ticked(d)}`);
+    ok(banner(d).hidden === false && banner(d).text === "Filled from a link: 2 project(s): p-one-1, p-two-2; models: claude-haiku-4-5. Nothing starts until you press Start.", 'the banner reads "Filled from a link" with the ids and the slug', banner(d).text);
+    ok(d.getElementById("link-banner").closest(".inputs") && d.getElementById("link-clear").tagName === "BUTTON" && d.getElementById("link-clear").textContent === "Clear" && d.getElementById("link-text").childNodes.length === 1 && d.getElementById("link-text").firstChild.nodeType === 3, "(U1) the banner sits in the inputs column with a Clear button; its text is one text node (textContent)");
+    ok(store.popup_state.projects === "p-one-1\np-two-2" && JSON.stringify(store.popup_state.models) === '["claude-haiku-4-5"]' && store.popup_state.extra === "" && store.popup_state.version === MANIFEST_VERSION, "(U1) popup_state holds the filled values, saved as a manual edit is", JSON.stringify(store.popup_state));
+    ok(!(store.__messages || []).length, "(U1) no message was sent to the worker at all (no START, no GUARD_PREVIEW)", JSON.stringify(store.__messages));
+    ok(d.getElementById("start").disabled === false && d.getElementById("start").title === "" && err(d).hidden === true, "(U1) control: Start is enabled and untouched, no error line; the person must press it");
+    ok(d.getElementById("pairs").textContent === "2 project(s) × 1 model(s) = 2 pair(s)", "(U1) the pair line follows the fill", d.getElementById("pairs").textContent);
+    // U3: the settings, the include-done box and the timing are untouched.
+    ok(JSON.stringify(store.settings) === JSON.stringify(FULL) && d.getElementById("include-done").checked === false && !("timing" in store) && d.getElementById("mode").textContent === "MODE: DRY RUN" && d.getElementById("step-toggle").getAttribute("aria-pressed") === "false", "(U3) after the fill: settings deep-equal the values before, include-done unchecked, no timing key, DRY RUN and fast mode as before");
+    ok(Object.keys(store).filter((k) => !k.startsWith("__")).sort().join() === "popup_state,settings", "(U3) storage holds popup_state and settings only; the link wrote nothing else", Object.keys(store).join());
+    // U12: Clear empties the three inputs, hides the banner, saves the empty state; the settings are unchanged.
+    d.getElementById("link-clear").click(); await tick();
+    ok(d.getElementById("projects").value === "" && ticked(d).length === 0 && d.getElementById("extra-models").value === "" && banner(d).hidden === true && banner(d).text === "", "(U12) Clear empties the textarea, the checklist and the extra field and hides the banner");
+    ok(store.popup_state.projects === "" && store.popup_state.models.length === 0 && store.popup_state.extra === "" && JSON.stringify(store.settings) === JSON.stringify(FULL) && d.getElementById("pairs").textContent === "", "(U12) the empty state is saved; the settings are unchanged; the pair line is empty", JSON.stringify(store.popup_state));
+    p.win.close();
+    // U2: Cancel leaves everything as it was before the load.
+    store = base();
+    const before = JSON.stringify(store.popup_state);
+    c = recorder(false);
+    p = await open("?tab=1&v=1&projects=p-one-1,p-two-2&models=claude-haiku-4-5", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1, "(U2) the confirm was asked once");
+    ok(d.getElementById("projects").value === "old-proj-1" && JSON.stringify(ticked(d)) === '["claude-opus-5"]' && d.getElementById("extra-models").value === "old-x-1", "(U2) Cancel: the textarea, the checklist and the extra field are as they were", `${d.getElementById("projects").value} ${ticked(d)} ${d.getElementById("extra-models").value}`);
+    ok(JSON.stringify(store.popup_state) === before && banner(d).hidden === true && banner(d).text === "" && err(d).hidden === true && !(store.__messages || []).length, "(U2) Cancel: popup_state, the banner and the error line unchanged; no message sent");
+    p.win.close();
+    // U4: an encoded tag in a value is refused through textContent; no element from the link appears.
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=%3Cb%3Ex", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && err(d).hidden === false && /^link refused: the model slug \(not a plain name, so not shown\) is not a valid model slug$/.test(err(d).text), "(U4) models=%3Cb%3Ex: refused with the reason in the error line, the confirm not called", err(d).text);
+    ok(!d.querySelector("b") && d.getElementById("error").childNodes.length === 1 && d.getElementById("error").firstChild.nodeType === 3 && d.getElementById("projects").value === "old-proj-1" && banner(d).hidden === true, "(U4) no b element exists, the error line is one text node, nothing filled, no banner");
+    p.win.close();
+    const hostile = encodeURIComponent("<img src=x onerror=alert(1)>");
+    const imgsBefore = (await (async () => { const q = await open("?tab=1", base(), recorder(true)); const n = q.document.querySelectorAll("img").length; q.win.close(); return n; })());
+    for (const [label, query] of [
+      ["every value an img tag", `?tab=1&v=${hostile}&projects=${hostile}&models=${hostile}`],
+      ["every value javascript:", "?tab=1&v=javascript:alert(1)&projects=javascript:alert(1)&models=javascript:alert(1)"],
+      ["an img tag as a key", `?tab=1&v=1&projects=p-one-1&${hostile}=1`],
+      ["an img tag as the token", `?tab=1&link=${hostile}`],
+      ["a raw img tag unencoded", "?tab=1&v=1&projects=<img src=x onerror=alert(1)>"]
+    ]) {
+      store = base(); c = recorder(true);
+      p = await open(query, store, c); await tick(); d = p.document;
+      const e = d.getElementById("error");
+      ok(c.calls.length === 0 && e.hidden === false && /^link refused: /.test(e.textContent) && !/<|javascript:|onerror|alert/.test(e.textContent) && d.querySelectorAll("img").length === imgsBefore && !d.querySelector("b") && e.childNodes.length === 1 && e.firstChild.nodeType === 3 && d.getElementById("projects").value === "old-proj-1" && banner(d).hidden === true && !(store.__messages || []).length,
+        `(U4) ${label}: refused, the error line is one text node that echoes none of it, no element added, nothing filled, nothing sent`, e.textContent);
+      p.win.close();
+    }
+    // U5: no ?tab: the popup layout, no confirm, nothing filled.
+    store = { settings: Object.assign({}, FULL) }; c = recorder(true);
+    p = await open("?v=1&projects=p-one-1", store, c); await tick(); d = p.document;
+    ok(d.documentElement.className === "popup" && c.calls.length === 0 && d.getElementById("projects").value === "" && banner(d).hidden === true && err(d).hidden === true, "(U5) popup.html?v=1&projects=p-one-1 without tab: the popup layout, the confirm not called, the textarea empty, no error", d.documentElement.className);
+    p.win.close();
+    // U6: a token and link values together.
+    store = base(); store.pending_link = { token: "abc", raw: "mgc=v1;projects=p-nine-9", receivedAt: Date.now() }; c = recorder(true);
+    p = await open("?tab=1&link=abc&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && err(d).hidden === false && /^link refused: the page carries a link token and link values together/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U6) ?tab=1&link=abc&v=1&projects=p-one-1: refused with one reason, confirm not called, nothing filled", err(d).text);
+    p.win.close();
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&link=abc&link=abc", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /more than one link token/.test(err(d).text), "(U6) two link tokens: refused", err(d).text);
+    p.win.close();
+    // U7: form B through the stored record.
+    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1;models=claude-haiku-4-5", receivedAt: Date.now() };
+    let recordAtConfirm = "unset";
+    c = recorder(() => { recordAtConfirm = "pending_link" in store ? "present" : "deleted"; return true; });
+    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && recordAtConfirm === "deleted" && !("pending_link" in store), "(U7) a matching token: the record is deleted before the confirm", recordAtConfirm);
+    ok(/1 project\(s\)/.test(c.calls[0]) && /\nProject IDs: p-one-1$/.test(c.calls[0]) && /Models: claude-haiku-4-5/.test(c.calls[0]), "(U7) the confirm names the stored values", c.calls[0]);
+    ok(d.getElementById("projects").value === "p-one-1" && JSON.stringify(ticked(d)) === '["claude-haiku-4-5"]' && banner(d).hidden === false && /Filled from a link: 1 project\(s\): p-one-1; models: claude-haiku-4-5/.test(banner(d).text), "(U7) OK fills from the stored text", banner(d).text);
+    // jsdom refuses replaceState on the opaque chrome-extension: origin (a SecurityError, which Chrome does not raise); the
+    // popup catches it, so the fill above went through, and the source carries the call that strips the token in Chrome.
+    ok(/history\.replaceState\(null, "", location\.pathname \+ "\?tab=1"\)/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8")) && p.pageErrors.length === 0, "(U7) the token is stripped from the URL with replaceState(…, \"?tab=1\") once the record is read; jsdom's refusal of that call on this origin is caught", p.win.location.search);
+    p.win.close();
+    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() }; c = recorder(true);
+    p = await open("?tab=1&link=tok-2", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && !("pending_link" in store) && err(d).hidden === false && /^link refused: the link token does not match the pending link/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1" && banner(d).hidden === true, "(U7) a token that does not match: one refusal line, the record deleted, nothing filled", err(d).text);
+    p.win.close();
+    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() - 11 * 60 * 1000 }; c = recorder(true);
+    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && !("pending_link" in store) && /^link refused: the pending link is older than 10 minutes/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U7) an 11-minute-old record: one refusal line, the record deleted, nothing filled", err(d).text);
+    p.win.close();
+    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() - 9 * 60 * 1000 }; c = recorder(true);
+    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && d.getElementById("projects").value === "p-one-1", "(U7) control: a 9-minute-old record is accepted");
+    p.win.close();
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /does not match the pending link/.test(err(d).text), "(U7) no record at all: refused like a mismatch (a second tab for the same token sees one refusal line)");
+    p.win.close();
+    for (const [label, rec] of [["a token that is not a string", { token: 5, raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() }], ["a record without receivedAt", { token: "tok-1", raw: "mgc=v1;projects=p-one-1" }], ["a record whose raw is not text", { token: "tok-1", raw: 7, receivedAt: Date.now() }], ["a record that is a string", "tok-1"]]) {
+      store = base(); store.pending_link = rec; c = recorder(true);
+      p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+      ok(c.calls.length === 0 && !("pending_link" in store) && /^link refused: /.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", `(U7) ${label}: refused, deleted, nothing filled`, err(d).text);
+      p.win.close();
+    }
+    store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1;x=1", receivedAt: Date.now() }; c = recorder(true);
+    p = await open("?tab=1&link=tok-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && !("pending_link" in store) && /^link refused: the key "x" is not one of/.test(err(d).text), "(U7) the stored text is parsed again by the popup (one code path for both forms): an invalid stored text is refused here", err(d).text);
+    p.win.close();
+    // U8: 23 projects.
+    const projects23 = Array.from({ length: 23 }, (_, i) => `p-link-${String(i).padStart(3, "0")}`);
+    store = base(); c = recorder(true);
+    p = await open(`?tab=1&v=1&projects=${projects23.join(",")}&models=claude-haiku-4-5`, store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && /23 project\(s\)/.test(c.calls[0]) && projects23.slice(0, 16).every((id) => c.calls[0].includes(id)) && !projects23.slice(16).some((id) => c.calls[0].includes(id)) && /\n  \.\.\. and 7 more \(every id is listed in the banner and the textarea after OK\)\.$/.test(c.calls[0]) && c.calls[0].split("\n").length <= K.DEEP_LINK.CONFIRM_ROWS && c.calls[0].split("\n").every((l) => l.length <= K.DEEP_LINK.CONFIRM_COLS - 1 || /^OK replaces/.test(l)), '(U8) 23 projects: the confirm names "23 project(s)", lists the first 16 ids and "and 7 more", within the row budget (the row test itself is in deep-link.cjs)', c.calls[0]);
+    ok(d.getElementById("pairs").textContent === "23 project(s) × 1 model(s) = 23 pair(s)" && d.getElementById("projects").value === projects23.join("\n") && projects23.every((id) => banner(d).text.includes(id)), "(U8) the pair line reads 23 project(s) × 1 model(s) = 23 pair(s); the banner lists every id", d.getElementById("pairs").textContent);
+    p.win.close();
+    store = base(); c = recorder(true);
+    p = await open(`?tab=1&v=1&projects=${projects23.concat(["p-link-023"]).join(",")}`, store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /names 24 projects; at most 23 are accepted/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U8) 24 projects: refused, nothing filled", err(d).text);
+    p.win.close();
+    // U9: verbatim, in link order.
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-zeta-9,p-alpha-1,p-mid-5", store, c); await tick(); d = p.document;
+    ok(c.calls[0].indexOf("p-zeta-9") < c.calls[0].indexOf("p-alpha-1") && c.calls[0].indexOf("p-alpha-1") < c.calls[0].indexOf("p-mid-5") && /3 project\(s\): p-zeta-9, p-alpha-1, p-mid-5;/.test(banner(d).text) && d.getElementById("projects").value === "p-zeta-9\np-alpha-1\np-mid-5", "(U9) the confirm, the banner and the textarea show each id verbatim in the link's order", banner(d).text);
+    ok(/No models: nothing will be ticked\./.test(c.calls[0]) && /; no models ticked\./.test(banner(d).text) && ticked(d).length === 0 && store.popup_state.models.length === 0, "(U9) models absent: the confirm and the banner say no models are ticked, the stored selection is empty", banner(d).text);
+    p.win.close();
+    // U10: models=latest resolves over the rendered list.
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=latest", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && new RegExp(`Models: "latest", which on this machine is ${LATEST.length} model\\(s\\): ${LATEST.join("(, |\\n)")}\\n`).test(c.calls[0]) && !/Models: latest\b/.test(c.calls[0]), "(U10) the confirm names the slugs latestModelSlugs(currentModels).ticked returns (wrapped to the row width), never the word latest alone", c.calls[0]);
+    ok(JSON.stringify(ticked(d)) === JSON.stringify(LATEST) && JSON.stringify(store.popup_state.models) === JSON.stringify(LATEST), "(U10) the boxes of the latest set are ticked and the stored selection holds the concrete slugs", ticked(d).join(","));
+    ok(d.getElementById("models-note").hidden === false && d.getElementById("models-note").textContent === "latest: 3 ticked, Claude Fable 5.1 left out, needs a manual step on its model page", "(U10) the models note reads as the latest link writes it", d.getElementById("models-note").textContent);
+    ok(banner(d).text === `Filled from a link: 1 project(s): p-one-1; models (latest on this machine): ${LATEST.join(", ")}. Nothing starts until you press Start.`, "(U10) the banner names the resolved slugs", banner(d).text);
+    p.win.close();
+    const undated = MODELS_FILE.map((m) => ({ slug: m.slug, name: m.name, launchStage: m.launchStage }));
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=latest", store, c, undated); await tick(); d = p.document;
+    ok(c.calls.length === 1 && /resolves to nothing \(no model carries a release date\): no models ticked\./.test(c.calls[0]) && ticked(d).length === 0 && store.popup_state.models.length === 0, "(U10) a synthetic undated list: the confirm says no models ticked, nothing is ticked", c.calls[0]);
+    ok(/no models ticked \(latest resolves to nothing here: no model carries a release date\)/.test(banner(d).text) && d.getElementById("models-note").textContent === "latest: nothing ticked, no model carries a release date", '(U10) the banner says "no models ticked" and the note says why', banner(d).text);
+    p.win.close();
+    // U11: a slug not in models.json goes to the extra field, named as extra.
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5,my-own-slug", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && /Models: claude-haiku-4-5\n/.test(c.calls[0]) && /Extra slugs \(not in the model list\): my-own-slug/.test(c.calls[0]), "(U11) the confirm names the ticked slug and the extra slug as extra", c.calls[0]);
+    ok(JSON.stringify(ticked(d)) === '["claude-haiku-4-5"]' && d.getElementById("extra-models").value === "my-own-slug" && store.popup_state.extra === "my-own-slug" && /models: claude-haiku-4-5; extra slugs \(not in the model list\): my-own-slug\./.test(banner(d).text), "(U11) the box is ticked, #extra-models holds my-own-slug, the banner names it as extra", banner(d).text);
+    ok(d.getElementById("pairs").textContent === "1 project(s) × 2 model(s) = 2 pair(s)", "(U11) the pair line counts the extra slug (Start reads it)", d.getElementById("pairs").textContent);
+    p.win.close();
+    // The 4096 limit on the page's own query string; a long link that is otherwise fine.
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=" + "claude-x-1,".repeat(380) + "claude-y-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /longer than 4096 characters/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "a link over 4096 characters in the query string is refused (by the parser's own cap, ?tab=1& not counted)", err(d).text);
+    p.win.close();
+    // A link while the popup tab shows an active run is dropped in form A as in form B (D4): no confirm, nothing filled.
+    store = Object.assign(base(), { running: true, run: { runId: "r-act", live: false }, queue: [{ projectId: "proj-run", modelSlug: "claude-haiku-4-5", status: "running" }], current: { jobIndex: 0, phase: "model" } }); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /link refused: a run is active; the link is dropped/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1" && d.getElementById("start").disabled === true && store.running === true && store.queue.length === 1 && !(store.__messages || []).length, "with a run active, form A is dropped: no confirm, nothing filled, one error line; the run, its queue and the worker are untouched", err(d).text);
+    p.win.close();
+    // (finding 5) form A leaves the tab's URL once it is read, as form B's token does: a reload or a session restore of the
+    // tab shows the form as it is instead of asking again (and overwriting edits made since). Under http://x/ because
+    // jsdom refuses replaceState on the chrome-extension: origin (Chrome does not; the popup catches the refusal either way).
+    const openHttp = (query, st, confirmFn) => loadPage("popup/popup.html", st, POPUP_SCRIPTS, query, undefined, confirmFn, "http://x/");
+    for (const [label, query, answer, filled] of [
+      ["OK", "?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5", true, "p-one-1"],
+      ["Cancel", "?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5", false, "old-proj-1"],
+      ["a refused link", "?tab=1&v=1&projects=p-one-1&x=1", true, "old-proj-1"],
+      ["form B's token", "?tab=1&link=tok-1", true, "p-one-1"]
+    ]) {
+      store = base(); store.pending_link = { token: "tok-1", raw: "mgc=v1;projects=p-one-1", receivedAt: Date.now() }; c = recorder(answer);
+      p = await openHttp(query, store, c); await tick(); d = p.document;
+      ok(p.win.location.search === "?tab=1" && p.win.location.pathname === "/popup/popup.html" && d.documentElement.classList.contains("tab") && d.getElementById("projects").value === filled, `(finding 5) after ${label} the URL is popup.html?tab=1 exactly (the link is gone, the tab layout stays)`, `${p.win.location.href} ${d.getElementById("projects").value}`);
+      p.win.close();
+    }
+    store = base(); c = recorder(true);
+    p = await openHttp("?tab=1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && p.win.location.search === "?tab=1" && err(d).hidden === true && d.getElementById("projects").value === "old-proj-1", "(finding 5) control: a page opened with ?tab=1 alone asks nothing and keeps its URL");
+    p.win.close();
+    store = base(); c = recorder(true);
+    p = await openHttp("?tab=1&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && d.getElementById("projects").value === "p-one-1" && p.win.location.search === "?tab=1", "(finding 5) control: the fill itself still happens under http://x/ (the origin is not what the link path keys on)");
+    p.win.close();
+    ok(/if \(!rest\.length\) return null;\n\s*try \{ history\.replaceState\(null, "", location\.pathname \+ "\?tab=1"\); \} catch \(e\) \{ \/\* ignore \*\/ \}\n\s*return rest\.join\("&"\);/.test(fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8")), "(finding 5) source: form A's branch of pendingLinkText strips the query before the text is returned (before the parse and the confirm), so a refusal is one-shot too");
+    // The banner goes with the Start it announced.
+    store = base(); c = recorder(true);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=claude-haiku-4-5", store, c); await tick(); d = p.document;
+    ok(banner(d).hidden === false, "fixture: the banner shows");
+    d.getElementById("start").click(); await tick();
+    ok(banner(d).hidden === true && (store.__messages || []).filter((m) => m.type === K.MSG.START).length === 1 && store.__messages[0].projects.join() === "p-one-1" && store.__messages[0].live === false, "pressing Start yourself sends one START with the filled values (DRY RUN) and hides the banner");
+    p.win.close();
+  }
+
+  console.log("--- (S1-S5) deep links, static: the link path sends nothing and clicks nothing, no innerHTML in popup.js, the worker reads the sender before the parse, no link value reaches a URL, a selector or a timer, the manifest is unchanged");
+  {
+    const popupJs = fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8");
+    const workerJs = fs.readFileSync(path.join(E.EXT, "background/service-worker.js"), "utf8");
+    const mainJs = fs.readFileSync(path.join(E.EXT, "content/main.js"), "utf8");
+    /** The source of a top-level function in an IIFE-style module (two-space indent): from its first line to its closing "  }" line. */
+    const fnBody = (src, head, indent) => { const s = src.indexOf(head); if (s < 0) return null; const e = src.indexOf(`\n${indent}}\n`, s); return e < 0 ? null : src.slice(s, e); };
+    const popupFns = ["async function pendingLinkText()", "function linkBannerText(", "function showLinkBanner(", "function clearLinkFill()", "async function applyDeepLink()"].map((h) => [h, fnBody(popupJs, h, "  ")]);
+    ok(!/function linkConfirmText\(/.test(popupJs) && /K\.linkConfirmText\(parsed, resolved\)/.test(popupJs), "(S1) the confirm text comes from K.linkConfirmText (constants.js, pure and tested in deep-link.cjs), not from a closure in popup.js");
+    ok(popupFns.every(([, b]) => b && b.length > 40), "(S1) every deep-link function of popup.js was located", popupFns.map(([h, b]) => `${h}:${b ? b.length : "none"}`).join(" "));
+    const linkPath = popupFns.map(([, b]) => b).join("\n");
+    ok(!/MSG\.START/.test(linkPath) && !/\.click\(\)/.test(linkPath) && !/\bsend\(/.test(linkPath) && !/sendMessage/.test(linkPath) && !/#start|"start"/.test(linkPath), "(S1) the deep-link functions contain no MSG.START, no click(), no send( and no reference to #start");
+    ok(!/KEYS\.SETTINGS|KEYS\.TIMING|live_mode|step_by_step|include-done|saveSettings/.test(linkPath), "(S1) the deep-link functions never name the settings, the timing, the mode, step-by-step or the include-done box");
+    ok(/applyDeepLink\(\)/.test(fnBody(popupJs, "async function init()", "  ")) && (popupJs.match(/applyDeepLink\(\)/g) || []).length === 2, "(S1) applyDeepLink is defined once and called once, from init");
+    ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(popupJs), "(S2) popup.js matches none of innerHTML, outerHTML, insertAdjacentHTML, document.write");
+    ok(/el\.textContent = text \|\| ""/.test(fnBody(popupJs, "function showLinkBanner(", "  ")) && (linkPath.match(/textContent/g) || []).length >= 1 && !/\.title =|setAttribute/.test(linkPath), "(S2) the banner is written with textContent only (no title, no attribute from the link)");
+    const handler = fnBody(workerJs, "async function deepLinkUnsafe(", "");
+    ok(!!handler && handler.indexOf("sender.id") > 0 && handler.indexOf("sender.tab") > 0 && handler.indexOf("sender.url") > 0 && handler.indexOf("parseDeepLink") > 0, "(S3) deepLinkUnsafe reads sender.id, sender.tab, sender.url and calls parseDeepLink");
+    ok(handler.indexOf("sender.id") < handler.indexOf("parseDeepLink") && handler.indexOf("sender.tab") < handler.indexOf("parseDeepLink") && handler.indexOf("sender.url") < handler.indexOf("parseDeepLink") && handler.indexOf("sender.url") < handler.indexOf("msg.raw"), "(S3) the sender checks come before the parse and before the message text is read (source order)");
+    ok(handler.indexOf("KEYS.RUNNING") < handler.indexOf("lastLinkAcceptedAt") && handler.indexOf("lastLinkAcceptedAt") < handler.indexOf("parseDeepLink") && handler.indexOf("parseDeepLink") < handler.indexOf("crypto.randomUUID") && handler.indexOf("crypto.randomUUID") < handler.indexOf("chrome.tabs.create"), "(S3) order: run-active check, 2-second window, parse, token, one tabs.create");
+    ok(/case MSG\.DEEP_LINK:\n\s+return serialized\(\(\) => deepLinkUnsafe\(msg, sender\)\);/.test(workerJs), "(S3) the MSG.DEEP_LINK case runs deepLinkUnsafe inside the serialized chain with the raw sender");
+    const sinks = /chrome\.tabs\.create\(|URL\(|fetch\(|setAttribute\(|querySelector\(|RegExp\(|eval\(|Function\(|setTimeout\(/;
+    const linkValues = /parsed|projects|models|dropped|latest|resolved|\braw\b|\btext\b|rec\.|token/;
+    const bodies = [["popup.js", linkPath], ["service-worker.js", handler], ["main.js", fnBody(mainJs, "function readDeepLink()", "  ")]];
+    for (const [name, body] of bodies) {
+      const sinkLines = body.split("\n").filter((l) => sinks.test(l));
+      const bad = sinkLines.filter((l) => linkValues.test(l.replace(/new URL\(sender\.url\)/, "").replace(/"\?tab=1&link=" \+ token/, "")));
+      ok(!!body && bad.length === 0, `(S4) ${name}: no link value reaches tabs.create, URL(, fetch(, setAttribute(, querySelector(, RegExp(, eval(, Function( or setTimeout( (${sinkLines.length} sink line(s): sender.url into URL(), the random token into tabs.create)`, bad.join(" | "));
+    }
+    ok(!sinks.test(linkPath) && !sinks.test(fnBody(mainJs, "function readDeepLink()", "  ")), "(S4) popup.js and main.js link paths contain none of the sinks at all");
+    ok(/typeof rec\.token !== "string" \|\| !token \|\| rec\.token !== token/.test(linkPath) && /chrome\.storage\.local\.get\(KEYS\.PENDING_LINK\)/.test(linkPath) && /chrome\.storage\.local\.remove\(KEYS\.PENDING_LINK\)/.test(linkPath), "(S4) the token is compared by string equality under the fixed key, never used as a key, and the record is removed at once");
+    const manifest = JSON.parse(fs.readFileSync(path.join(E.EXT, "manifest.json"), "utf8"));
+    const baseline = { permissions: ["storage", "alarms"], host_permissions: ["https://console.cloud.google.com/*"], content_scripts: [{ matches: ["https://console.cloud.google.com/*"], run_at: "document_end", js: ["common/constants.js", "content/dom.js", "content/selectors.js", "content/badge.js", "content/actions.js", "content/main.js"] }] };
+    ok(JSON.stringify(manifest.permissions) === JSON.stringify(baseline.permissions) && JSON.stringify(manifest.host_permissions) === JSON.stringify(baseline.host_permissions) && JSON.stringify(manifest.content_scripts) === JSON.stringify(baseline.content_scripts), "(S5) the manifest deep-equals the 0.8.0 baseline on permissions, host_permissions and content_scripts", JSON.stringify([manifest.permissions, manifest.host_permissions, manifest.content_scripts]));
+    ok(["web_accessible_resources", "externally_connectable", "omnibox", "protocol_handlers", "optional_permissions", "optional_host_permissions"].every((k) => !(k in manifest)), "(S5) no web_accessible_resources, externally_connectable, omnibox or protocol_handlers");
+    ok(Object.keys(manifest).sort().join() === "action,background,content_scripts,description,host_permissions,icons,manifest_version,minimum_chrome_version,name,options_ui,permissions,short_name,version", "(S5) the manifest's keys are exactly the 0.8.0 set", Object.keys(manifest).sort().join());
   }
 
   console.log("--- the release zip and the file table carry the runs page");

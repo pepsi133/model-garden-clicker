@@ -4,6 +4,88 @@ All notable changes to Model Garden Clicker are listed here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+[Unreleased]: https://github.com/pepsi133/model-garden-clicker/compare/v0.9.0...HEAD
+
+## [0.9.0] - 2026-10-13
+
+### Added
+- A third link, `latest`, next to `all` and `none` above the model
+  checklist. It ticks the newest GA model of each model line (opus,
+  sonnet, haiku, fable, and any new line) and writes a note under the
+  checklist. A line whose newest model needs a manual consent step on its
+  model page (Fable 5.1) is left out and named in the note. The stored
+  selection stays a list of concrete slugs.
+- A release date and an API order per model in `models.json`. The date
+  shows in the row's tooltip (`<slug> · released <date>`). The stage text
+  reads `(GA · manual step)` for a model that needs a manual consent step
+  and `(deprecated)` for a deprecated one; the tooltip repeats the flag
+  (`· manual step`, `· deprecated`), because the four-column layout cuts
+  the stage text with an ellipsis.
+- A pair count line under the checklist, updated on every change:
+  `P project(s) × M model(s) = K pair(s)`. It counts projects and models
+  the way the worker runs them: a project ID typed twice, or a slug ticked
+  and typed again as an extra slug in another case, counts once.
+- The full-run confirmation says how many selected models (ticked or typed
+  as extra slugs) are not the newest of their line. It names a ticked model
+  that needs a manual step as a job that fails instead of enabling. Two or
+  more left-out or flagged names are joined with "and" and take the plural
+  verb, in the note and in the confirmation.
+- A lint of `models.json` in the offline suite (`extension/test/models-json.cjs`).
+- `scripts/models/fetch_models.py`: a standard-library script that lists
+  the Anthropic publisher models from the API, merges the hand-set fields
+  of `models.json` and prints the candidate file and the `latest` set
+  (`scripts/models/README.md`, `docs/MAINTENANCE.md` section 8).
+- `ci/gitlab/`: a sample GitLab pipeline and a read-only service-account
+  audit (`mg_inventory.py`) that writes the pending projects and an import
+  file for the options page. Nothing in it enables a model. Scoping in
+  `docs/scoping/02-gitlab-runner-service-account.md`.
+- `docs/scoping/`: the "latest models" design, the GitLab-runner design and
+  the deep-link design and its security review.
+- Deep links: a link opens the popup in a tab with the project IDs and the
+  models filled in, after a confirmation dialog that lists the validated
+  values and says that nothing starts until Start. Two forms carry the
+  keys `v`, `projects` and `models`:
+  `chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest`
+  (address bar, bookmarks) and
+  `https://console.cloud.google.com/...#mgc=v1;projects=p-a,p-b;models=latest`
+  (a plain console link for a signed-in browser; the content script hands
+  the fragment to the worker and removes it from the URL). `models` may
+  be a slug list, `latest` (resolved over this machine's list) or absent
+  (nothing ticked). OK fills the form, saves it as a manual edit would and
+  shows a "Filled from a link" banner with a Clear button; Cancel changes
+  nothing. A link never starts a run and never changes the mode,
+  step-by-step, the include-done box, the questionnaire or the timing.
+  Any unknown or repeated key, a wrong version, an invalid or repeated id
+  or slug, more than 23 projects, more than 13 models or more than 4,096
+  characters refuses the whole link with one reason; a link during a run
+  is dropped with one log line; the worker accepts the fragment only from
+  its own content script on the console origin, opens one tab per link
+  and drops a second link within two seconds. The manifest is unchanged.
+  `MGC.parseDeepLink` (`common/constants.js`), the storage key
+  `pending_link`, the message `mgc:deep-link`, and the suites
+  `extension/test/deep-link.cjs` (the parser) plus new sections in the
+  worker, popup and content-script suites. The form B check in a
+  signed-in browser is still to be done (see `docs/scoping/03-deep-links.md`).
+- `scripts/deep-link/`: `mgc_link.py` and `mgc-link.sh`, two small generators
+  that print a deep link for a project list and a model list (for a runbook
+  or a pipeline; the extension validates the link when it is opened).
+
+### Changed
+- The model list is sorted by release date, newest first, at load time. The
+  file order no longer matters.
+- As after every version bump, the first popup open after the next release
+  resets the model selection to none once. The `latest` link is the
+  one-click way back.
+
+### Fixed
+- The content script removes the `#mgc=` fragment again when the Model
+  Garden page writes it back into the URL a few seconds after load, so a
+  reload of that tab does not send the link a second time.
+
+[0.9.0]: https://github.com/pepsi133/model-garden-clicker/releases/tag/v0.9.0
+
 ## [0.8.0] - 2026-10-08
 
 ### Added

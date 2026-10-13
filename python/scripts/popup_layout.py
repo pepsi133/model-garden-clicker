@@ -78,7 +78,21 @@ window.chrome = {
 MEASURE_JS = """
 const rect = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, h: b.height, w: b.width }; };
 const labels = Array.from(document.querySelectorAll('#models label'));
-const rows = labels.map((el) => Object.assign(rect(el), { truncated: el.scrollWidth > el.clientWidth, text: el.textContent.trim() }));
+// The rows are nowrap with an ellipsis; the stage span may be cut (0.9.0), the
+// model name may not: its text node must end left of the ellipsis.
+const nameCut = (el) => {
+  if (el.scrollWidth <= el.clientWidth) return false;
+  const tn = Array.from(el.childNodes).find((n) => n.nodeType === 3 && n.textContent.trim());
+  if (!tn) return true;
+  const range = document.createRange(); range.selectNodeContents(tn);
+  const probe = document.createElement('span'); probe.textContent = '\u2026'; el.appendChild(probe);
+  const ell = probe.getBoundingClientRect().width; probe.remove();
+  const cs = getComputedStyle(el);
+  const visibleRight = el.getBoundingClientRect().left + el.clientWidth - parseFloat(cs.paddingRight);
+  return range.getBoundingClientRect().right > visibleRight - ell + 0.5;
+};
+const rows = labels.map((el) => Object.assign(rect(el), { truncated: el.scrollWidth > el.clientWidth, nameCut: nameCut(el), text: el.textContent.trim(),
+  stage: (el.querySelector('.stage') || {}).textContent || '', title: el.title }));
 const display = (id) => getComputedStyle(document.getElementById(id)).display;
 const box = (sel) => { const el = document.querySelector(sel); return Object.assign(rect(el), { scrollH: el.scrollHeight, clientH: el.clientHeight, scrollW: el.scrollWidth, clientW: el.clientWidth }); };
 return { rows, models: box('#models'), scroll: box('.scroll'), inputs: box('.inputs'),
@@ -178,8 +192,13 @@ def probe(state: str) -> bool:
     for i, a in enumerate(rows):
         if a["h"] < r["lineH"] - 0.5:
             problems.append(f"row {i} height {a['h']:.1f} < line height {r['lineH']:.1f}")
-        if a["truncated"]:
-            problems.append(f"row {i} ({a['text']!r}) is truncated (ellipsis)")
+        if a["nameCut"]:
+            problems.append(f"row {i} ({a['text']!r}) is truncated inside the model name")
+        elif a["truncated"]:
+            print(f"    row {i} ({a['text']!r}): the stage text is cut by the ellipsis (intended in the four-column layout)")
+        flag = next((f for f in ("manual step", "deprecated") if f in a["stage"]), None)
+        if flag and not a["title"].endswith(f"· {flag}"):
+            problems.append(f"row {i} ({a['text']!r}) flag {flag!r} missing from the tooltip {a['title']!r}")
         for j in range(i + 1, len(rows)):
             b = rows[j]
             ox = min(a["right"], b["right"]) - max(a["left"], b["left"])
@@ -193,7 +212,8 @@ def probe(state: str) -> bool:
         (f"every model of models.json has a checklist row ({r['modelCount']})", len(rows) == r["modelCount"] and len(rows) > 0),
         ("every checklist row keeps its full line height", not any("height" in p for p in problems)),
         ("no two checklist rows overlap", not any("overlap" in p for p in problems)),
-        ("no model name is truncated", not any("truncated" in p for p in problems)),
+        ("no model name is truncated (the stage text may be cut by the ellipsis)", not any("truncated" in p for p in problems)),
+        ("every flagged row repeats its flag at the end of the tooltip", not any("tooltip" in p for p in problems)),
         (f"checklist in at least {MIN_COLUMNS} columns (found {columns})", columns >= MIN_COLUMNS),
         ("checklist shows every row without a scrollbar", m["scrollH"] <= m["clientH"] + 0.5 and all(x["bottom"] <= m["bottom"] + 0.5 for x in rows)),
         ("inputs are not a scroll region (nothing hidden inside them)", inp["scrollH"] <= inp["clientH"] + 0.5 and inp["scrollW"] <= inp["clientW"] + 0.5),

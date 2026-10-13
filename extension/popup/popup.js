@@ -105,25 +105,42 @@
   /* ---------------------------------------------------------- models.json */
 
   /**
-   * models.json is an array of { slug, name, launchStage? } (the shape the
-   * worker reads for the job names too); an entry without a valid slug is
-   * dropped, a missing name falls back to the slug.
+   * models.json is an array of { slug, name, launchStage?, releaseDate?,
+   * apiOrder?, requiresManualConsent?, deprecated? } (the worker reads slug
+   * and name for the job names). An entry without a valid slug is dropped,
+   * a missing name falls back to the slug. releaseDate is kept only as a
+   * strict YYYY-MM-DD (else ""), apiOrder only as a positive integer (else
+   * null), the two flags only when exactly true. Unknown fields are ignored.
    */
   function parseModelsFile(data) {
     if (!Array.isArray(data)) return [];
     return data
       .filter((item) => item && typeof item === "object" && typeof item.slug === "string" && K.isValidModelSlug(item.slug))
-      .map((item) => ({ slug: item.slug, name: item.name || item.slug, launchStage: item.launchStage || "" }));
+      .map((item) => ({
+        slug: item.slug,
+        name: item.name || item.slug,
+        launchStage: item.launchStage || "",
+        releaseDate: K.parseReleaseDate(item.releaseDate) || "",
+        apiOrder: Number.isInteger(item.apiOrder) && item.apiOrder > 0 ? item.apiOrder : null,
+        requiresManualConsent: item.requiresManualConsent === true,
+        deprecated: item.deprecated === true
+      }));
   }
 
+  // The parsed list in recency order (newest first), as rendered. The latest
+  // link computes its set from it.
+  let currentModels = [];
+
+  /** Read and parse models.json, sorted newest first. The file order is not load-bearing. */
   async function loadModels() {
     try {
       const res = await fetch(chrome.runtime.getURL("models.json"));
-      return parseModelsFile(await res.json());
+      currentModels = K.sortModelsByRecency(parseModelsFile(await res.json()));
     } catch (err) {
       showError(`could not read models.json: ${err.message}`);
-      return [];
+      currentModels = [];
     }
+    return currentModels;
   }
 
   /**
@@ -141,29 +158,114 @@
       cb.type = "checkbox";
       cb.value = m.slug;
       cb.checked = Array.isArray(selected) && selected.includes(m.slug);
-      cb.addEventListener("change", savePopupState);
+      cb.addEventListener("change", () => { showModelsNote(""); savePopupState(); });
       label.appendChild(cb);
       label.appendChild(document.createTextNode(" " + m.name));
-      if (m.launchStage) {
+      // The stage span: "(deprecated)" for a deprecated entry, "(GA · manual
+      // step)" for one whose model page needs a manual consent step (the
+      // runner fails such a job cleanly), else the launch stage as it is. A
+      // flagged entry with another launch stage reads "(<launchStage> ·
+      // manual step)", and one without a stage "(manual step)".
+      const stage = m.deprecated ? "deprecated" : [m.launchStage, m.requiresManualConsent ? "manual step" : ""].filter(Boolean).join(" · ");
+      if (stage) {
         const s = document.createElement("span");
         s.className = "stage";
-        s.textContent = ` (${m.launchStage})`;
+        s.textContent = ` (${stage})`;
         label.appendChild(s);
       }
-      label.title = m.slug;
+      // The release date lives in the tooltip only (the rows are nowrap with
+      // an ellipsis). The ellipsis also cuts the stage span in the four-column
+      // layout, so a flag ("manual step", "deprecated") is repeated there.
+      const flag = m.deprecated ? "deprecated" : (m.requiresManualConsent ? "manual step" : "");
+      label.title = [m.slug, m.releaseDate ? `released ${m.releaseDate}` : "", flag].filter(Boolean).join(" · ");
       box.appendChild(label);
     }
     if (!models.length) box.textContent = "models.json is empty or unreadable; use the extra slugs field.";
   }
 
+  /** The pair count line under the checklist: "P project(s) × M model(s) = K pair(s)" while both counts are above 0, else empty. */
+  function renderPairs() {
+    const el = $("pairs");
+    if (!el) return;
+    const p = projectIds().length;
+    const m = selectedModels().length;
+    el.textContent = p > 0 && m > 0 ? `${p} project(s) × ${m} model(s) = ${p * m} pair(s)` : "";
+  }
+
+  /** The note under the checklist that the latest link writes. An empty text hides it. The tooltip repeats a note cut by the ellipsis. */
+  function showModelsNote(text) {
+    const el = $("models-note");
+    if (!el) return;
+    el.hidden = !text;
+    el.textContent = text || "";
+    el.title = text || "";
+  }
+
+  /** Names joined with " and ": "A", "A and B", "A and B and C". */
+  function joinNames(names) {
+    return names.join(" and ");
+  }
+
+  /**
+   * The latest link: untick everything, tick the newest GA model of each
+   * line (K.latestModelSlugs over the rendered list) and say what was left
+   * out. The stored selection stays a list of concrete slugs, so a later
+   * run uses exactly what the user saw. #extra-models is never touched.
+   */
+  function selectLatest(e) {
+    e.preventDefault();
+    const latest = K.latestModelSlugs(currentModels);
+    modelBoxes().forEach((cb) => { cb.checked = latest.ticked.includes(cb.value); });
+    showModelsNote(latestNote(latest));
+    savePopupState();
+  }
+
+  /**
+   * Trimmed, non-empty, deduplicated case-insensitively with the first
+   * spelling kept: the same rule the worker applies (uniqueTrimmed in
+   * service-worker.js), so the pair count and the confirm match what runs.
+   */
+  function uniqueTrimmed(list) {
+    const seen = new Set();
+    const out = [];
+    for (const x of list.map((s) => String(s).trim()).filter(Boolean)) {
+      const k = x.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(x);
+    }
+    return out;
+  }
+
+  /** The note the latest link writes for a latest set computed over the rendered list (the deep link "models=latest" writes the same). */
+  function latestNote(latest) {
+    if (!latest.ticked.length && !latest.leftOut.length && !currentModels.some((m) => m.releaseDate)) {
+      return "latest: nothing ticked, no model carries a release date";
+    }
+    let note = `latest: ${latest.ticked.length} ticked`;
+    if (latest.leftOut.length) {
+      // One left-out line reads as the design says. Two or more take the plural verb.
+      const names = latest.leftOut.map((m) => m.name);
+      note += names.length === 1
+        ? `, ${names[0]} left out, needs a manual step on its model page`
+        : `, ${joinNames(names)} left out, need a manual step on their model pages`;
+    }
+    return note;
+  }
+
+  /** The checklist's checkboxes. */
+  function modelBoxes() {
+    return Array.from(document.querySelectorAll("#models input"));
+  }
+
   function selectedModels() {
     const ticked = Array.from(document.querySelectorAll("#models input:checked")).map((cb) => cb.value);
-    const extra = ($("extra-models") ? $("extra-models").value : "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-    return [...new Set([...ticked, ...extra])];
+    const extra = ($("extra-models") ? $("extra-models").value : "").split(/[\s,]+/);
+    return uniqueTrimmed([...ticked, ...extra]);
   }
 
   function projectIds() {
-    return ($("projects") ? $("projects").value : "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return uniqueTrimmed(($("projects") ? $("projects").value : "").split(/\r?\n/));
   }
 
   /* ---------------------------------------------------------- state */
@@ -182,6 +284,7 @@
         version: manifestVersion
       }
     });
+    renderPairs();
   }
 
   function showError(text) {
@@ -222,6 +325,123 @@
       render();
     });
     box.appendChild(ok);
+  }
+
+  /* ---------------------------------------------------------- deep links */
+
+  /*
+   * A deep link (docs/scoping/03-deep-links.md) fills the project IDs and
+   * the models after a confirm. It runs only when the page is a tab:
+   *   form A  popup.html?tab=1&v=1&projects=p-a,p-b&models=latest, from the
+   *           address bar or a bookmark; the query string is the link;
+   *   form B  popup.html?tab=1&link=<token>: the worker opened this tab for
+   *           a "#mgc=" fragment it accepted on a console page and stored
+   *           the link's text under KEYS.PENDING_LINK with a random token.
+   * Both end in the same path: parseDeepLink (constants.js) over the text,
+   * a confirm() built from the validated values, and on OK the textarea,
+   * the checklist and the extra-slugs field, saved as a manual edit is,
+   * with a banner that names what came from the link. Nothing here sends a
+   * message, starts a run or touches a setting, the mode, step-by-step,
+   * the include-done box or the timing. Every text reaches the page
+   * through textContent, and nothing from the link is used as a URL, an
+   * attribute, a selector, a storage key or a pattern.
+   */
+
+  /** The link text of this page, or { error } for a refusal, or null when the page carries no link. */
+  async function pendingLinkText() {
+    const search = location.search;
+    const pairs = search.startsWith("?") && search.length > 1 ? search.slice(1).split("&") : [];
+    const rawKey = (pair) => pair.slice(0, pair.indexOf("=") < 0 ? pair.length : pair.indexOf("="));
+    const tokens = pairs.filter((p) => rawKey(p) === "link");
+    const rest = pairs.filter((p) => rawKey(p) !== "tab" && rawKey(p) !== "link");
+    if (tokens.length) {
+      // Form B: the token selects the stored record, by string equality
+      // only. The record is deleted at once, whatever comes of it.
+      const token = tokens[0].slice("link=".length);
+      const o = await chrome.storage.local.get(KEYS.PENDING_LINK);
+      const rec = o[KEYS.PENDING_LINK];
+      await chrome.storage.local.remove(KEYS.PENDING_LINK);
+      if (rest.length) return { error: "the page carries a link token and link values together; use one or the other" };
+      if (tokens.length > 1) return { error: "the page carries more than one link token" };
+      // The token leaves the URL, so a reload of this tab shows the form as
+      // it is instead of a refusal line for a record that is gone.
+      try { history.replaceState(null, "", location.pathname + "?tab=1"); } catch (e) { /* ignore */ }
+      if (!rec || typeof rec !== "object" || typeof rec.token !== "string" || !token || rec.token !== token) {
+        return { error: "the link token does not match the pending link (it was used, replaced or never existed); open the link again" };
+      }
+      if (typeof rec.receivedAt !== "number" || Date.now() - rec.receivedAt > K.DEEP_LINK.MAX_AGE_MS || rec.receivedAt > Date.now() + K.DEEP_LINK.MIN_INTERVAL_MS) {
+        return { error: "the pending link is older than 10 minutes and was discarded; open the link again" };
+      }
+      if (typeof rec.raw !== "string") return { error: "the pending link holds no text" };
+      return rec.raw;
+    }
+    // Form A: the query string itself, without the tab marker. The link
+    // leaves the URL before it is judged, so a reload or a session restore
+    // of this tab shows the form as it is (with the edits made since)
+    // instead of asking again, for a refused link as for an accepted one;
+    // a bookmark or a link pasted again opens fresh. "?tab=1" stays: it
+    // is what gives this page the tab layout.
+    if (!rest.length) return null;
+    try { history.replaceState(null, "", location.pathname + "?tab=1"); } catch (e) { /* ignore */ }
+    return rest.join("&");
+  }
+
+  // The confirm() text is K.linkConfirmText (constants.js): pure, budgeted
+  // to the rows Chromium's dialog shows, the counts and the slugs first,
+  // then the sentence that nothing starts, then the first ids.
+
+  /** The banner text: the same facts, in one line. */
+  function linkBannerText(parsed, resolved) {
+    const parts = [`Filled from a link: ${parsed.projects.length} project(s): ${parsed.projects.join(", ")}`];
+    if (parsed.latest) parts.push(resolved.ticked.length ? `models (latest on this machine): ${resolved.ticked.join(", ")}` : "no models ticked (latest resolves to nothing here: no model carries a release date)");
+    else if (resolved.ticked.length) parts.push(`models: ${resolved.ticked.join(", ")}`);
+    else if (!resolved.extra.length) parts.push("no models ticked");
+    if (resolved.extra.length) parts.push(`extra slugs (not in the model list): ${resolved.extra.join(", ")}`);
+    return parts.join("; ") + ". Nothing starts until you press Start.";
+  }
+
+  function showLinkBanner(text) {
+    setIf("link-banner", (el) => { el.hidden = !text; });
+    setIf("link-text", (el) => { el.textContent = text || ""; });
+  }
+
+  /** Clear: empty the three inputs the link filled, hide the banner, save the empty state. The settings are not touched. */
+  function clearLinkFill() {
+    setIf("projects", (el) => { el.value = ""; });
+    modelBoxes().forEach((cb) => { cb.checked = false; });
+    setIf("extra-models", (el) => { el.value = ""; });
+    showModelsNote("");
+    showLinkBanner("");
+    savePopupState();
+  }
+
+  /**
+   * The link path, at init after the state is restored: read the link,
+   * parse it, ask, fill. Only in the tab layout (the action popup has no
+   * query string). A refusal is one error line; Cancel changes nothing.
+   */
+  async function applyDeepLink() {
+    if (!document.documentElement.classList.contains("tab")) return;
+    const text = await pendingLinkText();
+    if (text === null) return;
+    if (typeof text !== "string") { showError(`link refused: ${text.error}`); return; }
+    // A link during a run is dropped in both forms (the worker drops form B).
+    const state = await chrome.storage.local.get(KEYS.RUNNING);
+    if (state[KEYS.RUNNING] === true) { showError("link refused: a run is active; the link is dropped"); return; }
+    const parsed = K.parseDeepLink(text, currentModels);
+    if (!parsed.ok) { showError(`link refused: ${parsed.error}`); return; }
+    // "latest" is resolved over the rendered list, so the confirm and the
+    // banner name concrete slugs and the stored selection holds them.
+    const latest = parsed.latest ? K.latestModelSlugs(currentModels) : null;
+    const resolved = { ticked: latest ? latest.ticked : parsed.models, extra: parsed.dropped };
+    if (!confirm(K.linkConfirmText(parsed, resolved))) return;
+    setIf("projects", (el) => { el.value = parsed.projects.join("\n"); });
+    modelBoxes().forEach((cb) => { cb.checked = resolved.ticked.includes(cb.value); });
+    setIf("extra-models", (el) => { el.value = resolved.extra.join(", "); });
+    showModelsNote(latest ? latestNote(latest) : "");
+    showLinkBanner(linkBannerText(parsed, resolved));
+    showError("");
+    savePopupState();
   }
 
   function fmtTime(t) {
@@ -361,13 +581,16 @@
     // Record the version marker (and the reset selection) so the reset happens
     // only once per upgrade.
     if (freshVersion) savePopupState();
+    renderPairs();
 
     // Every listener goes through on(): a missing element is warned about
     // in the console and skipped, so the rest of the page still works.
     on("projects", "input", savePopupState);
     on("extra-models", "input", savePopupState);
-    on("models-all", "click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = true; }); savePopupState(); });
-    on("models-none", "click", (e) => { e.preventDefault(); document.querySelectorAll("#models input").forEach((cb) => { cb.checked = false; }); savePopupState(); });
+    on("models-all", "click", (e) => { e.preventDefault(); modelBoxes().forEach((cb) => { cb.checked = true; }); showModelsNote(""); savePopupState(); });
+    on("models-none", "click", (e) => { e.preventDefault(); modelBoxes().forEach((cb) => { cb.checked = false; }); showModelsNote(""); savePopupState(); });
+    on("models-latest", "click", selectLatest);
+    on("link-clear", "click", (e) => { e.preventDefault(); clearLinkFill(); });
     on("options", "click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
     on("open-tab", "click", openInTab);
     on("runs", "click", openRuns);
@@ -412,6 +635,26 @@
         } else {
           msg = `FULL RUN: this will click Agree and make purchases that bill the project for up to ${Math.max(0, pv.total - pv.done - pv.skipped)} of ${pv.total} project/model pair(s). The cross-run guard leaves out ${pv.done} pair(s) done and ${pv.skipped} pair(s) skipped (already enabled) in earlier runs.`;
         }
+        // The selection against the latest preset: a strict superset names
+        // how many models are not the newest of their line. The selection is
+        // what Start sends (ticked models plus extra slugs), so an extra slug
+        // counts too. A list without a latest set (nothing dated) says
+        // nothing. A model whose page needs a manual consent step is named as
+        // a job that fails. The worker lowercases every slug it runs, so the
+        // comparison is case-insensitive too (an extra slug typed as
+        // "Claude-Fable-5-1" runs as claude-fable-5-1).
+        const latest = K.latestModelSlugs(currentModels).ticked;
+        const lower = models.map((s) => s.toLowerCase());
+        const has = (slug) => lower.includes(String(slug).toLowerCase());
+        if (latest.length > 0 && models.length > latest.length && latest.every(has)) {
+          msg += ` The selection includes ${models.length - latest.length} model(s) that are not the newest of their line.`;
+        }
+        const manual = currentModels.filter((m) => m.requiresManualConsent && has(m.slug)).map((m) => m.name);
+        if (manual.length) {
+          msg += manual.length === 1
+            ? ` ${manual[0]} needs a manual step on its model page and will fail, not enable.`
+            : ` ${joinNames(manual)} need a manual step on their model pages and will fail, not enable.`;
+        }
         msg += ` Continue?`;
         const ok = confirm(msg);
         if (!ok) return;
@@ -421,6 +664,7 @@
       // request; the worker refuses to start if the setting changed in between.
       const reply = await send({ type: MSG.START, projects, models, live, includeDone });
       if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); setIf("start", (el) => { el.disabled = false; }); }
+      else showLinkBanner(""); // the "Filled from a link" banner ends with the Start it announced
       render();
     });
 
@@ -443,7 +687,10 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local") render();
     });
-    render();
+    await render();
+    // A deep link (tab layout only) fills the form last, after the restored
+    // state and the first render, behind its confirm.
+    await applyDeepLink();
   }
 
   document.addEventListener("DOMContentLoaded", init);

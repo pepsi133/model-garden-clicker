@@ -226,7 +226,8 @@ sh extension/test/run.sh
 ```
 
 `run.sh` runs `node --check` on every extension file, greps the Agree
-guard, then runs nine test files. The page tests build a jsdom window from
+guard, then runs ten test files. The first, `models-json.cjs`, lints
+`extension/models.json` without jsdom. The page tests build a jsdom window from
 `page.html` of a recorded run, restore the values from `forms.json`, load
 the content scripts into it and call the selectors and handlers. Every
 check prints one line:
@@ -370,6 +371,62 @@ missing summary line and on any skipped check, then runs
 `scripts/build-extension-zip.sh` and
 attaches `dist/model-garden-clicker-<version>.zip` to a GitHub release named
 with the bare tag (for example `v0.8.0`), whose body is the tag's
-`CHANGELOG.md` section.
+`CHANGELOG.md` section. The `models.json` lint (`models-json.cjs`) runs in
+the first pass only. It needs no dumps, so the strict re-run does not
+repeat it (`docs/BACKLOG.md` parks the follow-up).
 Then upload that zip to the Chrome Web Store by hand; `store/CHECKLIST.md`
 walks the dashboard tabs.
+
+## 8. Updating the model list
+
+`extension/models.json` is an array of one entry per line. Each entry has
+`slug`, `name`, `launchStage`, `releaseDate` (`YYYY-MM-DD`), `apiOrder`
+(1-based position in the API default order, oldest = 1) and, when they
+apply, `requiresManualConsent: true` and `deprecated: true`. The popup
+sorts the list by `releaseDate`, newest first, and the `latest` link ticks
+the newest GA, dated, non-deprecated entry of each model line
+(`docs/models.md`, "Ordering").
+
+1. List the API and compare it with the file. The script needs a bearer
+   token and a quota project. `--compare` reports added and removed slugs
+   and keeps the hand-set fields of the current file:
+
+   ```sh
+   python3 -I scripts/models/fetch_models.py --quota-project <PROJECT_ID> \
+       --compare extension/models.json --latest > /tmp/models-candidate.json
+   ```
+
+   Offline, from a saved listing: add `--dry-run --fixture
+   scripts/models/fixtures/publisher-models-<date>.json`. Save a new listing
+   with `--save-raw` when the set changed (`scripts/models/README.md`).
+2. Hand-edit the candidate before it replaces the file. Check `name` (the
+   API has no display name, the script derives it from the slug). Fill
+   `releaseDate` for a new slug from the Google per-model page ("Release
+   date:") and the Anthropic per-model page ("Released:"). Google's date wins
+   when they differ. Set `requiresManualConsent: true` when the model page
+   has an extra consent control (one dry run on that page shows it). Set
+   `deprecated: true` on a slug that left the API instead of removing it.
+   Put the result back in the one-entry-per-line style of the current file
+   and record the dates and sources in `docs/models.md`.
+3. Run the lint on its own, then the whole suite. The lint fails on an
+   empty file, a duplicate or invalid slug and a `@` in a slug. It also
+   fails on a bad date, a duplicate or non-positive `apiOrder`, a
+   non-boolean flag and a file out of recency order. An empty `releaseDate`
+   means undated and passes:
+
+   ```sh
+   node extension/test/models-json.cjs
+   sh extension/test/run.sh
+   ```
+
+4. Re-run the layout probe on a machine with Chrome. The stage text grew
+   (`GA · manual step`) and two lines sit under the checklist, so the
+   800 x 600 geometry needs the measurement again:
+
+   ```sh
+   python/.venv/bin/python python/scripts/popup_layout.py all
+   ```
+
+5. Add a `CHANGELOG.md` line and release as in section 7. The first popup
+   open after the version bump resets the model selection once. The
+   `latest` link is the one-click way back.

@@ -27,7 +27,8 @@
     SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
     RUNS_KEEP: "runs_keep",         // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
     PAUSED: "paused",               // boolean: the popup's Pause; the worker starts no new job while true (the job in progress finishes); cleared by Resume, Stop and the run's end
-    PURCHASED_PAIRS: "purchased_pairs" // array of "project/model" (lower-cased): every pair with an Agree click or an observed purchase on record, in any run; never pruned by "Runs to keep" and not cleared by a purge of the run logs
+    PURCHASED_PAIRS: "purchased_pairs", // array of "project/model" (lower-cased): every pair with an Agree click or an observed purchase on record, in any run; never pruned by "Runs to keep" and not cleared by a purge of the run logs
+    PENDING_LINK: "pending_link"    // { token, raw, receivedAt }: one deep link (form B) accepted by the worker, waiting for the popup tab it opened; deleted on first read or after DEEP_LINK.MAX_AGE_MS
   };
 
   /*
@@ -101,7 +102,8 @@
     RUNS_PURGE: "mgc:runs-purge",   // runs or options page -> worker: delete every full log (the run in progress is kept)
     PAUSE: "mgc:pause",             // popup -> worker: start no new job until RESUME (the job in progress finishes)
     RESUME: "mgc:resume",           // popup -> worker: clear the pause and start the next pending job
-    GUARD_PREVIEW: "mgc:guard-preview" // popup -> worker { projects, models }: { total, done, skipped } for the full-run confirm (read-only)
+    GUARD_PREVIEW: "mgc:guard-preview", // popup -> worker { projects, models }: { total, done, skipped } for the full-run confirm (read-only)
+    DEEP_LINK: "mgc:deep-link"      // content (console origin only) -> worker { raw, length }: the "#mgc=..." fragment as text; the reply is { ok } or { ok: false, error }
   };
 
   /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
@@ -586,6 +588,309 @@
   /** Model slugs as used in Model Garden URLs. */
   MGC.isValidModelSlug = function (s) {
     return /^[a-z0-9][a-z0-9._-]{0,99}$/i.test(s);
+  };
+
+  /*
+   * Deep links (docs/scoping/03-deep-links.md): a link opens the popup in
+   * a tab with the project IDs and the models filled in, after a confirm.
+   * It never starts a run and never touches a setting. Two forms carry the
+   * same three keys:
+   *   A  chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest
+   *   B  https://console.cloud.google.com/...#mgc=v1;projects=p-a,p-b;models=latest
+   * The limits are the parser's refusals, not advice.
+   */
+  MGC.DEEP_LINK = {
+    VERSION: "1",                   // the only format version: v=1 (form A) or mgc=v1 (form B)
+    MAX_RAW: 4096,                  // a longer link (characters, before decoding) is refused as a whole
+    MAX_PROJECTS: 23,
+    MAX_MODELS: 13,
+    MAX_AGE_MS: 10 * 60 * 1000,     // a pending link older than this is deleted unread
+    MIN_INTERVAL_MS: 2000,          // the worker drops a second link within this many ms of an accepted one
+    LOG_RAW_CHARS: 80,              // a refused link is logged with at most this much of its text
+    REFUSAL_LOG_WINDOW_MS: 10000,   // the worker logs one refusal per this many ms; the rest are counted into one summary line
+    CONFIRM_ROWS: 24,               // the confirm() text is budgeted to this many rows ...
+    CONFIRM_COLS: 80                // ... of this many columns (Chromium elides a longer dialog message)
+  };
+
+  /**
+   * Parse the text of a deep link: the query string of form A without its
+   * "?" ("v=1&projects=a,b&models=latest") or the fragment of form B
+   * without its "#" ("mgc=v1;projects=a,b;models=latest"). Pure: no DOM,
+   * no storage, nothing from the link is used as a key, a URL or a
+   * pattern. Returns
+   *   { ok: true, error: null, projects: [ids], models: [slugs], latest, dropped: [slugs] }
+   *   { ok: false, error: "<one sentence naming the first problem>", projects: [], models: [], latest: false, dropped: [] }
+   * The pairs are split on "&" and ";" and the lists on "," BEFORE any
+   * percent-decoding, so an encoded separator stays inside its value (and
+   * then fails the id or slug rule). Every key and value is decoded with
+   * decodeURIComponent inside a try/catch; a bad sequence refuses the link.
+   * Keys are compared against a fixed list with ===, never looked up on an
+   * object. The whole link is refused on: a length over MAX_RAW, a missing
+   * or wrong version, an unknown or repeated key, an empty part, an id or
+   * slug that fails isValidProjectId / isValidModelSlug exactly as written
+   * (no trimming, no case folding), a repeated id or slug, more than
+   * MAX_PROJECTS ids or MAX_MODELS slugs, "latest" next to a slug list, and
+   * whatever parseConfig refuses for the same lists (its length cap
+   * included). `known` (optional) is the model list the popup renders
+   * (entries or slugs): a slug not in it goes to `dropped` (the extra-slugs
+   * field) instead of `models`; without `known` every slug stays in
+   * `models`. "models=latest" gives latest true and an empty models list;
+   * the popup resolves it over its rendered list.
+   */
+  MGC.parseDeepLink = function (raw, known) {
+    const L = MGC.DEEP_LINK;
+    const refused = (error) => ({ ok: false, error, projects: [], models: [], latest: false, dropped: [] });
+    // A key is named in a refusal only when it is a plain name; anything else
+    // is described, so a refusal line never carries text chosen by the sender.
+    const keyName = (k) => (/^[A-Za-z0-9_.-]{1,40}$/.test(k) ? `"${k}"` : "(not a plain name, so not shown)");
+    if (typeof raw !== "string") return refused("the link is not text");
+    if (raw.length > L.MAX_RAW) return refused(`the link is longer than ${L.MAX_RAW} characters`);
+    if (!raw.length) return refused("the link is empty");
+    const decode = (s) => { try { return decodeURIComponent(s); } catch (e) { return null; } };
+    let version = null, projectsText = null, modelsText = null;
+    let versionSeen = false, projectsSeen = false, modelsSeen = false;
+    for (const pair of raw.split(/[&;]/)) {
+      if (!pair) return refused("the link holds an empty part (two separators in a row, or a separator at the end)");
+      const eq = pair.indexOf("=");
+      if (eq < 0) return refused(`the part ${keyName(pair)} has no "=" and no value`);
+      const key = decode(pair.slice(0, eq));
+      if (key === null) return refused("a key of the link holds a percent-encoding that cannot be decoded");
+      const pieces = pair.slice(eq + 1).split(",").map(decode);
+      if (pieces.some((p) => p === null)) return refused(`the value of ${keyName(key)} holds a percent-encoding that cannot be decoded`);
+      if (key === "v" || key === "mgc") {
+        if (versionSeen) return refused('the key "v" (the format version) is repeated');
+        versionSeen = true;
+        if (pieces.length !== 1) return refused('the key "v" must hold one value');
+        version = pieces[0];
+        if (version !== (key === "mgc" ? `v${L.VERSION}` : L.VERSION)) return refused(`the format version must be ${L.VERSION} (v=${L.VERSION} or mgc=v${L.VERSION})`);
+      } else if (key === "projects") {
+        if (projectsSeen) return refused('the key "projects" is repeated');
+        projectsSeen = true;
+        projectsText = pieces;
+      } else if (key === "models") {
+        if (modelsSeen) return refused('the key "models" is repeated');
+        modelsSeen = true;
+        modelsText = pieces;
+      } else {
+        return refused(`the key ${keyName(key)} is not one of v, projects, models`);
+      }
+    }
+    if (!versionSeen) return refused(`the link has no format version (v=${L.VERSION})`);
+    if (!projectsSeen) return refused('the link has no "projects" key');
+    // Project ids: exactly as written, each valid, none repeated, at most MAX_PROJECTS.
+    if (projectsText.length > L.MAX_PROJECTS) return refused(`the link names ${projectsText.length} projects; at most ${L.MAX_PROJECTS} are accepted`);
+    const projects = [];
+    const seenIds = new Set();
+    for (const id of projectsText) {
+      if (!MGC.isValidProjectId(id)) return refused(id === "" ? 'the "projects" list holds an empty entry' : `the project ID ${keyName(id)} is not a valid Cloud project ID (6-30 lower-case letters, digits and hyphens, starting with a letter)`);
+      if (seenIds.has(id.toLowerCase())) return refused(`the project ID "${id}" is repeated`);
+      seenIds.add(id.toLowerCase());
+      projects.push(id);
+    }
+    // Models: absent, "latest", or a slug list under the same rules.
+    let latest = false;
+    const models = [];
+    if (modelsText !== null) {
+      if (modelsText.length === 1 && modelsText[0] === "latest") {
+        latest = true;
+      } else {
+        if (modelsText.length > L.MAX_MODELS) return refused(`the link names ${modelsText.length} models; at most ${L.MAX_MODELS} are accepted`);
+        const seenSlugs = new Set();
+        for (const slug of modelsText) {
+          if (slug === "latest") return refused('"latest" cannot be combined with a list of model slugs');
+          if (slug.toLowerCase() === "latest") return refused('"latest" is a keyword, written alone and in lower case (models=latest)');
+          if (!MGC.isValidModelSlug(slug)) return refused(slug === "" ? 'the "models" list holds an empty entry' : `the model slug ${keyName(slug)} is not a valid model slug`);
+          if (seenSlugs.has(slug.toLowerCase())) return refused(`the model slug "${slug}" is repeated`);
+          seenSlugs.add(slug.toLowerCase());
+          models.push(slug);
+        }
+      }
+    }
+    // The shared gate: the settings import's validators and length cap.
+    const shared = MGC.parseConfig({ popup: { projects, models } });
+    if (!shared.ok) return refused(shared.errors[0]);
+    // Slugs the rendered list does not carry go to the extra-slugs field; a
+    // slug in the list is matched case-insensitively and takes the list's
+    // spelling, as the settings import does.
+    let dropped = [];
+    let ticked = models;
+    if (Array.isArray(known)) {
+      const knownSlugs = known.map((m) => (m && typeof m === "object" ? m.slug : m)).filter((s) => typeof s === "string");
+      const spelt = (s) => knownSlugs.find((k) => k.toLowerCase() === s.toLowerCase());
+      ticked = models.map(spelt).filter((s) => s !== undefined);
+      dropped = models.filter((s) => spelt(s) === undefined);
+    }
+    return { ok: true, error: null, projects, models: ticked, latest, dropped };
+  };
+
+  /**
+   * `items` joined with ", " into lines of at most CONFIRM_COLS - 1
+   * characters, the first line starting with `prefix`, at most `maxItems`
+   * items and `maxRows` rows in all (a line longer than CONFIRM_COLS, which
+   * only a single long slug can make, counts the rows Chromium wraps it
+   * into). Returns { lines, shown }: `shown` items are in `lines`, the
+   * rest were left out. Pure; used by linkConfirmText.
+   */
+  MGC.packList = function (prefix, items, maxItems, maxRows) {
+    const COLS = MGC.DEEP_LINK.CONFIRM_COLS;
+    const rowsOf = (s) => Math.max(1, Math.ceil(s.length / COLS));
+    const lines = []; // [text, items on the line]
+    let cur = prefix, onLine = 0;
+    for (const item of items.slice(0, maxItems)) {
+      const joined = onLine ? `${cur}, ${item}` : (cur ? `${cur} ${item}` : item);
+      // A line holds at most COLS - 1 characters; only an item that is longer by itself exceeds that, alone on its line.
+      if (cur && joined.length > COLS - 1) { lines.push([cur, onLine]); cur = item; onLine = 1; } else { cur = joined; onLine += 1; }
+    }
+    if (onLine || !lines.length) lines.push([cur, onLine]);
+    const kept = []; let rows = 0, shown = 0;
+    for (const [text, count] of lines) {
+      if (rows + rowsOf(text) > maxRows) break;
+      kept.push(text); rows += rowsOf(text); shown += count;
+    }
+    if (!kept.length) kept.push(prefix);
+    return { lines: kept, shown };
+  };
+
+  /**
+   * The confirm() text the popup shows before a link fills the form, built
+   * from the parser's result and the slugs as they will be ticked
+   * (`resolved`: { ticked, extra }). Pure, and budgeted to CONFIRM_ROWS rows
+   * of CONFIRM_COLS columns: Chromium's dialog elides a longer message, so
+   * the counts, the model slugs and the sentence that nothing starts come
+   * first, and the project ids last, the first 16 of them, with the number
+   * left out (the banner and the textarea list every id after OK). Every
+   * value here passed isValidProjectId / isValidModelSlug.
+   */
+  MGC.linkConfirmText = function (parsed, resolved) {
+    const ticked = Array.isArray(resolved.ticked) ? resolved.ticked : [];
+    const extra = Array.isArray(resolved.extra) ? resolved.extra : [];
+    const projects = Array.isArray(parsed.projects) ? parsed.projects : [];
+    const lines = [];
+    const modelCount = ticked.length + extra.length;
+    lines.push(`A link wants to fill this form with ${projects.length} project(s) and ${parsed.latest ? `"latest" (${ticked.length} model(s) on this machine)` : modelCount ? `${modelCount} model(s)` : "no models"}.`);
+    const more = (items, shown, what) => (shown < items.length ? [`  ... and ${items.length - shown} more ${what} (every one is listed in the banner after OK).`] : []);
+    if (parsed.latest && !ticked.length) {
+      lines.push('Models: "latest", which on this machine resolves to nothing (no model carries a release date): no models ticked.');
+    } else if (ticked.length) {
+      const packed = MGC.packList(parsed.latest ? `Models: "latest", which on this machine is ${ticked.length} model(s):` : "Models:", ticked, 8, 4);
+      lines.push(...packed.lines, ...more(ticked, packed.shown, "model(s)"));
+    } else if (!extra.length) {
+      lines.push("No models: nothing will be ticked.");
+    }
+    if (extra.length) {
+      const packed = MGC.packList("Extra slugs (not in the model list):", extra, 8, 3);
+      lines.push(...packed.lines, ...more(extra, packed.shown, "extra slug(s)"));
+    }
+    lines.push("OK replaces the project IDs, the model selection and the extra slugs with these. Nothing starts until you press Start. The mode, step-by-step and the other settings are not changed.");
+    const ids = MGC.packList("Project IDs:", projects, 16, 8);
+    lines.push(...ids.lines);
+    if (ids.shown < projects.length) lines.push(`  ... and ${projects.length - ids.shown} more (every id is listed in the banner and the textarea after OK).`);
+    return lines.join("\n");
+  };
+
+  /*
+   * The model list (models.json) and its recency order. Every helper below
+   * is side-effect free: the content script loads this file too. An entry
+   * is { slug, name?, launchStage?, releaseDate?, apiOrder?,
+   * requiresManualConsent?, deprecated? }. The helpers validate the fields
+   * they read, so a raw models.json entry and a parsed popup entry both
+   * work.
+   */
+
+  /** A strict YYYY-MM-DD string that names a real calendar date, else null. */
+  MGC.parseReleaseDate = function (s) {
+    if (typeof s !== "string") return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (!m) return null;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    // setUTCFullYear keeps the years 0000-0099 as they are (Date.UTC maps them to 19xx).
+    const t = new Date(0);
+    t.setUTCFullYear(y, mo - 1, d);
+    if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return null;
+    return s;
+  };
+
+  /** The model line of a slug ("claude-fable-5-1" -> "fable"), lower-cased, or null when the slug has no claude-<family>-<version> shape. */
+  MGC.modelFamily = function (slug) {
+    const m = /^claude-([a-z]+)-(\d+(?:-\d+)*)$/i.exec(typeof slug === "string" ? slug : "");
+    return m ? m[1].toLowerCase() : null;
+  };
+
+  /** The version numbers of a slug as integers ("claude-opus-4-8" -> [4, 8]), [] when the slug has no parsable version. */
+  MGC.modelVersionKey = function (slug) {
+    const m = /^claude-([a-z]+)-(\d+(?:-\d+)*)$/i.exec(typeof slug === "string" ? slug : "");
+    return m ? m[2].split("-").map((x) => parseInt(x, 10)) : [];
+  };
+
+  /** The family rank for the version tie-break only (opus > sonnet > fable > haiku); a family outside the table ranks last. */
+  const FAMILY_RANK = Object.freeze({ opus: 0, sonnet: 1, fable: 2, haiku: 3 });
+
+  /** A positive integer apiOrder, else null. */
+  function apiOrderOf(entry) {
+    const n = entry && entry.apiOrder;
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
+
+  /**
+   * Newest first: releaseDate desc, then apiOrder desc, then the slug's
+   * version desc with the family rank, then slug asc. An undated entry sorts
+   * below every dated one, an entry without apiOrder below every entry with
+   * one, and an entry without a parsable version below every parsable one.
+   * A total order on distinct slugs (the lint forbids duplicates), so the
+   * sorted order is the same from any input order.
+   */
+  MGC.compareModelsByRecency = function (a, b) {
+    const da = MGC.parseReleaseDate(a && a.releaseDate), db = MGC.parseReleaseDate(b && b.releaseDate);
+    if (da && db && da !== db) return da < db ? 1 : -1;
+    if (!!da !== !!db) return da ? -1 : 1;
+    const oa = apiOrderOf(a), ob = apiOrderOf(b);
+    if (oa && ob && oa !== ob) return ob - oa;
+    if (!!oa !== !!ob) return oa ? -1 : 1;
+    const sa = a && typeof a.slug === "string" ? a.slug : "", sb = b && typeof b.slug === "string" ? b.slug : "";
+    const va = MGC.modelVersionKey(sa), vb = MGC.modelVersionKey(sb);
+    if (va.length && vb.length) {
+      for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+        const x = va[i] || 0, y = vb[i] || 0;
+        if (x !== y) return y - x;
+      }
+      const rank = (slug) => { const f = MGC.modelFamily(slug); return Object.prototype.hasOwnProperty.call(FAMILY_RANK, f) ? FAMILY_RANK[f] : 4; };
+      if (rank(sa) !== rank(sb)) return rank(sa) - rank(sb);
+    } else if (!!va.length !== !!vb.length) {
+      return va.length ? -1 : 1;
+    }
+    return sa < sb ? -1 : (sa > sb ? 1 : 0);
+  };
+
+  /** A new array of `list` sorted by compareModelsByRecency, with the input left as it is. */
+  MGC.sortModelsByRecency = function (list) {
+    return Array.isArray(list) ? list.slice().sort(MGC.compareModelsByRecency) : [];
+  };
+
+  /**
+   * The "latest" preset: for each model line the single newest entry that
+   * is GA, dated and not deprecated. A line whose newest such entry needs a
+   * manual consent step is left out as a whole (no fallback to an older
+   * model) and named in leftOut. Returns { ticked: [slug], leftOut: [{ slug,
+   * name }] }, both in recency order. An undated or non-GA entry is never
+   * latest. A slug without a model line is never latest.
+   */
+  MGC.latestModelSlugs = function (list) {
+    const best = {};
+    const order = [];
+    for (const e of MGC.sortModelsByRecency(list)) {
+      const fam = MGC.modelFamily(e && e.slug);
+      if (!fam || Object.prototype.hasOwnProperty.call(best, fam)) continue;
+      if (e.launchStage !== "GA" || !MGC.parseReleaseDate(e.releaseDate) || e.deprecated === true) continue;
+      best[fam] = e;
+      order.push(fam);
+    }
+    const ticked = [], leftOut = [];
+    for (const fam of order) {
+      const e = best[fam];
+      if (e.requiresManualConsent === true) leftOut.push({ slug: e.slug, name: e.name || e.slug });
+      else ticked.push(e.slug);
+    }
+    return { ticked, leftOut };
   };
 
   /**

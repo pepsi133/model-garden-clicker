@@ -1,13 +1,13 @@
 # Chrome Web Store listing: Model Garden Clicker
 
-**Re-paste needed.** The Description below changed for 0.8.0: the `skipped`
-result now also covers a pair an earlier run found already enabled, finished
-or recorded a purchase for (the cross-run guard), so the character count moved. Paste the new Description into the Store
-listing tab and save the draft. (It was also rewritten on 2026-10-08 as a
-step-by-step walkthrough, same facts, same summary.)
+**Re-paste needed.** The Description below changed for 0.9.0: step 2 names
+the "latest" link and the deep links (with a pointer to the README's
+Deep links section), and the `skipped` wording is shorter.
+Paste the new Description into the Store listing tab and save the draft.
+(The 0.8.0 change, the cross-run guard in `skipped`, is in it as well.)
 
 Every field of the developer dashboard, ready to paste. Replace `https://github.com/pepsi133/model-garden-clicker`
-with the public GitHub URL before pasting. Package version: 0.8.0
+with the public GitHub URL before pasting. Package version: 0.9.0
 (`extension/manifest.json`).
 
 ## Store listing tab
@@ -20,19 +20,19 @@ with the public GitHub URL before pasting. Package version: 0.8.0
 
     Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.
 
-### Description (plain text, 3,902 characters, under the 4,000 limit)
+### Description (plain text, 3,986 characters, under the 4,000 limit)
 
     Model Garden Clicker enables Anthropic Claude models in the Google Cloud console Model Garden for many projects, one project and one model at a time, inside your own signed-in browser.
 
-    Enabling a Claude model in a project means filling the model enablement questionnaire (business name, website, contact email, headquarters country, industry, intended users, use cases, Acceptable Use Policy answer) and then accepting the Marketplace agreement. There is no API for this flow, and doing it by hand for every project and every model is slow and error-prone. This extension does the clicking for you.
+    Enabling a Claude model in a project means filling the model enablement questionnaire (business name, website, contact email, headquarters country, industry, intended users, use cases, Acceptable Use Policy answer) and then accepting the Marketplace agreement. There is no API for this flow, and doing it by hand for every project and every model is slow and error-prone.
 
     ONE RUN, STEP BY STEP
 
     1. Open the options page and type the questionnaire values once. Click Save. They stay in this browser's local extension storage.
-    2. Click the toolbar icon. Paste project IDs, one per line, and tick the models. Every project and model pair becomes one job.
+    2. Click the toolbar icon. Paste project IDs, one per line, and tick the models, or click "latest" to tick the newest model of each line. Every project and model pair becomes one job. A deep link fills in the project IDs and models after a confirmation; it never starts a run or changes a setting (https://github.com/pepsi133/model-garden-clicker#deep-links).
     3. Click Start. One console tab opens and the jobs run in order. A dark badge in the corner of that tab shows the job, the current step with its timeout, and what comes next.
     4. For each job the extension opens the model page, clicks Enable, fills the questionnaire with your saved values, clicks Next and ticks the terms checkbox on the Agreements page.
-    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (the model was already enabled, or an earlier run found it enabled, finished the pair or recorded a purchase for it), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page (a link in the popup) keeps every run's full log, in this browser only, and saves it as a text file on request.
+    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (already enabled, or done or skipped in an earlier run), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page keeps every run's full log, in this browser only, and saves it as a text file on request.
 
     MODES
 
@@ -52,7 +52,7 @@ with the public GitHub URL before pasting. Package version: 0.8.0
 
     LIMITATIONS
 
-    Models whose page has extra consent controls are not supported yet; such a job fails with a message that names the manual step. The console pages change now and then; a selector that no longer matches makes the job fail cleanly instead of guessing.
+    A model page with extra consent controls is not supported yet; the job fails and names the manual step. The console pages change now and then; a selector that no longer matches makes the job fail cleanly instead of guessing.
 
     OPEN SOURCE
 

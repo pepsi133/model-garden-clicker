@@ -16,7 +16,7 @@ Open the options page (the **Options** button in the popup, or right-click the e
 
 ### 2. Pick projects and models, press Start
 
-Click the extension icon. The header shows the mode, **MODE: DRY RUN** by default, and the step-by-step setting next to it (**slow mode** with a snail icon when it is on, **fast mode** with a warning-sign icon when it is off; both are buttons). Paste project IDs, one per line. Tick the models. Press **Start**. While a run is active, **Pause** next to Stop holds the run once the current job ends; it then reads **Resume**.
+Click the extension icon. The header shows the mode, **MODE: DRY RUN** by default, and the step-by-step setting next to it (**slow mode** with a snail icon when it is on, **fast mode** with a warning-sign icon when it is off; both are buttons). Paste project IDs, one per line. Tick the models. The list is sorted by release date, newest first. The **latest** link ticks the newest GA model of each line. **all** and **none** tick or untick every model. Press **Start**. While a run is active, **Pause** next to Stop holds the run once the current job ends; it then reads **Resume**.
 
 ![Popup: project IDs, the model checklist, Start, the results table](store/screenshots/01-popup-dry-run.png)
 
@@ -58,6 +58,19 @@ The popup lists one row per job. **Open in a tab** shows the same page in a norm
 | `stopped` | You pressed Stop, or the extension was reloaded during the run. |
 
 The log under the table keeps the last 50 lines, with the milliseconds since the job started on every step. Every run's full log is kept on the **Runs** page (the link in the popup's header): every line, with the run's start, end, mode, jobs and results, downloadable as a text file, for the last 50 runs by default (the "Runs to keep" setting in the options page). See [`extension/README.md`](extension/README.md), "The Runs page".
+
+### Deep links
+
+A link can open the popup in a tab with the project IDs and the models filled in, so a ticket or a runbook can hand over the exact values. Two forms carry the same three keys (`v`, `projects`, `models`):
+
+```text
+chrome-extension://<extension id>/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest
+https://console.cloud.google.com/agent-platform/model-garden#mgc=v1;projects=p-a,p-b;models=latest
+```
+
+The first works from the address bar and bookmarks (the id differs between the store install and an unpacked copy). The second is a plain console link for a signed-in browser: the extension's content script hands the `#mgc=` fragment to the worker and removes it from the URL. Either way the popup tab first asks, in a dialog built from the validated values only: the number and the list of project IDs, the models (`latest` resolved to the concrete slugs on this machine, or "no models ticked"), and that nothing starts until you press **Start**. OK fills the form and shows a "Filled from a link" banner with a **Clear** button; Cancel changes nothing. A link never starts a run and never changes the mode, step-by-step, the include-done box, the questionnaire or the timing. A link with any other key, an invalid id or slug, more than 23 projects, more than 13 models or more than 4,096 characters is refused as a whole, and a link that arrives while a run is active is dropped with one log line. Details and limits: [`extension/README.md`](extension/README.md), "Open the popup from a link". The design and its threat model: [`docs/scoping/03-deep-links.md`](docs/scoping/03-deep-links.md). [`scripts/deep-link/`](scripts/deep-link/) holds two small generators (`mgc_link.py`, `mgc-link.sh`) that print such a link for a project list and a model list.
+
+![The popup filled from a link: the "Filled from a link" banner with Clear, two project IDs, the latest models ticked, Start not pressed](docs/images/popup-filled-from-link.png)
 
 ## What a job does
 
@@ -138,7 +151,7 @@ model-garden-clicker/
 │   ├── popup/ options/ runs/  # the three pages; common/ holds constants, option lists, the per-run log module (runlog.js) and the theme
 │   └── test/             # offline tests that run against recorded console pages
 ├── python/               # Selenium harness: records the console pages and runs the extension end to end
-├── docs/                 # dom-map.md (the console DOM), MAINTENANCE.md, models.md, BACKLOG.md
+├── docs/                 # dom-map.md (the console DOM), MAINTENANCE.md, models.md, BACKLOG.md, scoping/, images/ (README images)
 ├── store/                # Chrome Web Store listing text, icon, screenshots, checklist
 ├── scripts/              # build-extension-zip.sh (the store package), icon-palette.py (the theme)
 └── PRIVACY.md            # privacy policy

@@ -1,0 +1,237 @@
+# Sample GitLab pipeline for Model Garden Clicker (docs/scoping/02-gitlab-runner-service-account.md).
+#
+# This file is a SAMPLE under ci/gitlab/. It is not wired into the repository
+# root. To try it, copy it to the root as .gitlab-ci.yml, or set the project's
+# CI/CD configuration file path to ci/gitlab/.gitlab-ci.yml.
+#
+# Stages:
+#   test       the offline extension suite (no Google identity)
+#   build      the Chrome Web Store zip (no Google identity)
+#   inventory  read-only audit under a service account through Workload
+#              Identity Federation: which (project, model) pairs lack a Claude
+#              model. Writes projects.txt and a settings file for the popup.
+#   enable     MANUAL and PROTECTED. Prints the pending matrix and the
+#              instruction for the human run. It enables nothing, because the
+#              console questionnaire and the Agree click need a signed-in
+#              human Google session, which a service account cannot have.
+#
+# Every CI/CD variable below is a placeholder. Set the real values in
+# Settings > CI/CD > Variables (protected, and masked where the value allows).
+
+# One pipeline per change: a branch with an open merge request runs the merge
+# request pipeline only, not a second branch pipeline.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+stages:
+  - test
+  - build
+  - inventory
+  - enable
+
+variables:
+  # Google Cloud project number that owns the Workload Identity Pool.
+  GCP_PROJECT_NUMBER: "000000000000"
+  # Pool and provider ids as created with:
+  #   gcloud iam workload-identity-pools create POOL --location=global
+  #   gcloud iam workload-identity-pools providers create-oidc PROVIDER \
+  #     --location=global --workload-identity-pool=POOL \
+  #     --issuer-uri="https://gitlab.example.com" \
+  #     --allowed-audiences="https://gitlab.example.com" \
+  #     --attribute-mapping="google.subject=assertion.sub,attribute.project_id=assertion.project_id,attribute.namespace_id=assertion.namespace_id" \
+  #     --attribute-condition="assertion.namespace_id=='12345'"
+  GCP_WIF_POOL: "gitlab-pool"
+  GCP_WIF_PROVIDER: "gitlab-provider"
+  # The read-only audit service account (roles/serviceusage.serviceUsageViewer
+  # on every audited project, serviceusage.services.use on the quota project).
+  GCP_SA_EMAIL: "mgc-audit@ops-project.iam.gserviceaccount.com"
+  # Quota project for X-Goog-User-Project.
+  GCP_QUOTA_PROJECT: "ops-project"
+  # Projects to audit: a comma list. The job also accepts a file (see below).
+  MGC_PROJECTS: "project-a,project-b"
+  # Optional comma list of model slugs; empty means every listed model.
+  MGC_MODELS: ""
+  # The GitLab instance URL used as the OIDC audience.
+  GITLAB_OIDC_AUDIENCE: "https://gitlab.example.com"
+  GIT_DEPTH: "20"
+
+# ---------------------------------------------------------------- test
+# Port of .github/workflows/release.yml: the offline suite with the
+# dump-based checks reduced (MGC_ALLOW_SKIP=1), then the two dump-independent
+# suites in strict mode (no skips), then the Agree-guard md5 as a hard gate.
+test:extension:
+  stage: test
+  image: node:22.20.0
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+  cache:
+    key:
+      files:
+        - extension/test/package-lock.json
+    paths:
+      - extension/test/node_modules/
+  script:
+    - cd extension/test && npm ci --no-audit --no-fund && cd ../..
+    - MGC_ALLOW_SKIP=1 sh extension/test/run.sh | tee run-sh.log
+    # `| tee` hides the run.sh exit status unless the shell has pipefail, so the summary line is the gate.
+    - grep -q "ALL TEST FILES PASSED" run-sh.log || { echo "FAIL: run.sh did not pass" >&2; exit 1; }
+    - |
+      cd extension/test
+      for t in worker-harness.mjs ui-pages.cjs models-json.cjs; do
+        if out=$(node "$t" 2>&1); then rc=0; else rc=$?; fi
+        printf '%s\n' "$out"
+        if [ "$rc" != 0 ]; then echo "FAIL: $t exited $rc" >&2; exit 1; fi
+        printf '%s\n' "$out" | grep -q "CHECKS PASSED (" || { echo "FAIL: $t printed no summary line" >&2; exit 1; }
+        skipped=$(printf '%s\n' "$out" | sed -n 's/.*, \([0-9][0-9]*\) skipped.*/\1/p' | tail -n 1)
+        if [ -z "$skipped" ]; then echo "FAIL: $t printed no skipped count" >&2; exit 1; fi
+        if [ "$skipped" != 0 ]; then echo "FAIL: $t skipped $skipped check(s)" >&2; exit 1; fi
+      done
+      cd ../..
+    - |
+      # The guard md5 is a note in run.sh; here a mismatch fails the job.
+      grep -q "guard md5 (clickAgreeGuarded): [0-9a-f]* (matches the baseline" run-sh.log \
+        || { echo "FAIL: clickAgreeGuarded md5 differs from docs/MAINTENANCE.md" >&2; exit 1; }
+  artifacts:
+    when: always
+    paths:
+      - run-sh.log
+    expire_in: 1 week
+
+# ---------------------------------------------------------------- build
+build:zip:
+  stage: build
+  image: node:22.20.0
+  needs: ["test:extension"]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq zip > /dev/null
+  script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' extension/manifest.json | head -1)
+        tag="${CI_COMMIT_TAG#v}"
+        [ "$version" = "$tag" ] || { echo "manifest version $version does not match tag $CI_COMMIT_TAG" >&2; exit 1; }
+      fi
+    - sh scripts/build-extension-zip.sh
+  artifacts:
+    paths:
+      - dist/model-garden-clicker-*.zip
+    expire_in: 1 month
+
+# ---------------------------------------------------------------- inventory
+# Keyless auth: the GitLab ID token goes to Google STS through a credential
+# configuration file written by gcloud; Google then impersonates GCP_SA_EMAIL.
+# No service-account key is stored anywhere. The token lives for the job only.
+.gcp-wif:
+  image: google/cloud-sdk:570.0.0-slim
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: $GITLAB_OIDC_AUDIENCE
+  before_script:
+    - echo "$GITLAB_OIDC_TOKEN" > "$CI_PROJECT_DIR/.gitlab_oidc_token"
+    - |
+      gcloud iam workload-identity-pools create-cred-config \
+        "projects/$GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/$GCP_WIF_POOL/providers/$GCP_WIF_PROVIDER" \
+        --service-account="$GCP_SA_EMAIL" \
+        --service-account-token-lifetime-seconds=600 \
+        --output-file="$CI_PROJECT_DIR/.gcp_cred_config.json" \
+        --credential-source-file="$CI_PROJECT_DIR/.gitlab_oidc_token"
+    - export GOOGLE_APPLICATION_CREDENTIALS="$CI_PROJECT_DIR/.gcp_cred_config.json"
+    - gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
+    - gcloud config set project "$GCP_QUOTA_PROJECT" --quiet
+    # Smoke: the impersonated identity must see the quota project.
+    - gcloud projects describe "$GCP_QUOTA_PROJECT" --format="value(projectId)"
+  after_script:
+    - rm -f "$CI_PROJECT_DIR/.gitlab_oidc_token" "$CI_PROJECT_DIR/.gcp_cred_config.json"
+
+inventory:audit:
+  extends: .gcp-wif
+  stage: inventory
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+  script:
+    # The PoC is standard-library Python 3; the cloud-sdk image ships python3.
+    # GOOGLE_OAUTH_ACCESS_TOKEN comes from the impersonated service account.
+    - export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+    - |
+      python3 -I ci/gitlab/poc/mg_inventory.py \
+        --projects "$MGC_PROJECTS" \
+        --quota-project "$GCP_QUOTA_PROJECT" \
+        --models "$MGC_MODELS" \
+        --out mg-inventory-out
+    - |
+      # Drift check: every slug in extension/models.json must be in the live list.
+      python3 -I - <<'PY'
+      import json
+      live = {r["slug"] for r in json.load(open("mg-inventory-out/mg-inventory.json"))["inventory"]}
+      static = {m["slug"] for m in json.load(open("extension/models.json"))}
+      print("missing from the live list:", sorted(static - live) or "none")
+      print("not in extension/models.json:", sorted(live - static) or "none")
+      PY
+  artifacts:
+    paths:
+      - mg-inventory-out/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------- enable
+# The console questionnaire and the Agree click run only in a human's
+# signed-in browser. This job prints what is pending and how to run it.
+# It is manual, runs on protected refs only, and changes nothing.
+enable:handoff:
+  stage: enable
+  image: python:3.12.8-alpine
+  needs: ["inventory:audit"]
+  # A manual job keeps GitLab's default allow_failure: true. With false the
+  # scheduled pipeline would sit in the "blocked" state until someone presses
+  # the button, and a green inventory:audit would never show as green.
+  # The rules mirror inventory:audit, so this job never lands in a pipeline
+  # without the job it needs (GitLab refuses such a pipeline). The protected
+  # check comes first, so unprotected refs never show the manual button.
+  rules:
+    - if: $CI_COMMIT_REF_PROTECTED != "true"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: manual
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+  environment:
+    name: model-garden-enable
+    action: prepare
+  script:
+    - |
+      echo "=== Pending (project, model) pairs from the audit"
+      python3 -I - <<'PY'
+      import json
+      rep = json.load(open("mg-inventory-out/mg-inventory.json"))
+      for row in rep["pending"]:
+          print(f"{row['project']:<30} {row['model']}")
+      print(f"total pending pairs: {len(rep['pending'])}")
+      PY
+      echo
+      echo "=== Pending project ids (popup textarea format)"
+      cat mg-inventory-out/projects.txt
+      echo
+      echo "=== Human run (outside GitLab)"
+      echo "1. Download mg-inventory-out/model-garden-clicker-settings.json from this job."
+      echo "2. In Chrome, signed in to the Cloud console with your own account, open the"
+      echo "   extension options page, Advanced, Import settings, and pick that file."
+      echo "3. Keep DRY RUN ticked and run once. Read the run log."
+      echo "4. Untick DRY RUN only for the real run. Every Agree click is yours."
+      echo "5. The next scheduled inventory:audit run drops the enabled pairs from the list."
+      echo
+      echo "This job enables nothing. A service account cannot sign in to the console."

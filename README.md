@@ -16,7 +16,7 @@ Open the options page (the **Options** button in the popup, or right-click the e
 
 ### 2. Pick projects and models, press Start
 
-Click the extension icon. The header shows the mode, **MODE: DRY RUN** by default, and the step-by-step setting next to it (**slow mode** with a snail icon when it is on, **fast mode** with a warning-sign icon when it is off; both are buttons). Paste project IDs, one per line. Tick the models. The list is sorted by release date, newest first. The **latest** link ticks the newest GA model of each line. **all** and **none** tick or untick every model. Press **Start**. While a run is active, **Pause** next to Stop holds the run once the current job ends; it then reads **Resume**.
+Click the extension icon. The header shows the mode, **MODE: DRY RUN** by default, and the step-by-step setting next to it (**slow mode** with a snail icon when it is on, **fast mode** with a warning-sign icon when it is off; both are switches: slide the first to FULL RUN (it asks for a confirmation), the second to fast mode). Paste project IDs, one per line. Tick the models. The list is sorted by release date, newest first. The **latest** link ticks the newest GA model of each line. **all** and **none** tick or untick every model. Press **Start**. While a run is active, **Pause** next to Stop holds the run once the current job ends; it then reads **Resume**.
 
 ![Popup: project IDs, the model checklist, Start, the results table](store/screenshots/01-popup-dry-run.png)
 

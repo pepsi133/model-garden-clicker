@@ -20,10 +20,27 @@ header { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex
 header .title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 h1 { font-size: 15px; margin: 0; white-space: nowrap; }
 header .toggles { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-header .mode { cursor: pointer; }
-header .step-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+/* The two header controls are slider switches (role="switch", aria-checked):
+ * #mode is on for FULL RUN (warning-red track, red label), off for DRY RUN;
+ * #step-toggle is on for fast mode (accent track), off for slow mode
+ * (step-by-step). No pill: the popup drops the shared .mode banner's
+ * background and border (theme.css keeps them for other pages). While a run
+ * is active both carry .locked (the disabled look, still clickable: the
+ * worker's lock refuses the change with a message). The 2 px vertical
+ * padding keeps the row at about today's height (popup_layout.py). */
+header #mode, header #step-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; font-size: 12px; white-space: nowrap; background: transparent; border: 1px solid transparent; border-radius: 11px; cursor: pointer; }
+header #mode:hover, header #step-toggle:hover { border-color: var(--mgc-border); }
+header #mode:focus-visible, header #step-toggle:focus-visible { outline: 2px solid var(--mgc-accent-dark); outline-offset: 1px; }
+header #mode.dry { color: var(--mgc-text); }
+header #mode.live { color: var(--mgc-warn); }
+header #step-toggle { font-weight: 600; color: var(--mgc-text); }
+header #mode .track, header #step-toggle .track { position: relative; flex: none; box-sizing: border-box; width: 34px; height: 18px; border-radius: 9px; background: var(--mgc-border); transition: background-color 150ms ease; }
+header #mode .knob, header #step-toggle .knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--mgc-surface); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: transform 150ms ease; }
+header #mode[aria-checked="true"] .knob, header #step-toggle[aria-checked="true"] .knob { transform: translateX(16px); }
+header #mode[aria-checked="true"] .track { background: var(--mgc-warn); }
+header #step-toggle[aria-checked="true"] .track { background: var(--mgc-accent); }
+header #mode.locked, header #step-toggle.locked { opacity: 0.5; cursor: default; }
 header .step-toggle .icon { flex: none; color: var(--mgc-accent-dark); }
-header .step-toggle[aria-pressed="true"] { border-color: var(--mgc-accent-dark); background: var(--mgc-neutral); }
 header .header-actions { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 header .header-links { display: flex; gap: 10px; }
 header .header-actions a { font-size: 12px; white-space: nowrap; }

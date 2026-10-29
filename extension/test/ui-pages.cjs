@@ -840,7 +840,7 @@ function setSelect(p, name, value) {
     const calls = [...new Set(Array.from(shipped.matchAll(/chrome\.tabs\.([a-zA-Z]+)/g)).map((m) => m[1]))].sort();
     ok(JSON.stringify(calls) === JSON.stringify(["create", "get", "onRemoved", "update"]), "the chrome.tabs calls in the shipped code are create, get, onRemoved and update, none of which needs the tabs permission", calls.join(","));
     ok(!/tab\.url|tabs\.query|tabs\.onUpdated/.test(shipped), "no code reads a tab's url or queries tabs (which the tabs permission would be needed for on non-console tabs)");
-    ok(manifest.version === "0.9.0", "the manifest version is 0.9.0", manifest.version);
+    ok(manifest.version === "1.0.0", "the manifest version is 1.0.0", manifest.version);
     ok(JSON.stringify(manifest.permissions) === JSON.stringify(["storage", "alarms"]) && !/"downloads"|"unlimitedStorage"|"notifications"|"tabs"/.test(JSON.stringify(manifest.permissions)), "0.8.0 and 0.9.0 added no permission (Pause, export and import, the latest link included): still exactly storage and alarms (no downloads, unlimitedStorage, notifications or tabs)", JSON.stringify(manifest.permissions));
     ok(!("web_accessible_resources" in manifest), "runs.html is an extension page opened by its extension URL: no web_accessible_resources");
     // Chrome Web Store limits: the 0.3.0 upload was rejected for a 136-character description (limit 132).
@@ -937,8 +937,23 @@ function setSelect(p, name, value) {
     const stepBtn = doc.getElementById("step-toggle");
     const shown = (id) => doc.getElementById(id).style.display !== "none";
     let confirms = []; p.win.confirm = (msg) => { confirms.push(msg); return true; };
-    ok(mode.tagName === "BUTTON" && mode.type === "button" && mode.getAttribute("aria-pressed") === "false" && /Click to switch to FULL RUN/.test(mode.title), "the MODE banner is a button with aria-pressed false and a title that explains the switch", mode.title);
-    ok(stepBtn && stepBtn.tagName === "BUTTON" && stepBtn.closest("header") && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "fast mode", 'the step-by-step button sits in the header, aria-pressed false, labelled "fast mode" while step-by-step is off (inside joke off, the default)', stepBtn && stepBtn.textContent.trim());
+    ok(mode.tagName === "BUTTON" && mode.type === "button" && mode.getAttribute("role") === "switch" && mode.getAttribute("aria-checked") === "false" && !mode.hasAttribute("aria-pressed") && /Click to switch to FULL RUN/.test(mode.title), "the MODE control is a button with role=switch, aria-checked false and a title that explains the switch", mode.title);
+    ok(stepBtn && stepBtn.tagName === "BUTTON" && stepBtn.closest("header") && stepBtn.getAttribute("role") === "switch" && stepBtn.getAttribute("aria-checked") === "true" && !stepBtn.hasAttribute("aria-pressed") && doc.getElementById("step-toggle-label").textContent === "fast mode", 'the step-by-step switch sits in the header, aria-checked true (on = fast mode), labelled "fast mode" while step-by-step is off (inside joke off, the default)', stepBtn && stepBtn.textContent.trim());
+    {
+      const knobOf = (el) => { const t = el.firstElementChild; return t && t.tagName === "SPAN" && t.classList.contains("track") && t.getAttribute("aria-hidden") === "true" && t.children.length === 1 && t.firstElementChild.classList.contains("knob") && t.textContent === ""; };
+      ok(knobOf(mode) && knobOf(stepBtn) && stepBtn.querySelector(".track ~ #step-toggle-label"), "both switches start with an aria-hidden .track > .knob (no text), followed by the label", `${mode.innerHTML.slice(0, 80)} | ${stepBtn.firstElementChild && stepBtn.firstElementChild.outerHTML}`);
+      ok(mode.textContent === "MODE: DRY RUN" && mode.className === "mode dry" && !mode.classList.contains("locked") && !stepBtn.classList.contains("locked") && mode.disabled === false && stepBtn.disabled === false, "with no run: #mode.textContent is exactly MODE: DRY RUN, no .locked class on either switch, neither disabled", `${JSON.stringify(mode.textContent)} ${mode.className} / ${stepBtn.className}`);
+      const swCss = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
+      ok(/header #mode \.track, header #step-toggle \.track\s*\{[^}]*width:\s*34px;[^}]*height:\s*18px;[^}]*border-radius:\s*9px;[^}]*transition:\s*background-color 150ms/.test(swCss)
+        && /\.knob\s*\{[^}]*width:\s*14px;[^}]*height:\s*14px;[^}]*border-radius:\s*50%;[^}]*transition:\s*transform 150ms/.test(swCss)
+        && /\[aria-checked="true"\] \.knob\s*\{\s*transform:\s*translateX\(16px\)/.test(swCss)
+        && /header #mode\[aria-checked="true"\] \.track\s*\{\s*background:\s*var\(--mgc-warn\)/.test(swCss)
+        && /header #step-toggle\[aria-checked="true"\] \.track\s*\{\s*background:\s*var\(--mgc-accent\)/.test(swCss)
+        && /header #mode\.live\s*\{\s*color:\s*var\(--mgc-warn\)/.test(swCss)
+        && /header #mode\.locked, header #step-toggle\.locked\s*\{\s*opacity:\s*0\.5;\s*cursor:\s*default/.test(swCss)
+        && /header #mode:focus-visible, header #step-toggle:focus-visible\s*\{[^}]*outline:/.test(swCss),
+        "popup.css: 34 x 18 px track (9 px radius), 14 px round knob sliding 16 px when aria-checked is true, 150 ms; red track and red label for FULL RUN, accent track for fast mode; .locked has the disabled look; a focus-visible ring");
+    }
     ok(shown("icon-warning") && !shown("icon-snail") && doc.querySelector("#icon-warning path") && doc.getElementById("icon-warning").getAttribute("aria-hidden") === "true", "the warning-sign SVG is displayed and the snail SVG is not (display style, not the hidden attribute: it does not apply to inline SVG)");
     const warningSvg = doc.getElementById("icon-warning");
     const triangle = warningSvg.querySelector("path");
@@ -952,18 +967,18 @@ function setSelect(p, name, value) {
 
     mode.click(); await tick();
     ok(confirms.length === 1 && /Switch to FULL RUN\?/.test(confirms[0]) && /clicks Agree and makes Marketplace purchases that bill the project/.test(confirms[0]), "clicking the banner in DRY RUN asks for a confirmation that names the purchases", confirms[0]);
-    ok(store.settings.live_mode === true && mode.textContent === "MODE: FULL RUN" && mode.className === "mode live" && mode.getAttribute("aria-pressed") === "true" && /Click to switch to DRY RUN/.test(mode.title), "confirmed: live_mode written true, banner MODE: FULL RUN in red, aria-pressed true", `${store.settings.live_mode} ${mode.textContent}`);
+    ok(store.settings.live_mode === true && mode.textContent === "MODE: FULL RUN" && mode.className === "mode live" && mode.getAttribute("aria-checked") === "true" && /Click to switch to DRY RUN/.test(mode.title), "confirmed: live_mode written true, banner MODE: FULL RUN in red, aria-checked true", `${store.settings.live_mode} ${mode.textContent}`);
     ok(store.settings.business_name === "b" && store.settings.use_cases === "x", "the other settings survived the write (merged, not replaced)");
     mode.click(); await tick();
-    ok(confirms.length === 1 && store.settings.live_mode === false && mode.textContent === "MODE: DRY RUN" && mode.getAttribute("aria-pressed") === "false", "clicking again switches back to DRY RUN without a confirm", mode.textContent);
+    ok(confirms.length === 1 && store.settings.live_mode === false && mode.textContent === "MODE: DRY RUN" && mode.getAttribute("aria-checked") === "false", "clicking again switches back to DRY RUN without a confirm, aria-checked false", mode.textContent);
     p.win.confirm = (msg) => { confirms.push(msg); return false; };
     mode.click(); await tick();
-    ok(confirms.length === 2 && store.settings.live_mode === false && mode.textContent === "MODE: DRY RUN", "a declined confirm leaves DRY RUN", mode.textContent);
+    ok(confirms.length === 2 && store.settings.live_mode === false && mode.textContent === "MODE: DRY RUN" && mode.getAttribute("aria-checked") === "false", "a declined confirm leaves DRY RUN (the switch stays off, aria-checked false)", mode.textContent);
 
     stepBtn.click(); await tick();
-    ok(store.settings.step_by_step === true && stepBtn.getAttribute("aria-pressed") === "true" && doc.getElementById("step-toggle-label").textContent === "slow mode" && shown("icon-snail") && !shown("icon-warning") && /slow mode: step-by-step confirmation is on/.test(stepBtn.title), 'clicking the step button writes step_by_step=true: "slow mode" with the snail only, aria-pressed true, title updated', stepBtn.textContent.trim());
+    ok(store.settings.step_by_step === true && stepBtn.getAttribute("aria-checked") === "false" && doc.getElementById("step-toggle-label").textContent === "slow mode" && shown("icon-snail") && !shown("icon-warning") && /slow mode: step-by-step confirmation is on/.test(stepBtn.title), 'clicking the step button writes step_by_step=true: "slow mode" with the snail only, aria-checked false (off = slow mode), title updated', stepBtn.textContent.trim());
     stepBtn.click(); await tick();
-    ok(store.settings.step_by_step === false && stepBtn.getAttribute("aria-pressed") === "false" && doc.getElementById("step-toggle-label").textContent === "fast mode" && shown("icon-warning") && !shown("icon-snail"), 'clicking again writes false: "fast mode" with the warning sign only', stepBtn.textContent.trim());
+    ok(store.settings.step_by_step === false && stepBtn.getAttribute("aria-checked") === "true" && doc.getElementById("step-toggle-label").textContent === "fast mode" && shown("icon-warning") && !shown("icon-snail"), 'clicking again writes false: "fast mode" with the warning sign only, aria-checked true', stepBtn.textContent.trim());
     ok(doc.getElementById("error").hidden === true, "no error shown for an accepted toggle");
     p.win.close();
     const p2 = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
@@ -983,6 +998,12 @@ function setSelect(p, name, value) {
     ok(/A run is in progress: stop it before changing the mode/.test(doc.getElementById("mode").title), "the banner's title says the mode is locked during the run", doc.getElementById("mode").title);
     doc.getElementById("step-toggle").click(); await tick();
     ok(store.settings.step_by_step === false && doc.getElementById("step-toggle-label").textContent === "fast mode" && err.hidden === false && /A run is in progress/.test(err.textContent), "toggling step-by-step during a run is refused the same way", err.textContent);
+    {
+      const m = doc.getElementById("mode"), s = doc.getElementById("step-toggle");
+      ok(m.classList.contains("locked") && s.classList.contains("locked") && m.disabled === false && s.disabled === false && m.getAttribute("aria-checked") === "false" && s.getAttribute("aria-checked") === "true",
+        "during a run both switches carry .locked (the disabled look) but stay enabled, so a click reaches the refusal; aria-checked unchanged", `${m.className} / ${s.className}`);
+      ok(/A run is in progress: stop it before changing the mode\.$/.test(m.title) && /A run is in progress: stop it before changing this\.$/.test(s.title), "both titles end with the lock text, unchanged", `${m.title} | ${s.title}`);
+    }
     const popupJs = fs.readFileSync(path.join(E.EXT, "popup/popup.js"), "utf8");
     const optionsJs = fs.readFileSync(path.join(E.EXT, "options/options.js"), "utf8");
     ok((popupJs.match(/K\.saveSettings\(/g) || []).length === 2 && (optionsJs.match(/K\.saveSettings\(/g) || []).length === 2 && !/storage\.local\.set\(\{\s*\[KEYS\.SETTINGS\]/.test(popupJs + optionsJs), "both pages write settings only through MGC.saveSettings (the one path)");
@@ -1785,7 +1806,7 @@ function setSelect(p, name, value) {
     ok(d.getElementById("start").disabled === false && d.getElementById("start").title === "" && err(d).hidden === true, "(U1) control: Start is enabled and untouched, no error line; the person must press it");
     ok(d.getElementById("pairs").textContent === "2 project(s) × 1 model(s) = 2 pair(s)", "(U1) the pair line follows the fill", d.getElementById("pairs").textContent);
     // U3: the settings, the include-done box and the timing are untouched.
-    ok(JSON.stringify(store.settings) === JSON.stringify(FULL) && d.getElementById("include-done").checked === false && !("timing" in store) && d.getElementById("mode").textContent === "MODE: DRY RUN" && d.getElementById("step-toggle").getAttribute("aria-pressed") === "false", "(U3) after the fill: settings deep-equal the values before, include-done unchecked, no timing key, DRY RUN and fast mode as before");
+    ok(JSON.stringify(store.settings) === JSON.stringify(FULL) && d.getElementById("include-done").checked === false && !("timing" in store) && d.getElementById("mode").textContent === "MODE: DRY RUN" && d.getElementById("step-toggle").getAttribute("aria-checked") === "true", "(U3) after the fill: settings deep-equal the values before, include-done unchecked, no timing key, DRY RUN and fast mode as before");
     ok(Object.keys(store).filter((k) => !k.startsWith("__")).sort().join() === "popup_state,settings", "(U3) storage holds popup_state and settings only; the link wrote nothing else", Object.keys(store).join());
     // U12: Clear empties the three inputs, hides the banner, saves the empty state; the settings are unchanged.
     d.getElementById("link-clear").click(); await tick();

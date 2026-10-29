@@ -92,21 +92,24 @@ run is active: stop the run first. (Internally the setting is stored as
 
 The two settings can also be switched from the popup's header:
 
-- the **MODE** banner is a button. Clicking it switches between DRY RUN and
+- the **MODE** banner is a switch (off: DRY RUN, grey track; on: FULL RUN,
+  red track and red text). Clicking it switches between DRY RUN and
   FULL RUN; switching to FULL RUN asks for a confirmation first (starting a
   full run asks once more). Its tooltip explains the current mode and what
   a click does.
-- next to it, a second button shows the step-by-step setting: **slow mode**
+- next to it, a second switch shows the step-by-step setting (on: fast
+  mode, amber track; off: slow mode, grey track): **slow mode**
   with a snail icon while step-by-step confirmation is on, **fast mode**
   (or **kubardy mode** with the **inside joke** box ticked, the last box
   on the options page; it changes the text only) with a warning-sign icon (a triangle with an exclamation mark, in the
   same colour) while it is off: each job runs through without pausing, no
-  Continue before Next and, in a full run, none before Agree. The button's
+  Continue before Next and, in a full run, none before Agree. The switch's
   tooltip says so. Clicking it switches the setting, the icon and the label.
 
-Both buttons write the same settings the options page writes, through the
-same path, and both are refused with a message while a run is active. The
-options page's boxes follow what the popup switched.
+Both switches write the same settings the options page writes, through the
+same path, and both are refused with a message while a run is active (they
+are dimmed then, and their tooltips say why). The options page's boxes
+follow what the popup switched.
 
 ### Check only
 
@@ -145,7 +148,7 @@ open it again; a `not-enabled` pair is attempted again.
 ## The popup and "Open in a tab"
 
 Chrome caps an extension popup at 800 x 600 px and the popup uses all of
-it. The header (photo, title, the two header buttons, **Open in a tab**,
+it. The header (photo, title, the two header switches, **Open in a tab**,
 **Options**) and the inputs (the three-row project text area, the model
 checklist, the extra-slugs field, Start and Stop, the status line) keep
 their natural size and never sit inside a scroll region. The checklist is
@@ -532,7 +535,7 @@ not use) rather than switching tabs in front of it.
 ## Step-by-step confirmation
 
 With **Step-by-step confirmation** ticked in the options page (or the
-popup's header button on **slow mode**), the extension fills each page and
+popup's header switch on **slow mode**), the extension fills each page and
 then waits for you. The badge in the worker tab turns into a panel with a
 summary of the step and two or three buttons:
 

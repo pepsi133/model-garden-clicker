@@ -87,7 +87,10 @@
   function renderStepToggle(on, running, offName) {
     const btn = $("step-toggle");
     if (!btn) return;
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    // A switch: on (aria-checked true, knob right) is fast mode, i.e.
+    // step-by-step off; off is slow mode (step_by_step true).
+    btn.setAttribute("aria-checked", on ? "false" : "true");
+    btn.classList.toggle("locked", running);
     setIf("step-toggle-label", (el) => { el.textContent = on ? "slow mode" : offName; });
     // One icon at a time: the snail for slow mode, the warning sign for
     // step-by-step off ("fast mode", or "kubardy mode" with the options
@@ -438,9 +441,13 @@
     const live = running && o[KEYS.RUN] ? o[KEYS.RUN].live === true && settings.live_mode === true : settings.live_mode === true;
     const lock = running ? " A run is in progress: stop it before changing the mode." : "";
     setIf("mode", (mode) => {
-      mode.textContent = live ? "MODE: FULL RUN" : "MODE: DRY RUN";
-      mode.className = "mode " + (live ? "live" : "dry");
-      mode.setAttribute("aria-pressed", live ? "true" : "false");
+      // The switch's track comes first; only the text node after it changes,
+      // so textContent stays exactly "MODE: DRY RUN" / "MODE: FULL RUN".
+      const text = live ? "MODE: FULL RUN" : "MODE: DRY RUN";
+      const label = mode.lastChild && mode.lastChild.nodeType === 3 ? mode.lastChild : mode.appendChild(document.createTextNode(""));
+      label.nodeValue = text;
+      mode.className = "mode " + (live ? "live" : "dry") + (running ? " locked" : "");
+      mode.setAttribute("aria-checked", live ? "true" : "false");
       mode.title = live
         ? `Full run: the extension clicks Agree and makes purchases that bill the project. Click to switch to DRY RUN.${lock}`
         : `Dry run: fills the forms, stops on the Agreements page, never clicks Agree. Click to switch to FULL RUN (asks for confirmation).${lock}`;

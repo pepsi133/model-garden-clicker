@@ -12,8 +12,9 @@
     <div class="title">
       <h1>Model Garden Clicker</h1>
       <div class="toggles">
-        <button type="button" id="mode" class="mode dry" aria-pressed="false">MODE: DRY RUN</button>
-        <button type="button" id="step-toggle" class="step-toggle" aria-pressed="false">
+        <button type="button" id="mode" class="mode dry" role="switch" aria-checked="false"><span class="track" aria-hidden="true"><span class="knob"></span></span>MODE: DRY RUN</button>
+        <button type="button" id="step-toggle" class="step-toggle" role="switch" aria-checked="true">
+          <span class="track" aria-hidden="true"><span class="knob"></span></span>
           <svg id="icon-snail" class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="display: none">
             <circle cx="15" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="2"/>
             <circle cx="15" cy="11" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/>

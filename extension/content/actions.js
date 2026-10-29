@@ -23,7 +23,9 @@
  * Step-by-step confirmation (settings.step_by_step): after the questionnaire
  * is filled and valid, and after the terms checkbox is ticked on the
  * Agreements page, awaitConfirmation() turns the badge into a panel with
- * Continue and Stop and waits. Only a click or keyboard activation the
+ * Continue, Skip and Stop and waits (Skip ends the job without clicking
+ * Next or Agree and the run moves to the next job; it takes any click, like
+ * Stop, because it clicks nothing). Only a click or keyboard activation the
  * browser marks as trusted (event.isTrusted) on Continue counts; it is
  * recorded per job and step, the Agree guard requires a fresh one, and
  * the record is forgotten once its click was made or the step is asked
@@ -53,6 +55,8 @@
   const T = K.TIMEOUTS;
   const A = {};
   const DRY_RUN_MESSAGE = "dry run: stopped on the Agreements page with the checkbox ticked; Agree was not clicked";
+  const SKIP_NEXT_MESSAGE = "skipped by you before Next: the model was not enabled (Enable opened the questionnaire); the form was filled and left, Next was not clicked";
+  const SKIP_AGREE_MESSAGE = "skipped by you before Agree: the terms checkbox was ticked and left; Agree was not clicked, nothing was purchased";
 
   /* -------------------------------------------------------- step-by-step */
 
@@ -99,6 +103,9 @@
    *               console's own button (the caller passes the check);
    *   "stop"      when opts.stopEndsJob is true and Stop was clicked (the
    *               caller ends the job and asks the worker to stop after);
+   *   "skip"      when opts.skipEndsJob is true and Skip was clicked (the
+   *               caller ends the job as skipped-by-you without clicking
+   *               and the run moves to the next job);
    *   a { status, message } result when opts.outcome() returns one (the
    *               console settled the step by itself), or when the "Enable
    *               APIs" dialog came back for this job while waiting.
@@ -116,7 +123,11 @@
    *
    * opts: summary, title, continueLabel (default "Continue"),
    * continueAction (data-action, default "continue"), proceedText (log
-   * wording after the click), userActed, outcome, stopEndsJob. The caller
+   * wording after the click), userActed, outcome, stopEndsJob, skipEndsJob
+   * (true adds a Skip button between Continue and Stop; Skip takes any
+   * click, like Stop, because it clicks nothing and can only end the job;
+   * userActed() is still checked first, so the user's own console click in
+   * the same poll wins over a Skip). The caller
    * sets the awaiting_confirmation phase around this call (that pauses the
    * worker's watchdog) and the page's phase again after it.
    */
@@ -137,6 +148,9 @@
         decision = "continue";
       }
     }];
+    if (o.skipEndsJob === true) {
+      buttons.push({ label: "Skip", action: "skip", onClick: () => { decision = "skip"; } });
+    }
     buttons.push({
       label: "Stop", action: "stop",
       onClick: () => {
@@ -202,6 +216,10 @@
         if (decision === "stop") {
           ctx.log("Stop clicked on the panel; the job ends here and the run stops");
           return "stop";
+        }
+        if (decision === "skip") {
+          ctx.log(`Skip clicked on the panel; the job ends here as ${STATUS.SKIPPED_BY_USER} and the run moves on; ${label} was not clicked`);
+          return "skip";
         }
         if (Date.now() - lastCheck >= 1000) {
           // Storage once a second: a Stop (panel or popup) or a replaced run ends the wait.
@@ -545,12 +563,14 @@
     if (s.step_by_step === true) {
       await ctx.setPhase(PHASE.AWAITING_CONFIRMATION, K.CONFIRM_STEP.NEXT);
       const how = await A.awaitConfirmation(ctx, K.CONFIRM_STEP.NEXT, {
-        summary: `The questionnaire for ${ctx.job.modelSlug} in ${ctx.job.projectId} is filled and valid. Continue clicks Next, which submits the request-access form and opens the Agreements page. Stop ends the run.`,
-        userActed: () => S.detectPage() !== PAGE.QUESTIONNAIRE
+        summary: `The questionnaire for ${ctx.job.modelSlug} in ${ctx.job.projectId} is filled and valid. Continue clicks Next, which submits the request-access form and opens the Agreements page. Skip ends this job without clicking Next and the run moves to the next job. Stop ends the run.`,
+        userActed: () => S.detectPage() !== PAGE.QUESTIONNAIRE,
+        skipEndsJob: true
       });
       await ctx.setPhase(PHASE.QUESTIONNAIRE);
       if (how && typeof how === "object") return how; // the wait ended the job (a blocker, or the "Enable APIs" dialog came back)
       if (how === "user") { ctx.mark("left the questionnaire (Next clicked by you)"); return null; }
+      if (how === "skip") return { status: STATUS.SKIPPED_BY_USER, message: SKIP_NEXT_MESSAGE };
       await ctx.assertMayAct();
     }
     // The node is looked up again: the page may have re-rendered during the wait.
@@ -765,8 +785,9 @@
         for (let ask = 0; ; ask++) {
           await ctx.setPhase(PHASE.AWAITING_CONFIRMATION, K.CONFIRM_STEP.AGREE);
           const how = await A.awaitConfirmation(ctx, K.CONFIRM_STEP.AGREE, {
-            summary: `FULL RUN: Continue clicks Agree, which accepts the terms and purchases ${job.modelName || job.modelSlug} for ${job.projectId}; the project is billed for its use. Stop ends the run. Click one or the other, not the console's Agree as well.`,
+            summary: `FULL RUN: Continue clicks Agree, which accepts the terms and purchases ${job.modelName || job.modelSlug} for ${job.projectId}; the project is billed for its use. Skip ends this job without clicking Agree (nothing is purchased) and the run moves to the next job. Stop ends the run. Click one of them, not the console's Agree as well.`,
             userActed: () => userAgree !== null,
+            skipEndsJob: true,
             outcome: () => observedPurchase(ctx, dialogsBefore, "waiting for your Continue and no Agree activation by you was seen")
           });
           await ctx.setPhase(PHASE.AGREEMENTS);
@@ -774,6 +795,13 @@
           if (how === "user") {
             byUser = true;
             break;
+          }
+          // Skip ends the job without clicking; but when the user's own
+          // Agree was seen in the same instant, its outcome is judged
+          // instead of the skip (the click happened).
+          if (how === "skip") {
+            if (userAgree !== null) { byUser = true; break; }
+            return { status: STATUS.SKIPPED_BY_USER, message: SKIP_AGREE_MESSAGE };
           }
           await ctx.assertMayAct();
           // The user's own Agree comes first: once it was seen, its outcome

@@ -786,7 +786,7 @@ function setSelect(p, name, value) {
     ok(doc.documentElement.className === "tab", "the summary block test runs in the tab layout (popup.html?tab=1)");
     const box = doc.getElementById("summary");
     ok(box && box.hidden === false && box.closest(".scroll") && box.compareDocumentPosition(doc.getElementById("results")) & 4, "the summary block is visible, at the top of the results region, above the table");
-    ok(/^Run all jobs processed: 14 job\(s\)$/.test(doc.querySelector("#summary .title").textContent) && doc.querySelector("#summary .counts").textContent === "done 0 · dry-run 13 · skipped 0 · failed 1 · unverified 0 · stopped 0", "title with the reason and the job count; the six counts", doc.querySelector("#summary .counts").textContent);
+    ok(/^Run all jobs processed: 14 job\(s\)$/.test(doc.querySelector("#summary .title").textContent) && doc.querySelector("#summary .counts").textContent === "done 0 · dry-run 13 · skipped 0 · skipped-by-you 0 · failed 1 · unverified 0 · stopped 0", "title with the reason and the job count; the seven counts", doc.querySelector("#summary .counts").textContent);
     const lines = Array.from(doc.querySelectorAll("#summary .line")).map((l) => l.textContent);
     ok(lines.length === 12 && doc.querySelector("#summary .more").textContent === "and 2 more", "twelve per-job lines, then \"and 2 more\"", `${lines.length} ${doc.querySelector("#summary .more") && doc.querySelector("#summary .more").textContent}`);
     const cut = lines[0].split(" · ").slice(3).join(" · ");
@@ -894,7 +894,7 @@ function setSelect(p, name, value) {
     ok(p.document.getElementById("full-run-warning").hidden === true, "the red full-run note is hidden while the box is ticked");
     ok(form.elements.step_by_step && form.elements.step_by_step.type === "checkbox" && form.elements.step_by_step.checked === false, "the step-by-step box exists and is unticked by default");
     const sbs = form.elements.step_by_step.closest("label").nextElementSibling;
-    ok(/fills each page and then waits for you/.test(sbs.textContent) && /Continue and Stop before Next and before Agree/.test(sbs.textContent) && /click the console's own button yourself/.test(sbs.textContent), "the step-by-step explanation names the panel, Continue/Stop, Next, Agree and the user's own click", sbs.textContent);
+    ok(/fills each page and then waits for you/.test(sbs.textContent) && /Continue, Skip and Stop before Next and before Agree \(Skip ends the job without clicking and the run moves on\)/.test(sbs.textContent) && /click the console's own button yourself/.test(sbs.textContent), "the step-by-step explanation names the panel, Continue/Stop, Next, Agree and the user's own click", sbs.textContent);
     let r = await submit(p);
     ok(!r.error && store.settings.live_mode === false && store.settings.step_by_step === false && confirms === 0, "Save with the box ticked stores live_mode=false, step_by_step=false, no confirm()", JSON.stringify([store.settings.live_mode, store.settings.step_by_step]));
     form.elements.dry_run.checked = false; form.elements.dry_run.dispatchEvent(new p.win.Event("change", { bubbles: true }));
@@ -1089,8 +1089,8 @@ function setSelect(p, name, value) {
     const a = cells(rows[2]);
     ok(a[0] === `${new Date(RUN_A.startedAt).toLocaleString()}ended ${new Date(RUN_A.finishedAt).toLocaleString()}: all jobs processed`, "started and ended with the reason", a[0]);
     ok(a[1] === "DRY RUN" && cells(rows[1])[1] === "FULL RUN · step-by-step" && rows[1].querySelector("td.mode .live") && !rows[2].querySelector("td.mode .live"), "the mode cell: DRY RUN, or FULL RUN in the warning colour, with the step-by-step mark", cells(rows[1])[1]);
-    ok(a[2] === "2" && a[3] === "done 0 · dry-run 1 · skipped 1 · failed 0 · unverified 0 · stopped 0", "jobs and the six counts (as the popup's summary counts them)", a[3]);
-    ok(cells(rows[1])[3] === "done 1 · dry-run 0 · skipped 0 · failed 0 · unverified 0 · stopped 1" && cells(rows[0])[3] === "done 0 · dry-run 0 · skipped 0 · failed 0 · unverified 0 · stopped 0 · pending 2", "counts of the other runs (a pending count only when some job is pending)", cells(rows[0])[3]);
+    ok(a[2] === "2" && a[3] === "done 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 0", "jobs and the seven counts (as the popup's summary counts them)", a[3]);
+    ok(cells(rows[1])[3] === "done 1 · dry-run 0 · skipped 0 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 1" && cells(rows[0])[3] === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 0 · pending 2", "counts of the other runs (a pending count only when some job is pending)", cells(rows[0])[3]);
     const recA = await RLNODE.get("run-a");
     const sizeA = RL.sizeOf(recA);
     ok(recA.lineCount === 4 && recA.byteCount > 0 && a[4] === `4 lines · ${RL.sizeText(sizeA)}` && sizeA > 800 && /^\d+(\.\d)? KB$/.test(RL.sizeText(sizeA)), "the log cell: the line count (from the counter) and the size from the counters (schema v2)", `${a[4]} (lineCount ${recA.lineCount}, byteCount ${recA.byteCount}, sizeOf ${sizeA})`);
@@ -1108,7 +1108,7 @@ function setSelect(p, name, value) {
     const expectedA = RLNODE.textOf(recA, await RLNODE.readLines("run-a"));
     ok(blob.type.startsWith("text/plain") && text === expectedA, "the file is text/plain holding MGC_RUNLOG.textOf(record, lines read by the index cursor)", blob.type);
     const lines = text.split("\n");
-    ok(lines[0] === "Model Garden Clicker run log" && lines[1] === "run id:        run-a" && lines[2] === "started:       2026-10-08T10:05:00.000Z" && lines[3] === "ended:         2026-10-08T10:09:30.000Z" && lines[4] === "mode:          DRY RUN" && lines[5] === "step-by-step:  off" && lines[6] === "reason:        all jobs processed" && lines[7] === "jobs:          2 (done 0 · dry-run 1 · skipped 1 · failed 0 · unverified 0 · stopped 0)" && lines[8] === "log lines:     4",
+    ok(lines[0] === "Model Garden Clicker run log" && lines[1] === "run id:        run-a" && lines[2] === "started:       2026-10-08T10:05:00.000Z" && lines[3] === "ended:         2026-10-08T10:09:30.000Z" && lines[4] === "mode:          DRY RUN" && lines[5] === "step-by-step:  off" && lines[6] === "reason:        all jobs processed" && lines[7] === "jobs:          2 (done 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 0)" && lines[8] === "log lines:     4",
       "the header block: run id, start, end (ISO), mode, step-by-step, reason, jobs with counts, line count", lines.slice(0, 9).join(" | "));
     const tableStart = lines.indexOf("job  project   model             status   started                   ended                     message");
     ok(tableStart === 10 && lines[11] === "1    proj-one  claude-haiku-4-5  dry-run  2026-10-08T10:05:01.000Z  2026-10-08T10:07:00.000Z  dry run: checkbox ticked" && lines[12] === "2    proj-two  claude-haiku-4-5  skipped  2026-10-08T10:07:01.000Z  2026-10-08T10:09:29.000Z  skipped: already enabled", "then the job results as a plain-text table", lines.slice(10, 13).join(" | "));
@@ -1578,21 +1578,22 @@ function setSelect(p, name, value) {
     r = await choose(p, JSON.stringify({ schema: 1, popup: { models: ["Claude-Haiku-5-5", null, "claude-haiku-5-5", "Claude-Private-9"], projects: [null, "proj-one"] } }));
     await submit(p);
     ok(!r.error && JSON.stringify(store.popup_state.models) === '["claude-haiku-5-5"]' && /moved to the extra slugs: Claude-Private-9\./.test(r.text) && store.popup_state.projects === "proj-one", "ticked models match the list case-insensitively (the list's spelling kept, once); null entries in a list are dropped", `${r.text} | ${JSON.stringify(store.popup_state)}`);
-    // The project and model lists are capped at 2,000 characters joined, and the extra slugs again after the move.
-    const capIds = Array.from({ length: 90 }, (_, i) => `proj-cap-${String(i).padStart(4, "0")}-abcdefghij`);
+    // The project and model lists are capped at 8,192 characters joined (CONFIG_LIST_MAX), and the extra slugs at 2,000 again after the move.
+    // 350 ids of 24 characters join to 8,749 characters; 400 slugs joined with ", " pass 8,192 too.
+    const capIds = Array.from({ length: 350 }, (_, i) => `proj-cap-${String(i).padStart(4, "0")}-abcdefghij`);
     r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: capIds } }));
-    ok(r.error && /popup\.projects is longer than 2000 characters/.test(r.text), "a project list over 2,000 characters joined is refused naming the key", r.text);
-    const capSlugs = Array.from({ length: 120 }, (_, i) => `claude-cap-${i}-abcdefg`);
+    ok(r.error && /popup\.projects is longer than 8192 characters/.test(r.text), "a project list over 8,192 characters joined is refused naming the key", r.text);
+    const capSlugs = Array.from({ length: 400 }, (_, i) => `claude-cap-${i}-abcdefg`);
     r = await choose(p, JSON.stringify({ schema: 1, popup: { models: capSlugs } }));
-    ok(r.error && /popup\.models is longer than 2000 characters/.test(r.text), "a model list over 2,000 characters joined is refused naming the key", r.text);
+    ok(r.error && /popup\.models is longer than 8192 characters/.test(r.text), "a model list over 8,192 characters joined is refused naming the key", r.text);
     r = await choose(p, JSON.stringify({ schema: 1, popup: { models: capSlugs.slice(0, 60), extra: capSlugs.slice(60, 100).join(",") } }));
     ok(r.error && /popup\.extra is longer than 2000 characters once the ticked models not in the model list are moved into it/.test(r.text), "the extra slugs are capped again after the unknown ticked models move into them", r.text);
-    // The project cap applies to the trimmed IDs joined, in the text form too; padding alone does not trip it.
+    // The project list cap applies to the trimmed IDs joined, in the text form too; padding alone does not trip it.
     r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: capIds.join("\n") } }));
-    ok(r.error && /popup\.projects is longer than 2000 characters/.test(r.text), "a project text over 2,000 characters (trimmed IDs joined) is refused naming the key", r.text);
-    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: "   proj-pad-one   \n" + " ".repeat(2100) + "\n   proj-pad-two   " } }));
+    ok(r.error && /popup\.projects is longer than 8192 characters/.test(r.text), "a project text over 8,192 characters (trimmed IDs joined) is refused naming the key", r.text);
+    r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: "   proj-pad-one   \n" + " ".repeat(8300) + "\n   proj-pad-two   " } }));
     await submit(p);
-    ok(!r.error && store.popup_state.projects === "proj-pad-one\nproj-pad-two", "a project text padded past 2,000 characters with blanks is accepted (the cap counts the trimmed IDs)", `${r.text} | ${JSON.stringify(store.popup_state.projects)}`);
+    ok(!r.error && store.popup_state.projects === "proj-pad-one\nproj-pad-two", "a project text padded past 8,192 characters with blanks is accepted (the cap counts the trimmed IDs)", `${r.text} | ${JSON.stringify(store.popup_state.projects)}`);
     // A list that empties to nothing leaves the current value, with a notice.
     r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: [null, "  "], models: [null] } }));
     ok(!r.error && /popup\.projects holds no project ID, so the current ones are kept/.test(r.text) && /popup\.models holds no model slug, so the current selection is kept/.test(r.text), "a project or model list that empties to nothing keeps the current value and says so", r.text);
@@ -1679,16 +1680,16 @@ function setSelect(p, name, value) {
     p = await open("?tab=1&link=abc&v=1&projects=p-one-1", store, c); await tick(); d = p.document;
     ok(c.calls.length === 0 && /^link refused: the key "link" is not one of/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U6) link= next to valid values: the whole link is refused (any bad item refuses all)", err(d).text);
     p.win.close();
-    // U8: 23 projects.
-    const projects23 = Array.from({ length: 23 }, (_, i) => `p-link-${String(i).padStart(3, "0")}`);
+    // U8: 200 projects.
+    const projects200 = Array.from({ length: 200 }, (_, i) => `p-link-${String(i).padStart(3, "0")}`);
     store = base(); c = recorder(true);
-    p = await open(`?tab=1&v=1&projects=${projects23.join(",")}&models=claude-haiku-4-5`, store, c); await tick(); d = p.document;
-    ok(c.calls.length === 1 && /23 project\(s\)/.test(c.calls[0]) && projects23.slice(0, 16).every((id) => c.calls[0].includes(id)) && !projects23.slice(16).some((id) => c.calls[0].includes(id)) && /\n  \.\.\. and 7 more \(every id is listed in the banner and the textarea after OK\)\.$/.test(c.calls[0]) && c.calls[0].split("\n").length <= K.DEEP_LINK.CONFIRM_ROWS && c.calls[0].split("\n").every((l) => l.length <= K.DEEP_LINK.CONFIRM_COLS - 1 || /^OK replaces/.test(l)), '(U8) 23 projects: the confirm names "23 project(s)", lists the first 16 ids and "and 7 more", within the row budget (the row test itself is in deep-link.cjs)', c.calls[0]);
-    ok(d.getElementById("pairs").textContent === "23 project(s) × 1 model(s) = 23 pair(s)" && d.getElementById("projects").value === projects23.join("\n") && projects23.every((id) => banner(d).text.includes(id)), "(U8) the pair line reads 23 project(s) × 1 model(s) = 23 pair(s); the banner lists every id", d.getElementById("pairs").textContent);
+    p = await open(`?tab=1&v=1&projects=${projects200.join(",")}&models=claude-haiku-4-5`, store, c); await tick(); d = p.document;
+    ok(c.calls.length === 1 && /200 project\(s\)/.test(c.calls[0]) && projects200.slice(0, 16).every((id) => c.calls[0].includes(id)) && !projects200.slice(16).some((id) => c.calls[0].includes(id)) && /\n  \.\.\. and 184 more \(every id is listed in the banner and textarea after OK\)\.$/.test(c.calls[0]) && c.calls[0].split("\n").length <= K.DEEP_LINK.CONFIRM_ROWS && c.calls[0].split("\n").every((l) => l.length <= K.DEEP_LINK.CONFIRM_COLS - 1 || /^OK replaces/.test(l)), '(U8) 200 projects: the confirm names "200 project(s)", lists the first 16 ids and "and 184 more", within the row budget (the row test itself is in deep-link.cjs)', c.calls[0]);
+    ok(d.getElementById("pairs").textContent === "200 project(s) × 1 model(s) = 200 pair(s)" && d.getElementById("projects").value === projects200.join("\n") && projects200.every((id) => banner(d).text.includes(id)), "(U8) the pair line reads 200 project(s) × 1 model(s) = 200 pair(s); the banner lists every id", d.getElementById("pairs").textContent);
     p.win.close();
     store = base(); c = recorder(true);
-    p = await open(`?tab=1&v=1&projects=${projects23.concat(["p-link-023"]).join(",")}`, store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && /names 24 projects; at most 23 are accepted/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U8) 24 projects: refused, nothing filled", err(d).text);
+    p = await open(`?tab=1&v=1&projects=${projects200.concat(["p-link-200"]).join(",")}`, store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /names 201 projects; at most 200 are accepted/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "(U8) 201 projects: refused, nothing filled", err(d).text);
     p.win.close();
     // U9: verbatim, in link order.
     store = base(); c = recorder(true);
@@ -1717,10 +1718,10 @@ function setSelect(p, name, value) {
     ok(JSON.stringify(ticked(d)) === '["claude-haiku-4-5"]' && d.getElementById("extra-models").value === "my-own-slug" && store.popup_state.extra === "my-own-slug" && /models: claude-haiku-4-5; extra slugs \(not in the model list\): my-own-slug\./.test(banner(d).text), "(U11) the box is ticked, #extra-models holds my-own-slug, the banner names it as extra", banner(d).text);
     ok(d.getElementById("pairs").textContent === "1 project(s) × 2 model(s) = 2 pair(s)", "(U11) the pair line counts the extra slug (Start reads it)", d.getElementById("pairs").textContent);
     p.win.close();
-    // The 4096 limit on the page's own query string; a long link that is otherwise fine.
+    // The 16384 limit on the page's own query string; a long link (1,500 slugs, about 16,500 characters) refused on the length first.
     store = base(); c = recorder(true);
-    p = await open("?tab=1&v=1&projects=p-one-1&models=" + "claude-x-1,".repeat(380) + "claude-y-1", store, c); await tick(); d = p.document;
-    ok(c.calls.length === 0 && /longer than 4096 characters/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "a link over 4096 characters in the query string is refused (by the parser's own cap, ?tab=1& not counted)", err(d).text);
+    p = await open("?tab=1&v=1&projects=p-one-1&models=" + "claude-x-1,".repeat(1500) + "claude-y-1", store, c); await tick(); d = p.document;
+    ok(c.calls.length === 0 && /longer than 16384 characters/.test(err(d).text) && d.getElementById("projects").value === "old-proj-1", "a link over 16384 characters in the query string is refused (by the parser's own cap, ?tab=1& not counted)", err(d).text);
     p.win.close();
     // A link while the popup tab shows an active run is dropped (D4): no confirm, nothing filled.
     store = Object.assign(base(), { running: true, run: { runId: "r-act", live: false }, queue: [{ projectId: "proj-run", modelSlug: "claude-haiku-4-5", status: "running" }], current: { jobIndex: 0, phase: "model" } }); c = recorder(true);

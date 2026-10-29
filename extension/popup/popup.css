@@ -85,6 +85,7 @@ td.msg { color: var(--mgc-muted); word-break: break-word; }
 tr.done td.st { color: var(--mgc-ok); font-weight: 600; }
 tr.dry-run td.st { color: var(--mgc-info); font-weight: 600; }
 tr.skipped td.st { color: var(--mgc-muted); }
+tr.skipped-by-you td.st { color: var(--mgc-muted); font-style: italic; }
 tr.failed td.st { color: var(--mgc-warn); font-weight: 600; }
 tr.stopped td.st { color: var(--mgc-accent-dark); }
 tr.unverified td.st { color: var(--mgc-accent-dark); font-weight: 600; }

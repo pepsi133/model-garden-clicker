@@ -1,6 +1,8 @@
 # Scoping 03: open the popup from a link, with the project and the models filled in
 
 > **Decision note.** Form B dropped in 0.9.0 (owner decision 2026-10-13): did not work in the owner's test; not pursued. Only form A ships: `chrome-extension://fmfhgpbcpacoddjpfemghhpinhodcglp/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest` (the Chrome Web Store id; an unpacked copy has another id). The content-script fragment reader and its watcher, the worker's `MSG.DEEP_LINK` handler, `KEYS.PENDING_LINK`, the 2-second window, the 10-minute expiry, the refusal-log window and the parser's `mgc` key and `;` separator are removed. A console page with `#mgc=` in its URL is now left alone (`main-loop.cjs` M6; `worker-harness.mjs` section 31). The form B analysis below is kept as history and marked **[dropped]**.
+>
+> **Decision note (2026-10-29).** The project cap was raised from 23 to 200 and the raw-length cap from 4,096 to 16,384 characters; the settings import gained a separate 8,192-character cap for the joined project and model lists (`MGC.CONFIG_LIST_MAX`), so the count cap still fires before the length caps. The model cap stays 13. The numbers below are the 0.9.0 history.
 
 Date: 2026-10-13. Repository state: branch `claude/trusting-feynman-a7kvdo`, after the "latest" link (scoping 01, Phase 0).
 Status: reviewed on 2026-10-13 (the section below). The feature is built on branch `claude/deep-links`, smaller than the scoping proposed. The sections after the review are the historical scoping and keep the proposals the review removed.

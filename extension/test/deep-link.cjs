@@ -5,7 +5,7 @@
  * case: the query-string syntax ("&" between pairs; ";" and the old
  * "mgc=v1" fragment spelling are refused), every refusal of decision D2 (missing or wrong version, unknown,
  * repeated or prototype-named keys, the note key, invalid ids and slugs,
- * repeated ids, the 23 / 13 / 4096 limits), the percent-encoding rules
+ * repeated ids, the 200 / 13 / 16384 limits), the percent-encoding rules
  * (split before decode, a bad sequence, an encoded separator, double
  * encoding), whitespace, upper case, "latest" and the extra-slugs split
  * over the packaged models.json. The popup, worker and content-script
@@ -32,7 +32,7 @@ const accepted = (raw, label, known) => {
 
 console.log("--- constants: the limits; the console-link key and message are gone");
 ok(!("PENDING_LINK" in K.KEYS) && !("DEEP_LINK" in K.MSG) && !Object.values(K.KEYS).includes("pending_link") && !Object.values(K.MSG).includes("mgc:deep-link"), "no KEYS.PENDING_LINK and no MSG.DEEP_LINK (the console-link path was dropped in 0.9.0)");
-ok(K.DEEP_LINK.VERSION === "1" && K.DEEP_LINK.MAX_RAW === 4096 && K.DEEP_LINK.MAX_PROJECTS === 23 && K.DEEP_LINK.MAX_MODELS === 13 && K.DEEP_LINK.CONFIRM_ROWS === 24 && K.DEEP_LINK.CONFIRM_COLS === 80 && Object.keys(K.DEEP_LINK).sort().join() === "CONFIRM_COLS,CONFIRM_ROWS,MAX_MODELS,MAX_PROJECTS,MAX_RAW,VERSION", "DEEP_LINK limits: version 1, 4096 characters, 23 projects, 13 models, a confirm of 24 rows x 80 columns, and nothing else", JSON.stringify(K.DEEP_LINK));
+ok(K.DEEP_LINK.VERSION === "1" && K.DEEP_LINK.MAX_RAW === 16384 && K.DEEP_LINK.MAX_PROJECTS === 200 && K.DEEP_LINK.MAX_MODELS === 13 && K.DEEP_LINK.CONFIRM_ROWS === 24 && K.DEEP_LINK.CONFIRM_COLS === 80 && Object.keys(K.DEEP_LINK).sort().join() === "CONFIRM_COLS,CONFIRM_ROWS,MAX_MODELS,MAX_PROJECTS,MAX_RAW,VERSION", "DEEP_LINK limits: version 1, 16384 characters, 200 projects, 13 models, a confirm of 24 rows x 80 columns, and nothing else", JSON.stringify(K.DEEP_LINK));
 ok(typeof K.parseDeepLink === "function", "MGC.parseDeepLink is a function");
 
 console.log("--- (P1) the ok case fills every field; a missing or wrong version, an unknown, note or repeated key refuse naming the key");
@@ -111,53 +111,66 @@ console.log("--- (P3) only & separates pairs; ; and the mgc key are refused; %3B
   ok(e.projects[0] === "p-one-1", "P3 control: the encoded key still parses");
 }
 
-console.log("--- (P4) 23 projects and 13 models pass, 24 and 14 refuse");
+console.log("--- (P4) 200 projects and 13 models pass, 201 and 14 refuse");
 {
   const ids = (n) => Array.from({ length: n }, (_, i) => `p-link-${String(i).padStart(3, "0")}`);
   const slugs = (n) => Array.from({ length: n }, (_, i) => `claude-link-${i}`);
-  let r = accepted(`v=1&projects=${ids(23).join(",")}`, "P4 23 projects");
-  ok(r.projects.length === 23 && r.projects[22] === "p-link-022", "P4 the count in the result is 23", r.projects.length);
-  refused(`v=1&projects=${ids(24).join(",")}`, /names 24 projects; at most 23 are accepted/, "P4 24 projects");
+  let r = accepted(`v=1&projects=${ids(200).join(",")}`, "P4 200 projects");
+  ok(r.projects.length === 200 && r.projects[199] === "p-link-199", "P4 the count in the result is 200", r.projects.length);
+  refused(`v=1&projects=${ids(201).join(",")}`, /names 201 projects; at most 200 are accepted/, "P4 201 projects");
+  const maxIds = Array.from({ length: 200 }, (_, i) => `p-link-${String(i).padStart(3, "0")}-abcdefghijklmnopqrstuvwxyz`.slice(0, 30));
+  r = accepted(`v=1&projects=${maxIds.join(",")}`, "P4 200 ids of 30 characters (the maximum id length)");
+  ok(maxIds.every((id) => id.length === 30) && r.projects.length === 200, "P4 200 ids of 30 characters all come back (their joined list is under the 8192-character list cap)", r.projects.length);
   r = accepted(`v=1&projects=p-one-1&models=${slugs(13).join(",")}`, "P4 13 models");
   ok(r.models.length === 13 && r.models[12] === "claude-link-12", "P4 the count in the result is 13", r.models.length);
   refused(`v=1&projects=p-one-1&models=${slugs(14).join(",")}`, /names 14 models; at most 13 are accepted/, "P4 14 models");
-  // The settings import's 2000-character cap on the joined list can no longer
-  // be reached through the project list within the 23-id count cap (23 ids of
-  // 30 characters join to 712 characters), nor through the 13-slug model list
-  // (13 slugs of 100 characters join to ~1324): the count cap always fires
-  // first. 24 long ids are refused on the count, not on the length.
-  const long = Array.from({ length: 24 }, (_, i) => `p-link-${String(i).padStart(3, "0")}-abcdefghijklmnop`);
-  refused(`v=1&projects=${long.join(",")}`, /names 24 projects; at most 23 are accepted/, "P4 the count cap fires before the shared 2000-character cap (24 long ids)");
+  // The settings import's 8192-character list cap (CONFIG_LIST_MAX) on the
+  // joined list cannot be reached through the project list within the
+  // 200-id count cap (200 ids of 30 characters join to 6199 characters), nor
+  // through the 13-slug model list (13 slugs of 100 characters join to
+  // ~1324): the count cap always fires first. 201 long ids are refused on
+  // the count, not on the length.
+  const long = Array.from({ length: 201 }, (_, i) => `p-link-${String(i).padStart(3, "0")}-abcdefghijklmnop`);
+  refused(`v=1&projects=${long.join(",")}`, /names 201 projects; at most 200 are accepted/, "P4 the count cap fires before the 8192-character list cap (201 long ids)");
 }
 
-console.log("--- (P5) 4096 characters pass, 4097 refuse before any other check");
+console.log("--- (P5) 16384 characters pass, 16385 refuse before any other check");
 {
-  // The raw limit counts characters before decoding; the shared
-  // 2000-character cap counts the decoded ids (and slugs) joined. With the
-  // 23-project and 13-model count caps a project list alone cannot reach
-  // 4096 characters (23 fully percent-encoded 30-character ids are only
-  // ~2100 characters), so the bulk of a 4096-character link is
-  // percent-encoded model slugs (three characters per letter), as
-  // extension/README.md notes. This fixture is exactly 4096 characters:
-  // 10 fully-encoded 30-character ids, 10 fully-encoded 100-character slugs
-  // and one 100-character tuning slug whose first 28 characters are encoded
-  // (156 raw characters). 11 slugs and 10 ids are both within the caps, and
-  // the decoded lists are well under the 2000-character joined cap.
+  // The raw limit counts characters before decoding; the 8192-character
+  // list cap counts the decoded ids (and slugs) joined. Within the
+  // 200-project and 13-model count caps a 16384-character link needs heavy
+  // percent-encoding (three characters per letter), as extension/README.md
+  // notes. This fixture is exactly 16384 characters and is built by search:
+  // N fully-encoded 30-character ids (90 raw characters each), 12
+  // fully-encoded 100-character slugs (300 each) and one 100-character
+  // tuning slug whose first k characters are encoded, with N in 1..200 and
+  // k in 0..100 picked so the length is exact. N ids and 13 slugs are both
+  // within the caps, and the decoded lists are under the 8192-character
+  // list cap (N ids of 30 characters join to at most 6199).
   const hex = (c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0");
   const encSome = (s, k) => s.split("").map((c, i) => (i < k ? hex(c) : c)).join("");
-  let pn = 0, sn = 0;
-  const mkId = () => ("p-link-" + String(pn++).padStart(3, "0") + "abcdefghijklmnopqrstuvwxyz").slice(0, 30);
-  const mkSlug = () => ("claude-model-" + String(sn++).padStart(2, "0") + "-" + "x".repeat(100)).slice(0, 100);
-  const ids = Array.from({ length: 10 }, () => encSome(mkId(), 30));
-  const slugs = Array.from({ length: 10 }, () => encSome(mkSlug(), 100));
-  slugs.push(encSome(mkSlug(), 28));
-  const raw = `v=1&projects=${ids.join(",")}&models=${slugs.join(",")}`;
-  ok(raw.length === 4096 && ids.length <= K.DEEP_LINK.MAX_PROJECTS && slugs.length <= K.DEEP_LINK.MAX_MODELS, `P5 fixture: the raw text is exactly 4096 characters with ${ids.length} ids and ${slugs.length} slugs, both within the caps`, raw.length);
+  const mkId = (i) => ("p-link-" + String(i).padStart(3, "0") + "abcdefghijklmnopqrstuvwxyz").slice(0, 30);
+  const mkSlug = (i) => ("claude-model-" + String(i).padStart(2, "0") + "-" + "x".repeat(100)).slice(0, 100);
+  const allIds = Array.from({ length: 200 }, (_, i) => encSome(mkId(i), 30));
+  const fullSlugs = Array.from({ length: 12 }, (_, i) => encSome(mkSlug(i), 100));
+  const tuning = Array.from({ length: 101 }, (_, j) => encSome(mkSlug(12), j));
+  const build = (n, j) => {
+    const ids = allIds.slice(0, n), slugs = fullSlugs.concat([tuning[j]]);
+    return { ids, slugs, raw: `v=1&projects=${ids.join(",")}&models=${slugs.join(",")}` };
+  };
+  let fx = null, N = 0, k = 0;
+  for (let n = 1; n <= 200 && !fx; n++) {
+    const base = build(n, 0).raw.length - tuning[0].length;
+    for (let j = 0; j <= 100 && !fx; j++) if (base + tuning[j].length === 16384) { fx = build(n, j); N = n; k = j; }
+  }
+  ok(fx !== null, "P5 fixture: a combination of N ids and k encoded tuning characters gives exactly 16384 characters", `N=${N} k=${k}`);
+  const { ids, slugs, raw } = fx || build(1, 0);
+  ok(raw.length === 16384 && ids.length <= K.DEEP_LINK.MAX_PROJECTS && slugs.length <= K.DEEP_LINK.MAX_MODELS, `P5 fixture: the raw text is exactly 16384 characters with ${ids.length} ids and ${slugs.length} slugs (k=${k}), both within the caps`, raw.length);
   const r = parse(raw);
-  ok(r.ok === true && r.projects.length === ids.length && r.projects.every((id) => K.isValidProjectId(id)) && r.models.length === slugs.length && r.models.every((s) => K.isValidModelSlug(s)), "P5 a 4096-character link that is otherwise valid passes (every id and slug decoded and valid)", JSON.stringify(r.error));
-  refused(raw + "x", /longer than 4096 characters/, "P5 4097 characters");
-  refused("\u0000".repeat(4097), /longer than 4096 characters/, "P5 4097 NULs refuse on the length, before any other check");
-  refused("x".repeat(5000), /longer than 4096 characters/, "P5 5000 characters with no key: the length check comes first");
+  ok(r.ok === true && r.projects.length === ids.length && r.projects.every((id) => K.isValidProjectId(id)) && r.models.length === slugs.length && r.models.every((s) => K.isValidModelSlug(s)), "P5 a 16384-character link that is otherwise valid passes (every id and slug decoded and valid)", JSON.stringify(r.error));
+  refused(raw + "x", /longer than 16384 characters/, "P5 16385 characters");
+  refused("\u0000".repeat(16385), /longer than 16384 characters/, "P5 16385 NULs refuse on the length, before any other check");
+  refused("x".repeat(20000), /longer than 16384 characters/, "P5 20000 characters with no key: the length check comes first");
 }
 
 console.log("--- (P6) __proto__, constructor and hasOwnProperty are unknown keys; no prototype pollution");
@@ -248,13 +261,13 @@ console.log("--- (finding 4) MGC.linkConfirmText fits the rows Chromium's dialog
   const SENTENCE = "Nothing starts until you press Start";
   const text = (projects, ticked, extra, latest) => K.linkConfirmText({ ok: true, error: null, projects, models: ticked, latest: !!latest, dropped: extra }, { ticked, extra });
   const cases = [
-    ["23 ids x 13 slugs (30 and 100 characters, the maxima)", ids(23, 30), slugs(13, 100), []],
-    ["23 ids x 6 slugs + 7 extra slugs, all 100 characters", ids(23, 30), slugs(6, 100), slugs(7, 100).map((s) => `extra-${s}`.slice(0, 100))],
-    ["23 ids x 13 extra slugs (nothing ticked)", ids(23, 30), [], slugs(13, 100)],
+    ["200 ids x 13 slugs (30 and 100 characters, the maxima)", ids(200, 30), slugs(13, 100), []],
+    ["200 ids x 6 slugs + 7 extra slugs, all 100 characters", ids(200, 30), slugs(6, 100), slugs(7, 100).map((s) => `extra-${s}`.slice(0, 100))],
+    ["200 ids x 13 extra slugs (nothing ticked)", ids(200, 30), [], slugs(13, 100)],
     ["1 id x 13 slugs", ids(1, 30), slugs(13, 40), []],
-    ["23 short ids x 1 slug", ids(23, 6), slugs(1, 20), []],
-    ['23 ids x "latest" resolved to 4 slugs', ids(23, 30), slugs(4, 40), [], true],
-    ["23 ids x no models", ids(23, 30), [], []]
+    ["200 short ids x 1 slug", ids(200, 6), slugs(1, 20), []],
+    ['200 ids x "latest" resolved to 4 slugs', ids(200, 30), slugs(4, 40), [], true],
+    ["200 ids x no models", ids(200, 30), [], []]
   ];
   for (const [label, projects, ticked, extra, latest] of cases) {
     const t = text(projects, ticked, extra, latest);
@@ -266,7 +279,7 @@ console.log("--- (finding 4) MGC.linkConfirmText fits the rows Chromium's dialog
     ok(t.includes(`with ${projects.length} project(s) and ${latest ? `"latest" (${ticked.length} model(s) on this machine)` : ticked.length + extra.length ? `${ticked.length + extra.length} model(s)` : "no models"}.`), `${label}: the first line carries the project count and the model count`, t.split("\n")[0]);
     ok(t.split("\n").every((l) => l.length <= COLS - 1 || /^OK replaces/.test(l) || (!l.includes(", ") && !l.includes(": ") && l.length <= 100)), `${label}: no line exceeds ${COLS - 1} characters except the fixed sentence and a single slug that is longer by itself, alone on its line`, t.split("\n").filter((l) => l.length > COLS - 1).join(" | "));
     const shownIds = projects.filter((id) => t.includes(id)).length;
-    ok(shownIds === Math.min(projects.length, 16) && (projects.length <= 16 ? !/and \d+ more \(every id/.test(t) : t.includes(`and ${projects.length - 16} more (every id is listed in the banner and the textarea after OK).`)), `${label}: the first ${Math.min(projects.length, 16)} ids are listed${projects.length > 16 ? ` and "and ${projects.length - 16} more"` : ', no "and more" line'}`, t);
+    ok(shownIds === Math.min(projects.length, 16) && (projects.length <= 16 ? !/and \d+ more \(every id/.test(t) : t.includes(`and ${projects.length - 16} more (every id is listed in the banner and textarea after OK).`)), `${label}: the first ${Math.min(projects.length, 16)} ids are listed${projects.length > 16 ? ` and "and ${projects.length - 16} more"` : ', no "and more" line'}`, t);
   }
   // Every slug fits in the two-row budget when there are few: 8 short slugs are all named, the 9th is counted.
   ok(slugs(8, 20).every((s) => text(ids(2, 10), slugs(8, 20), []).includes(s)) && !/and \d+ more model/.test(text(ids(2, 10), slugs(8, 20), [])) && / and 1 more model\(s\) /.test(text(ids(2, 10), slugs(9, 20), [])) && !text(ids(2, 10), slugs(9, 20), []).includes(slugs(9, 20)[8]), 'eight 20-character slugs are all named; a ninth is "and 1 more model(s)" and not named', text(ids(2, 10), slugs(9, 20), []));

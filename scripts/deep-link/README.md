@@ -23,5 +23,5 @@ another id (shown on `chrome://extensions`); pass it with
 `--extension-id <id>` (Python) or `MGC_EXTENSION_ID=<id>` (both).
 
 `--models` (or the second argument) takes a comma list of slugs or
-`latest`. Leave it out to open the popup with no model ticked. At most 23
+`latest`. Leave it out to open the popup with no model ticked. At most 200
 projects and 13 models, the extension's own limits.

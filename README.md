@@ -32,7 +32,7 @@ Leave that tab alone while a run is active. The extension refuses to act on a pa
 
 ### 3. Step-by-step: the panel waits for you
 
-With **Step-by-step confirmation** on, the extension fills a page and then stops. The badge becomes a panel with **Continue** and **Stop**: before Next on the questionnaire, and before Agree in a full run. Press Continue and the extension clicks the button; click the console's own button instead and the extension notices and carries on. The watchdog is paused while the panel waits, so taking your time never fails the job.
+With **Step-by-step confirmation** on, the extension fills a page and then stops. The badge becomes a panel with **Continue**, **Skip** and **Stop**: before Next on the questionnaire, and before Agree in a full run. Press Continue and the extension clicks the button; Skip ends the job without clicking and the run moves on; click the console's own button instead and the extension notices and carries on. The watchdog is paused while the panel waits, so taking your time never fails the job.
 
 ![Step-by-step panel on the filled questionnaire: Continue clicks Next, Stop ends the run](store/screenshots/03-step-by-step-panel.png)
 
@@ -54,6 +54,7 @@ The popup lists one row per job. **Open in a tab** shows the same page in a norm
 | `done` | Full run: Agree clicked and the console's "Successfully purchased" dialog seen. |
 | `unverified` | Full run: Agree clicked (or the console reported a purchase), no confirmation seen. Check that project by hand. Later runs leave the pair out. |
 | `skipped` | The model was already enabled in that project, or an earlier run recorded the pair as done or skipped. |
+| `skipped-by-you` | Step-by-step: you pressed **Skip** on the panel before Next or Agree. Nothing further was clicked, nothing was purchased, and a later run attempts the pair again. |
 | `failed` | The reason is in the message: a rejected field, a page that was not the job's, a timeout, a console error dialog. |
 | `stopped` | You pressed Stop, or the extension was reloaded during the run. |
 
@@ -67,7 +68,7 @@ A link can open the popup in a tab with the project IDs and the models filled in
 chrome-extension://fmfhgpbcpacoddjpfemghhpinhodcglp/popup/popup.html?tab=1&v=1&projects=p-a,p-b&models=latest
 ```
 
-`fmfhgpbcpacoddjpfemghhpinhodcglp` is the Chrome Web Store install's id; an unpacked copy has another id (shown on `chrome://extensions`). The popup tab first asks, in a dialog built from the validated values only: the number and the list of project IDs, the models (`latest` resolved to the concrete slugs on this machine, or "no models ticked"), and that nothing starts until you press **Start**. OK fills the form and shows a "Filled from a link" banner with a **Clear** button; Cancel changes nothing. A link never starts a run and never changes the mode, step-by-step, the include-done box, the questionnaire or the timing. A link with any other key, an invalid id or slug, more than 23 projects, more than 13 models or more than 4,096 characters is refused as a whole, and a link that opens while a run is active is dropped with one error line. Details and limits: [`extension/README.md`](extension/README.md), "Open the popup from a link". The design and its threat model: [`docs/scoping/03-deep-links.md`](docs/scoping/03-deep-links.md). [`scripts/deep-link/`](scripts/deep-link/) holds two small generators (`mgc_link.py`, `mgc-link.sh`) that print such a link for a project list and a model list.
+`fmfhgpbcpacoddjpfemghhpinhodcglp` is the Chrome Web Store install's id; an unpacked copy has another id (shown on `chrome://extensions`). The popup tab first asks, in a dialog built from the validated values only: the number and the list of project IDs, the models (`latest` resolved to the concrete slugs on this machine, or "no models ticked"), and that nothing starts until you press **Start**. OK fills the form and shows a "Filled from a link" banner with a **Clear** button; Cancel changes nothing. A link never starts a run and never changes the mode, step-by-step, the include-done box, the questionnaire or the timing. A link with any other key, an invalid id or slug, more than 200 projects, more than 13 models or more than 16,384 characters is refused as a whole, and a link that opens while a run is active is dropped with one error line. Details and limits: [`extension/README.md`](extension/README.md), "Open the popup from a link". The design and its threat model: [`docs/scoping/03-deep-links.md`](docs/scoping/03-deep-links.md). [`scripts/deep-link/`](scripts/deep-link/) holds two small generators (`mgc_link.py`, `mgc-link.sh`) that print such a link for a project list and a model list.
 
 ![The popup filled from a link: the "Filled from a link" banner with Clear, two project IDs, the latest models ticked, Start not pressed](docs/images/popup-filled-from-link.png)
 

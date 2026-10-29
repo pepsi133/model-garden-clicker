@@ -5,7 +5,7 @@
 # The default extension id is the Chrome Web Store install's; an unpacked
 # copy has another id, which MGC_EXTENSION_ID sets.
 # The link fills the popup's form after a confirmation and never starts a
-# run. The extension validates every value and refuses more than 23
+# run. The extension validates every value and refuses more than 200
 # projects or 13 models; this script checks nothing.
 set -eu
 [ $# -ge 1 ] || { echo "usage: $0 PROJECT[,PROJECT...] [MODELS]" >&2; exit 2; }

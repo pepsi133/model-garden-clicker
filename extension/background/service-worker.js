@@ -542,11 +542,12 @@ async function finishJobUnsafe(jobIndex, status, message, stopAfter) {
   }
   if (current.phase === PHASE.FINISHED) return;
   const queue = o[KEYS.QUEUE] || [];
-  // A failed or stopped result for a job with a possible purchase on record
-  // is unverified (check by hand), never failed; the console's own refusal
-  // stays failed (nothing was bought).
+  // A failed, stopped or skipped-by-you result for a job with a possible
+  // purchase on record is unverified (check by hand), never failed or
+  // skipped (a Skip after a recorded Agree click cannot undo the click);
+  // the console's own refusal stays failed (nothing was bought).
   const text = String(message || "");
-  if ((status === STATUS.FAILED || status === STATUS.STOPPED) && purchaseOnRecord(queue[jobIndex]) && !text.startsWith(REFUSED_PREFIX)) {
+  if ((status === STATUS.FAILED || status === STATUS.STOPPED || status === STATUS.SKIPPED_BY_USER) && purchaseOnRecord(queue[jobIndex]) && !text.startsWith(REFUSED_PREFIX)) {
     message = `${onRecordWords(queue[jobIndex])} but the job then ended ${status}: ${text}; check manually`;
     status = STATUS.UNVERIFIED;
   }

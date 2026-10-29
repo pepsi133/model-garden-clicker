@@ -1,7 +1,10 @@
 /*
  * Step-by-step confirmation (settings.step_by_step):
  *   - awaitConfirmation() turns the badge into a panel with the step's
- *     title, a summary and Continue / Stop buttons (Stop only when asked);
+ *     title, a summary and Continue / Stop buttons (Stop only when asked),
+ *     with Skip between them when skipEndsJob is set (before Next and before
+ *     Agree): any click on Skip ends the job as skipped-by-you, nothing is
+ *     clicked, and the user's own console click in the same instant wins;
  *     the panel takes pointer events, the text block does not;
  *   - a click dispatched by script (event.isTrusted false: element.click(),
  *     dispatchEvent) on Continue is ignored and logged, the wait goes on;
@@ -164,6 +167,32 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     try { await p3; } catch (e) { err = e; }
     ok(err && err.name === "StoppedError" && /no longer the current run/.test(err.message), "a replaced run ends the wait with StoppedError");
 
+    console.log("--- Skip (skipEndsJob) ends the job without clicking; any click counts");
+    const stateK = stateFor();
+    const ctxK = ctxFor(env, stateK);
+    const pK = env.A.awaitConfirmation(ctxK, "next", { summary: "s", userActed: () => false, skipEndsJob: true });
+    await sleep(60);
+    ok(buttonsOf(env).join("/") === "Continue/Skip/Stop", "with skipEndsJob the panel reads Continue / Skip / Stop", buttonsOf(env).join("/"));
+    ok(ctxK.rec.logs.some((m) => m === "confirmation panel shown before Next: Continue / Skip / Stop"), "the panel's buttons were logged with Skip", ctxK.rec.logs.join(" | "));
+    env.document.querySelector('#mgc-panel button[data-action="skip"]').click();
+    const howK = await pK;
+    ok(howK === "skip", "a plain (script) click on Skip resolves \"skip\"", howK);
+    ok(ctxK.rec.stops === 0 && stateK.stopRequested === false, "Skip does not ask the worker to stop", ctxK.rec.stops);
+    ok(env.A.continueAge(RUN_ID, 0, "next") === null && ctxK.rec.updates.length === 0, "Skip records nothing for the guard and nothing on the job", JSON.stringify(ctxK.rec.updates));
+    ok(ctxK.rec.logs.some((m) => m.startsWith("Skip clicked on the panel; the job ends here as skipped-by-you")), "the Skip was logged with the status", ctxK.rec.logs.join(" | "));
+    ok(panelOf(env) === null, "the panel closed after Skip");
+
+    const stateR = stateFor();
+    const ctxR = ctxFor(env, stateR);
+    let actedR = false;
+    const pR = env.A.awaitConfirmation(ctxR, "next", { summary: "s", userActed: () => actedR, skipEndsJob: true });
+    await sleep(60);
+    actedR = true;
+    env.document.querySelector('#mgc-panel button[data-action="skip"]').click();
+    const howR = await pR;
+    ok(howR === "user", "the user's own console click and a Skip in the same instant: the wait resolves \"user\", not \"skip\"", howR);
+    ok(panelOf(env) === null, "the panel closed");
+
     console.log("--- (S2) a console dialog during the wait disables Continue and names the dialog; the Enable APIs dialog is cleared");
     const state4 = stateFor();
     const ctx4 = ctxFor(env, state4);
@@ -282,6 +311,24 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
       "(d) (0.8.0) the consent dialog ends the job at once: failed, naming the dialog's title and text", done && (done.e ? done.e.message : JSON.stringify(done.r)));
     ok(nextClicks === 0 && dialogClicks === 0 && !env.D.q("#consent input").checked && panelOf(env) === null, "(d) Next not clicked, nothing in the dialog clicked or ticked, the panel closed", `next ${nextClicks} dialog ${dialogClicks}`);
     env.win.close();
+
+    // (e) Skip on the panel before Next: the job ends skipped-by-you, Next is not clicked.
+    env = serve();
+    state = stateFor();
+    ctx = qctx(env, state);
+    nextClicks = 0; env.S.questionnaire.nextButton().addEventListener("click", () => { nextClicks += 1; });
+    done = null;
+    const pe = env.A.handleQuestionnaire(ctx).then((r) => { done = { r }; }, (e) => { done = { e }; });
+    await sleep(500);
+    ok(done === null && panelOf(env) !== null && buttonsOf(env).join("/") === "Continue/Skip/Stop", "(e) the panel before Next reads Continue / Skip / Stop", buttonsOf(env).join("/"));
+    env.document.querySelector('#mgc-panel button[data-action="skip"]').click();
+    await pe;
+    ok(done && !done.e && done.r && done.r.status === "skipped-by-you" && done.r.message === "skipped by you before Next: the model was not enabled (Enable opened the questionnaire); the form was filled and left, Next was not clicked",
+      "(e) Skip ends the job as skipped-by-you with the before-Next message", done && (done.e ? done.e.message : JSON.stringify(done.r)));
+    ok(nextClicks === 0, "(e) Next was not clicked", nextClicks);
+    ok(ctx.rec.phases.join() === "questionnaire,awaiting_confirmation(next),questionnaire", "(e) the page's phase was set again after the wait", ctx.rec.phases.join());
+    ok(panelOf(env) === null, "(e) the panel closed");
+    env.win.close();
   }
 
   console.log("--- handleAgreements with step-by-step: dry run (Next job / Stop)");
@@ -388,8 +435,8 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     let out = start(env, stateFor({ live: true }));
     await sleep(300);
     let panel = panelOf(env);
-    ok(out.done === null && panel && /FULL RUN: Continue clicks Agree/.test(panel.querySelector(".mgc-panel-summary").textContent) && buttonsOf(env).join("/") === "Continue/Stop",
-      "full run: the panel waits before Agree with Continue and Stop and names the purchase", panel && panel.textContent);
+    ok(out.done === null && panel && /FULL RUN: Continue clicks Agree/.test(panel.querySelector(".mgc-panel-summary").textContent) && buttonsOf(env).join("/") === "Continue/Skip/Stop",
+      "full run: the panel waits before Agree with Continue, Skip and Stop and names the purchase", panel && panel.textContent);
     ok(out.ctx.rec.phases.join() === "agreements,awaiting_confirmation(agree)", "phase awaiting_confirmation(agree)", out.ctx.rec.phases.join());
     env.document.body.insertAdjacentHTML("beforeend", SUCCESS);
     await out.p;
@@ -445,6 +492,34 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     env.document.body.insertAdjacentHTML("beforeend", SUCCESS);
     await out.p;
     ok(out.done && !out.done.e && out.done.r.status === "done" && /enabled: Agree clicked by you and confirmation observed/.test(out.done.r.message) && clicks() === 1, "then the success dialog: done, worded as the user's click; the extension clicked nothing itself", says(out) + " clicks=" + clicks());
+    env.win.close();
+
+    // Skip on the full-run panel before Agree: the job ends skipped-by-you, Agree is never clicked, nothing recorded.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    out = start(env, stateFor({ live: true }));
+    await sleep(300);
+    ok(out.done === null && /Skip ends this job without clicking Agree \(nothing is purchased\)/.test(panelOf(env).querySelector(".mgc-panel-summary").textContent), "the full-run summary says what Skip does", panelOf(env) && panelOf(env).textContent);
+    env.document.querySelector('#mgc-panel button[data-action="skip"]').click();
+    await out.p;
+    ok(out.done && !out.done.e && out.done.r.status === "skipped-by-you" && out.done.r.message === "skipped by you before Agree: the terms checkbox was ticked and left; Agree was not clicked, nothing was purchased",
+      "Skip before Agree: the job ends skipped-by-you with the before-Agree message", says(out));
+    ok(clicks() === 0 && !recordedClick(out) && !out.ctx.rec.updates.some((u) => u.agreeClickedByUser), "Skip before Agree: no click, neither agreeClicked nor agreeClickedByUser recorded", JSON.stringify(out.ctx.rec.updates));
+    ok(out.ctx.rec.phases.join() === "agreements,awaiting_confirmation(agree),agreements" && panelOf(env) === null, "Skip before Agree: the agreements phase set back, the panel closed", out.ctx.rec.phases.join());
+    env.win.close();
+
+    // The user's own Agree and a Skip in the same instant: the user's click is judged, not the skip.
+    env = serve(RENDERED);
+    clicks = arm(env);
+    out = start(env, stateFor({ live: true }));
+    await sleep(300);
+    trustedClick(agreeNode(env).querySelector("span"));
+    env.document.querySelector('#mgc-panel button[data-action="skip"]').click();
+    await sleep(80);
+    ok(out.done === null && out.ctx.rec.updates.some((u) => u.agreeClickedByUser === true && u.agreeClicked === true), "the user's Agree and a Skip together: the user's click is recorded and its outcome awaited", `${says(out)} ${JSON.stringify(out.ctx.rec.updates)}`);
+    env.document.body.insertAdjacentHTML("beforeend", SUCCESS);
+    await out.p;
+    ok(out.done && !out.done.e && out.done.r.status === "done" && /enabled: Agree clicked by you and confirmation observed/.test(out.done.r.message) && clicks() === 1, "then the success dialog: done, worded as the user's click (the skip is not taken); one click in all, the user's", says(out) + " clicks=" + clicks());
     env.win.close();
 
     // (S1/N3/L1) keyboard activation is seen through the click the browser fires for Enter or Space on the

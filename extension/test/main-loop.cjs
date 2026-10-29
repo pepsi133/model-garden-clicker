@@ -361,7 +361,7 @@ function boot(opts) {
     await until(() => t.summary() !== null, 2000);
     const badge = t.badge() || "";
     ok(t.summary() !== null && t.badgeVisible(), "the summary panel is in the badge after a finished run (no run active)");
-    ok(/^MG Clicker: run all jobs processed · 14 job\(s\)\ndone 0 · dry-run 1 · skipped 1 · failed 12 · unverified 0 · stopped 0/.test(badge), "the badge text carries the reason, the job count and the six counts", badge);
+    ok(/^MG Clicker: run all jobs processed · 14 job\(s\)\ndone 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · failed 12 · unverified 0 · stopped 0/.test(badge), "the badge text carries the reason, the job count and the seven counts", badge);
     const lines = Array.from(t.env.document.querySelectorAll("#mgc-summary .mgc-summary-line")).map((l) => l.textContent);
     ok(lines.length === 12 && t.env.document.querySelector("#mgc-summary .mgc-summary-more").textContent === "and 2 more", "twelve per-job lines, then \"and 2 more\"", `${lines.length}`);
     ok(lines[0] === "proj-1 · claude-haiku-4-5 · dry-run · dry run: stopped on the Agreements page" && lines[1] === "proj-2 · claude-haiku-4-5 · skipped · skipped: already enabled", "each line: project, model, status, message", lines.slice(0, 2).join(" | "));

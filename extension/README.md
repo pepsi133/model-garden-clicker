@@ -123,15 +123,15 @@ The keys (`&` separates them):
 | Key | Value | Required | Meaning |
 |---|---|---|---|
 | `v` | `1` | yes | The format version. |
-| `projects` | comma list of project IDs | yes | Each must be a valid Cloud project ID exactly as written (lower-case, 6-30 characters), none repeated, at most 23. |
+| `projects` | comma list of project IDs | yes | Each must be a valid Cloud project ID exactly as written (lower-case, 6-30 characters), none repeated, at most 200. |
 | `models` | comma list of model slugs, or `latest`, or absent | no | Slugs exactly as written, none repeated, at most 13. A slug in `models.json` is ticked; any other goes to the extra-slugs field, as the settings import does. `latest` ticks the newest GA model of each line on this machine (the same set as the `latest` link). Absent: nothing is ticked and the banner says so. |
 
-Limits and refusals: a link longer than 4,096 characters, any other key
+Limits and refusals: a link longer than 16,384 characters, any other key
 (there is no note or free-text key), a repeated key, a missing or wrong
-version, an invalid, empty or repeated id or slug, more than 23 projects
+version, an invalid, empty or repeated id or slug, more than 200 projects
 or 13 models, `latest` next to a slug list, a percent-encoding that cannot
-be decoded, or a joined list over the settings import's 2,000-character
-cap refuses the whole link with one reason in the popup's error line.
+be decoded, or a joined list over the settings import's 8,192-character
+list cap refuses the whole link with one reason in the popup's error line.
 Nothing is filled on a refusal. Keys and values are percent-decoded after
 the split, so an encoded `&`, `,` or `=` stays inside its value (and then
 fails the id or slug rule). A key that is not a plain name is not
@@ -144,7 +144,7 @@ to the slugs of this machine, or "no models"), the extra slugs, that OK
 replaces the three inputs and that nothing starts until Start is pressed,
 and then the first 16 project IDs with "and N more". Chromium cuts a long
 dialog message short, so the text is budgeted to 24 rows of 80 columns
-(the worst case of 23 IDs and 13 slugs fits) and the counts, the slugs and
+(the worst case of 200 IDs and 13 slugs fits; the first 16 IDs are listed) and the counts, the slugs and
 the "nothing starts" sentence come first; the banner and the textarea list
 every ID after OK. Cancel leaves the form as it was and discards the link.
 OK fills the textarea, the checklist and the extra-slugs field, saves them
@@ -459,13 +459,18 @@ not use) rather than switching tabs in front of it.
 With **Step-by-step confirmation** ticked in the options page (or the
 popup's header button on **slow mode**), the extension fills each page and
 then waits for you. The badge in the worker tab turns into a panel with a
-summary of the step and two buttons:
+summary of the step and two or three buttons:
 
 - before **Next**, once the questionnaire is filled and valid: **Continue**
-  makes the extension click Next; **Stop** ends the run;
-- before **Agree**, in a full run, once the terms checkbox is ticked:
-  **Continue** makes the extension click Agree (the purchase); **Stop** ends
+  makes the extension click Next; **Skip** ends the job as `skipped-by-you`
+  without clicking Next, and the run moves to the next job; **Stop** ends
   the run;
+- before **Agree**, in a full run, once the terms checkbox is ticked:
+  **Continue** makes the extension click Agree (the purchase); **Skip** ends
+  the job as `skipped-by-you` without clicking Agree (nothing is purchased),
+  and the run moves to the next job; **Stop** ends the run. A later run
+  attempts a `skipped-by-you` pair again, unlike `skipped` (already
+  enabled);
 - in a dry run there is no Agree to confirm: once the terms checkbox is
   ticked the panel shows the dry-run message with **Next job** and **Stop**.
   The job ends `dry-run` on either; **Next job** lets the run go on, **Stop**
@@ -479,7 +484,8 @@ Only a click or keyboard activation that the browser marks as trusted
 button, or an automation driver) counts on **Continue** and **Next job**;
 clicks dispatched by page script are ignored and logged. **Stop** takes
 any click: a script-dispatched Stop can only end the run, which is
-harmless. The Agree guard additionally
+harmless. **Skip** takes any click too, because it clicks nothing: a
+script-dispatched Skip can only end the job. The Agree guard additionally
 requires that such a Continue was recorded for this job's Agree step within
 the last five minutes.
 
@@ -587,7 +593,8 @@ mode and the per-run include box are never in it. Import fills the options
 page from such a file, or from a timing-only JSON like the Advanced field
 takes. Empty, null or missing values leave the current ones. Unknown keys
 are ignored and named in a notice. An invalid value, or a text over 2,000
-characters, refuses the whole file and the message names the key. A ticked
+characters, refuses the whole file and the message names the key; so does
+a project or model list over 8,192 characters joined. A ticked
 model that is not in the model list moves to the extra slugs, and the
 notice names it. Click **Save** to keep what was imported; Save also writes
 the project IDs and models to the popup (reopen the popup if it is open).

@@ -33,7 +33,7 @@ with the public GitHub URL before pasting. Package version: 0.9.0
     2. Click the toolbar icon. Paste project IDs, one per line, and tick the models, or click "latest" to tick the newest model of each line. Every project and model pair becomes one job. A deep link fills in the project IDs and models after a confirmation; it never starts a run or changes a setting (https://github.com/pepsi133/model-garden-clicker#deep-links).
     3. Click Start. One console tab opens and the jobs run in order. A dark badge in the corner of that tab shows the job, the current step with its timeout, and what comes next.
     4. For each job the extension opens the model page, clicks Enable, fills the questionnaire with your saved values, clicks Next and ticks the terms checkbox on the Agreements page.
-    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (already enabled, or done or skipped in an earlier run), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page keeps every run's full log, in this browser only, and saves it as a text file on request.
+    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (already enabled, or done or skipped in an earlier run), skipped-by-you (you pressed Skip on the step-by-step panel), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page keeps every run's full log, in this browser only, and saves it as a text file on request.
 
     MODES
 

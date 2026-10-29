@@ -8,7 +8,7 @@ of a browser that has the extension. It fills the popup's form after a
 confirmation and never starts a run. The default extension id is the
 Chrome Web Store install's; an unpacked copy has another id, which
 --extension-id (or MGC_EXTENSION_ID) sets. The extension refuses a link
-with more than 23 projects or 13 models, so this script stops there too.
+with more than 200 projects or 13 models, so this script stops there too.
 It does no other validation: the extension validates every value.
 """
 import argparse
@@ -16,7 +16,7 @@ import os
 import sys
 
 STORE_ID = "fmfhgpbcpacoddjpfemghhpinhodcglp"
-MAX_PROJECTS, MAX_MODELS = 23, 13
+MAX_PROJECTS, MAX_MODELS = 200, 13
 
 
 def main():

@@ -183,7 +183,7 @@
 
   /** What the handler of `page` does next, for the badge's "then:" line. */
   function planFor(page, live, stepByStep) {
-    const ask = stepByStep ? "wait for your Continue, " : "";
+    const ask = stepByStep ? "wait for your Continue or Skip, " : "";
     switch (page) {
       case PAGE.MODEL: return "click Enable, then the questionnaire";
       case PAGE.QUESTIONNAIRE: return `fill the form, ${ask}click Next, then the Agreements page`;

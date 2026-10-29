@@ -72,6 +72,7 @@
     UNVERIFIED: "unverified",       // live mode: Agree clicked, no confirmation observed in time
     DRY_RUN: "dry-run",             // dry run: stopped on the Agreements page before Agree
     SKIPPED: "skipped",             // model already enabled for this project
+    SKIPPED_BY_USER: "skipped-by-you", // step-by-step: you pressed Skip on the panel; nothing further was clicked and the run went on; a later run attempts the pair again (only "skipped" = already enabled is left out)
     FAILED: "failed",
     STOPPED: "stopped"
   };
@@ -107,7 +108,7 @@
   /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
   MGC.SUMMARY_MAX_LINES = 12;
   MGC.SUMMARY_MESSAGE_CHARS = 80;
-  MGC.SUMMARY_STATUSES = ["done", "dry-run", "skipped", "failed", "unverified", "stopped"];
+  MGC.SUMMARY_STATUSES = ["done", "dry-run", "skipped", "skipped-by-you", "failed", "unverified", "stopped"];
 
   /** True when `summary` (KEYS.SUMMARY_ACK) is the unacknowledged summary of `run`. */
   MGC.summaryPending = function (summary, run) {
@@ -424,6 +425,7 @@
   MGC.CONFIG_APP = "model-garden-clicker";
   MGC.CONFIG_SCHEMA = 1;
   MGC.CONFIG_TEXT_MAX = 2000;       // the longest text value an import accepts (a longer one is refused, naming the key)
+  MGC.CONFIG_LIST_MAX = 8192; // the longest project or model list (the entries joined) an import or a deep link accepts
   MGC.CONFIG_SETTINGS_KEYS = MGC.SETTINGS_FIELDS.concat(["step_by_step", "inside_joke"]);
   const CONFIG_TOP_KEYS = ["app", "schema", "exported", "settings", "popup", "timing", "runs_keep"];
   const NEVER_IMPORTED = ["live_mode", "dry_run", "include_done", "includeDone"];
@@ -460,7 +462,8 @@
    * holds only what the file sets: { settings: {}, popup: {}, timing: {},
    * runs_keep? }. A missing, null or empty value is left out, so it leaves
    * the current value unchanged; a text value longer than CONFIG_TEXT_MAX
-   * is refused. format is "full" or "timing" (the old,
+   * is refused, and so is a project or model list whose entries, joined,
+   * are longer than CONFIG_LIST_MAX. format is "full" or "timing" (the old,
    * timing-only object).
    */
   MGC.parseConfig = function (obj) {
@@ -471,9 +474,9 @@
     // raises no notice.
     const entries = (o) => Object.entries(o).filter(([, v]) => v !== null && v !== undefined);
     const present = (o, k) => own(o, k) && o[k] !== null && o[k] !== undefined;
-    const tooLong = (path, text) => {
-      if (text.length <= MGC.CONFIG_TEXT_MAX) return false;
-      errors.push(`${path} is longer than ${MGC.CONFIG_TEXT_MAX} characters`);
+    const tooLong = (path, text, max = MGC.CONFIG_TEXT_MAX) => {
+      if (text.length <= max) return false;
+      errors.push(`${path} is longer than ${max} characters`);
       return true;
     };
     const full = CONFIG_TOP_KEYS.some((k) => own(obj, k));
@@ -520,13 +523,13 @@
       else for (const [k, v] of entries(p)) {
         const path = `popup.${k}`;
         if (k === "projects") {
-          // null entries in a list are missing entries, dropped; the cap
-          // applies to the trimmed IDs joined, whether the file gives a list
-          // or one text.
+          // null entries in a list are missing entries, dropped; the list
+          // cap (CONFIG_LIST_MAX) applies to the trimmed IDs joined, whether
+          // the file gives a list or one text.
           const list = typeof v === "string" ? v.split(/\r?\n/) : Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : v;
           if (!Array.isArray(list) || list.some((x) => typeof x !== "string")) { errors.push(`${path} must be a list of project IDs`); continue; }
           const ids = list.map((x) => x.trim()).filter(Boolean);
-          if (tooLong(path, ids.join("\n"))) continue;
+          if (tooLong(path, ids.join("\n"), MGC.CONFIG_LIST_MAX)) continue;
           const bad = ids.find((x) => !MGC.isValidProjectId(x));
           if (bad) { errors.push(`${path} holds an invalid project ID: "${bad.slice(0, 60)}"`); continue; }
           if (ids.length) values.popup.projects = ids;
@@ -535,7 +538,7 @@
           const list = Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : v;
           if (!Array.isArray(list) || list.some((x) => typeof x !== "string")) { errors.push(`${path} must be a list of model slugs`); continue; }
           const slugs = list.map((x) => x.trim()).filter(Boolean);
-          if (tooLong(path, slugs.join(", "))) continue;
+          if (tooLong(path, slugs.join(", "), MGC.CONFIG_LIST_MAX)) continue;
           const bad = slugs.find((x) => !MGC.isValidModelSlug(x));
           if (bad) { errors.push(`${path} holds an invalid model slug: "${bad.slice(0, 60)}"`); continue; }
           if (slugs.length) values.popup.models = slugs;
@@ -598,9 +601,9 @@
    */
   MGC.DEEP_LINK = {
     VERSION: "1",                   // the only format version: v=1
-    MAX_RAW: 4096,                  // a longer link (characters, before decoding) is refused as a whole
-    MAX_PROJECTS: 23,
-    MAX_MODELS: 13,
+    MAX_RAW: 16384,                 // a longer link (characters, before decoding) is refused as a whole
+    MAX_PROJECTS: 200,              // more project ids are refused (200 ids of 30 characters join under CONFIG_LIST_MAX, so this fires first)
+    MAX_MODELS: 13,                 // more model slugs are refused
     CONFIRM_ROWS: 24,               // the confirm() text is budgeted to this many rows ...
     CONFIRM_COLS: 80                // ... of this many columns (Chromium elides a longer dialog message)
   };
@@ -622,8 +625,8 @@
    * slug that fails isValidProjectId / isValidModelSlug exactly as written
    * (no trimming, no case folding), a repeated id or slug, more than
    * MAX_PROJECTS ids or MAX_MODELS slugs, "latest" next to a slug list, and
-   * whatever parseConfig refuses for the same lists (its length cap
-   * included). `known` (optional) is the model list the popup renders
+   * whatever parseConfig refuses for the same lists (its list length cap,
+   * CONFIG_LIST_MAX, included). `known` (optional) is the model list the popup renders
    * (entries or slugs): a slug not in it goes to `dropped` (the extra-slugs
    * field) instead of `models`; without `known` every slug stays in
    * `models`. "models=latest" gives latest true and an empty models list;
@@ -776,7 +779,7 @@
     lines.push("OK replaces the project IDs, the model selection and the extra slugs with these. Nothing starts until you press Start. The mode, step-by-step and the other settings are not changed.");
     const ids = MGC.packList("Project IDs:", projects, 16, 8);
     lines.push(...ids.lines);
-    if (ids.shown < projects.length) lines.push(`  ... and ${projects.length - ids.shown} more (every id is listed in the banner and the textarea after OK).`);
+    if (ids.shown < projects.length) lines.push(`  ... and ${projects.length - ids.shown} more (every id is listed in the banner and textarea after OK).`);
     return lines.join("\n");
   };
 

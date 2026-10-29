@@ -1086,5 +1086,39 @@ try {
 } finally {
   globalThis.fetch = realFetch;
 }
+
+// 33. Step-by-step Skip: a "skipped-by-you" result ends the job and the run advances (no stop); it is counted in the
+// summary; after a recorded Agree click it becomes unverified; the cross-run guard attempts a pair whose newest outcome
+// is skipped-by-you again (only "skipped" = already enabled is left out).
+fakeIDB.reset(); store.queue = []; store.run = null;
+r = await msg(START(["skip-one", "skip-two"], ["claude-haiku-4-5"], false, true)); await settle();
+const t33 = store.tab_id; const R33 = runId();
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R33, jobIndex: 0, status: "skipped-by-you", message: "skipped by you before Next" }, t33); await settle();
+assert(r.ok === true && store.queue[0].status === "skipped-by-you" && store.current && store.current.jobIndex === 1 && store.running === true && store.stop_requested === false, "33 a skipped-by-you result is accepted, the job carries it, the run advances to job 1 without a stop request: " + JSON.stringify(r));
+assert(K.summaryCountsText(K.runSummary(store.queue).counts) === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 1 · failed 0 · unverified 0 · stopped 0 · pending 1", "33 the summary counts skipped-by-you on its own: " + K.summaryCountsText(K.runSummary(store.queue).counts));
+r = await msg({ type: K.MSG.JOB_UPDATE, runId: R33, jobIndex: 1, fields: { agreeClicked: true } }, t33);
+assert(r.ok === true && store.queue[1].agreeClicked === true, "33 fixture: Agree click recorded on job 1");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R33, jobIndex: 1, status: "skipped-by-you", message: "skipped by you before Agree" }, t33); await settle();
+assert(store.queue[1].status === "unverified" && /Agree was clicked but the job then ended skipped-by-you/.test(store.queue[1].message), "33 a skipped-by-you result after a recorded Agree click is unverified: " + store.queue[1].message);
+assert(store.running === false && store.run.reason === "all jobs processed", "33 the run ended after its last job: " + store.run.reason);
+fakeIDB.reset(); store.queue = []; store.run = null;
+const S33 = Date.UTC(2026, 9, 8, 15, 0, 0);
+await RL.create({ runId: "g33-old", startedAt: S33 - 5000, live: false }, [], false);
+await RL.update("g33-old", { finishedAt: S33 - 4000, reason: "all jobs processed", results: [
+  { projectId: "old-skip", modelSlug: "claude-haiku-4-5", status: "skipped", message: "skipped: already enabled" },
+  { projectId: "old-user", modelSlug: "claude-haiku-4-5", status: "skipped-by-you", message: "skipped by you before Next" }
+] });
+await RL.create({ runId: "g33-new", startedAt: S33, live: false }, [], false);
+await RL.update("g33-new", { finishedAt: S33 + 1000, reason: "all jobs processed", results: [
+  { projectId: "old-skip", modelSlug: "claude-haiku-4-5", status: "skipped-by-you", message: "skipped by you before Agree" },
+  { projectId: "old-user", modelSlug: "claude-haiku-4-5", status: "skipped", message: "skipped: already enabled" }
+] });
+r = await msg(START(["old-skip", "old-user"], ["claude-haiku-4-5"], false, false)); await settle();
+const q33 = Object.fromEntries(store.queue.map((j) => [j.projectId, j]));
+assert(r.ok === true && (q33["old-skip"].status === "pending" || q33["old-skip"].status === "running"), "33 skipped (already enabled) in an older run, skipped-by-you in the newest: attempted again: " + q33["old-skip"].status);
+assert(q33["old-user"].status === "skipped" && q33["old-user"].leftOut === "skipped", "33 skipped-by-you in an older run, skipped (already enabled) in the newest: left out as skipped: " + JSON.stringify(q33["old-user"]));
+r = await msg({ type: K.MSG.STOP }); await settle();
+assert(store.running === false, "33 fixture: the run was stopped");
+fakeIDB.reset(); store.queue = []; store.run = null;
 finished = true;
 console.log(`ALL WORKER CHECKS PASSED (${n} passed, 0 failed, 0 skipped)`);

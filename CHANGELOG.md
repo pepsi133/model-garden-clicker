@@ -6,6 +6,26 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- A Skip button in the step-by-step panel. The panel before Next and
+  before Agree now offers Continue / Skip / Stop. Skip ends the job as
+  `skipped-by-you` without clicking anything, and the run moves to the next
+  job. A later run attempts the pair again, unlike `skipped`. The dry-run
+  panel keeps Next job / Stop. The new status shows in the results table,
+  the counts, the run log and the Runs page. A result with a purchase on
+  record that ends skipped-by-you is `unverified`.
+- The scoping document `docs/scoping/04-check-only-inventory.md`: a
+  check-only run that records which models are enabled. The Skip button is
+  its MVP.
+
+### Changed
+- Deep links accept up to 200 projects (was 23) and 16,384 characters (was
+  4,096). The model cap stays 13.
+- The settings import has a separate 8,192-character cap for the joined
+  project and model lists (`MGC.CONFIG_LIST_MAX`). The 2,000-character cap
+  stays for every other text.
+- `scripts/deep-link/` follows the new limits.
+
 [Unreleased]: https://github.com/pepsi133/model-garden-clicker/compare/v0.9.0...HEAD
 
 ## [0.9.0] - 2026-10-13

@@ -3,7 +3,8 @@
  *
  * One database ("mgc-runs"), two object stores:
  *   "runs"  keyed by runId, one record per run:
- *     { runId, startedAt, finishedAt, live, stepByStep, reason,
+ *     { runId, startedAt, finishedAt, live, checkOnly, stepByStep, reason,
+ *       (checkOnly: the run's "Check only" box; absent in a record older than 1.0.0, read as false)
  *       jobs:      [{ projectId, modelSlug, modelName }],   the job list at Start
  *       results:   [{ projectId, modelSlug, modelName, status, message, startedAt, finishedAt, productId, agreeClicked, agreeClickedByUser }],
  *       lineCount, byteCount }                               log counters only, no lines
@@ -227,7 +228,7 @@
   L.create = function (run, queue, stepByStep) {
     const jobs = (Array.isArray(queue) ? queue : []).map((j) => ({ projectId: j.projectId, modelSlug: j.modelSlug, modelName: j.modelName || null }));
     const record = {
-      runId: run.runId, startedAt: run.startedAt, finishedAt: null, live: run.live === true, stepByStep: stepByStep === true, reason: null,
+      runId: run.runId, startedAt: run.startedAt, finishedAt: null, live: run.live === true, checkOnly: run.checkOnly === true, stepByStep: stepByStep === true, reason: null,
       jobs, results: (Array.isArray(queue) ? queue : []).map(L.resultOf), lineCount: 0, byteCount: 0
     };
     return L.withTx([L.STORE, L.LINES], "readwrite", async (tx) => {
@@ -405,7 +406,7 @@
       `run id:        ${r.runId || ""}`,
       `started:       ${iso(r.startedAt)}`,
       `ended:         ${r.finishedAt ? iso(r.finishedAt) : "(not ended)"}`,
-      `mode:          ${r.live === true ? "FULL RUN" : "DRY RUN"}`,
+      `mode:          ${r.live === true ? "FULL RUN" : "DRY RUN"}${r.checkOnly === true ? " · check only" : ""}`,
       `step-by-step:  ${r.stepByStep === true ? "on" : "off"}`,
       `reason:        ${r.reason || "(none recorded)"}`,
       `jobs:          ${jobs.length} (${K.summaryCountsText(counts)})`,

@@ -22,7 +22,7 @@
     TAB_ID: "tab_id",               // id of the worker tab used for the run
     LOG: "log",                     // array of { t, level, src, msg }, capped
     POPUP_STATE: "popup_state",     // last popup inputs: { projects (text), models (ticked slugs), extra (text), version (the manifest version that saved them) }
-    RUN: "run",                     // { runId, live, startedAt, finishedAt, reason }: the run's identity and mode snapshot
+    RUN: "run",                     // { runId, live, checkOnly, startedAt, finishedAt, reason }: the run's identity and mode snapshot (checkOnly: the popup's per-run "Check only" box; true only in a dry run)
     TIMING: "timing",               // advanced timing settings (options page "Advanced"); absent = constants below
     SUMMARY_ACK: "summary_ack",     // { runId, tabId, reason, ack }: written when a run ends; the end-of-run summary shows until ack is true (OK) or the next Start clears it
     RUNS_KEEP: "runs_keep",         // integer: how many per-run logs (common/runlog.js, IndexedDB) to keep; absent = RUNS_KEEP_DEFAULT
@@ -73,6 +73,7 @@
     DRY_RUN: "dry-run",             // dry run: stopped on the Agreements page before Agree
     SKIPPED: "skipped",             // model already enabled for this project
     SKIPPED_BY_USER: "skipped-by-you", // step-by-step: you pressed Skip on the panel; nothing further was clicked and the run went on; a later run attempts the pair again (only "skipped" = already enabled is left out)
+    NOT_ENABLED: "not-enabled",     // check-only run: the Enable button is offered, or the "Enable APIs" dialog shows; nothing was clicked; a later run attempts the pair again
     FAILED: "failed",
     STOPPED: "stopped"
   };
@@ -89,7 +90,7 @@
    * message about a job carries the runId it belongs to; the worker ignores
    * messages from a run that is no longer the current one. */
   MGC.MSG = {
-    START: "mgc:start",             // popup -> worker  { projects: [], models: [], live: bool } (the mode the popup showed)
+    START: "mgc:start",             // popup -> worker  { projects: [], models: [], live: bool, includeDone: bool, checkOnly: bool } (live: the mode the popup showed; checkOnly: read the enabled state, click nothing; refused with live)
     STOP: "mgc:stop",               // popup -> worker
     WHOAMI: "mgc:whoami",           // content -> worker: is this the run's worker tab?
     SET_PHASE: "mgc:set-phase",     // content -> worker  { runId, jobIndex, phase, awaiting? } (awaiting: the step, with phase awaiting_confirmation)
@@ -108,7 +109,7 @@
   /* The end-of-run summary: at most this many per-job lines, then "and N more"; messages cut to this length. */
   MGC.SUMMARY_MAX_LINES = 12;
   MGC.SUMMARY_MESSAGE_CHARS = 80;
-  MGC.SUMMARY_STATUSES = ["done", "dry-run", "skipped", "skipped-by-you", "failed", "unverified", "stopped"];
+  MGC.SUMMARY_STATUSES = ["done", "dry-run", "skipped", "skipped-by-you", "not-enabled", "failed", "unverified", "stopped"];
 
   /** True when `summary` (KEYS.SUMMARY_ACK) is the unacknowledged summary of `run`. */
   MGC.summaryPending = function (summary, run) {

@@ -374,9 +374,11 @@ async function guardPreviewUnsafe({ projects, models }, fromTab) {
  * Start a run. `live` is the mode the popup showed and, in live mode, had
  * confirmed. It must equal the stored setting at this instant: the run's
  * snapshot is the confirmed mode, never a value the options page wrote in
- * between.
+ * between. `checkOnly` (the popup's per-run "Check only" box) is accepted
+ * in a dry run only: the content script then reads each model page's
+ * enabled state and clicks nothing (skipped or not-enabled).
  */
-async function startRunUnsafe({ projects, models, live, includeDone }) {
+async function startRunUnsafe({ projects, models, live, includeDone, checkOnly }) {
   const o = await get([KEYS.RUNNING, KEYS.SETTINGS, KEYS.QUEUE, KEYS.RUN]);
   if (o[KEYS.RUNNING] === true) return { ok: false, error: "a run is already in progress" };
 
@@ -387,6 +389,8 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
   if (live !== (settings.live_mode === true)) {
     return { ok: false, error: "live mode changed while starting; look at the popup's mode banner and start again" };
   }
+  // One meaning per run: a check-only run clicks nothing, a full run clicks Agree.
+  if (checkOnly === true && live !== false) return { ok: false, error: "check only cannot be combined with FULL RUN" };
 
   const projectIds = uniqueTrimmed(projects);
   const modelSlugs = uniqueTrimmed(models).map((m) => m.toLowerCase()); // the model page compares the URL slug case-sensitively
@@ -416,7 +420,7 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
   const guard = await applyCrossRunGuardUnsafe(queue, { includeDone: includeDone === true, live, prevQueue: o[KEYS.QUEUE], prevRun: o[KEYS.RUN] });
   if (guard.refused) return { ok: false, error: guard.refused };
 
-  const run = { runId: newRunId(), live, startedAt: Date.now(), finishedAt: null, reason: null };
+  const run = { runId: newRunId(), live, checkOnly: checkOnly === true, startedAt: Date.now(), finishedAt: null, reason: null };
   await set({
     [KEYS.QUEUE]: queue,
     [KEYS.RUNNING]: true,
@@ -436,7 +440,7 @@ async function startRunUnsafe({ projects, models, live, includeDone }) {
   // Prune to "runs to keep", but never delete this run's own record, whatever
   // a backwards clock did to the stored start times.
   await runlogSafe(run.runId, "prune old run records", () => RL.prune(keepStored[KEYS.RUNS_KEEP], run.runId));
-  await appendLogUnsafe("info", `run ${run.runId} started: ${projectIds.length} project(s) x ${modelSlugs.length} model(s) = ${queue.length} job(s), mode ${live ? "FULL RUN" : "DRY RUN"}${settings.step_by_step === true ? ", step-by-step confirmation on" : ""}`);
+  await appendLogUnsafe("info", `run ${run.runId} started: ${projectIds.length} project(s) x ${modelSlugs.length} model(s) = ${queue.length} job(s), mode ${live ? "FULL RUN" : "DRY RUN"}${run.checkOnly ? ", check only" : ""}${settings.step_by_step === true ? ", step-by-step confirmation on" : ""}`);
   // The guard's notes (guard off, records unreadable, malformed entries) are
   // logged now, with the record in place, so the Runs page carries them too.
   for (const [level, note] of guard.notes) await appendLogUnsafe(level, note);

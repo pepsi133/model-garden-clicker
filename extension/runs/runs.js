@@ -91,6 +91,7 @@
     });
     cell(tr, "mode", (td) => {
       span(td, rec.live === true ? "live" : "dry", rec.live === true ? "FULL RUN" : "DRY RUN");
+      if (rec.checkOnly === true) span(td, "sbs", " · check only");
       if (rec.stepByStep === true) span(td, "sbs", " · step-by-step");
     });
     cell(tr, "jobs", (td) => { td.textContent = String((rec.jobs || []).length); });

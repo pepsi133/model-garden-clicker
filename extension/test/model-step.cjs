@@ -17,7 +17,11 @@
  *     (the consent control of run E's model page) fails at once with the
  *     manual-step message; a disabled Enable alone, a checked box or a box
  *     inside a dialog only waits; run F's radio-card model page (enabled
- *     Enable, no checkbox) is clicked as usual.
+ *     Enable, no checkbox) is clicked as usual;
+ *   - (T3/T4) check only (ctx.checkOnly): an offered Enable ends not-enabled
+ *     with no click, the enabled state ends skipped "(check only)", a visible
+ *     "Enable APIs" dialog ends not-enabled with none of its buttons pressed
+ *     and no close wait; each with a control without checkOnly.
  */
 "use strict";
 const E = require("./lib/env.cjs");
@@ -260,6 +264,65 @@ function armEnable(env) {
     try { await env.A.handleModelPage(ctxFor(env)); } catch (e) { err = e; }
     ok(order.join(", ") === "dialog Enable, model Enable", "dialog Enable first, then the model Enable, no extra wait", order.join(", "));
     ok(err && env.D.isFatal(err), "then the missing page change is a clean failure", err && err.message);
+    env.win.close();
+  }
+
+  console.log("--- (T3/T4) check only (ctx.checkOnly): the detection runs, then the job ends without a click");
+  {
+    const ENABLED_BTN = page().replace(' aria-disabled="true" class="mat-mdc-button-disabled"', "");
+    const STUDIO = '<!doctype html><html><head></head><body><vai-model-garden-call-to-action-button-stack><vertex-ai-open-generation-ai-studio-button><a> Open in Agent Studio </a></vertex-ai-open-generation-ai-studio-button></vai-model-garden-call-to-action-button-stack></body></html>';
+    const DIALOG = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><apis-enabler><h1 matdialogtitle> Enable APIs </h1><div matdialogactions><button> Cancel </button><button> Enable </button></div></apis-enabler></mat-dialog-container></div>';
+    const setup = (html) => {
+      const env = E.makeEnv({ html, url: MODEL_URL });
+      env.K.TIMEOUTS.NAV = 100; env.K.TIMEOUTS.MODEL_READY = 2000; env.K.TIMEOUTS.API_DIALOG_CLOSE = 5000; env.K.URL_POLL_MS = 20;
+      return env;
+    };
+    // (T3) an enabled Enable button: not-enabled, zero clicks.
+    let env = setup(ENABLED_BTN);
+    let clicks = armEnable(env);
+    let mayAct = 0;
+    let ctx = ctxFor(env, { checkOnly: true, assertMayAct: async () => { mayAct += 1; } });
+    let err = null, result = null;
+    try { result = await env.A.handleModelPage(ctx); } catch (e) { err = e; }
+    ok(!err && result && result.status === "not-enabled" && result.message === "not enabled: the Enable button is offered; nothing was clicked (check only)" && clicks() === 0 && mayAct === 0 && ctx.steps.length === 0,
+      "(T3) check only, an enabled Enable button: not-enabled, the button never clicked (no assertMayAct, no click step)", err ? err.message : `${JSON.stringify(result)} clicks=${clicks()}`);
+    ok(ctx.phases.join() === "model", "(T3) the phase is set to model as usual", ctx.phases.join());
+    env.win.close();
+    // (T3 control) the same page without checkOnly: Enable clicked once.
+    env = setup(ENABLED_BTN);
+    clicks = armEnable(env);
+    err = null; result = null;
+    try { result = await env.A.handleModelPage(ctxFor(env)); } catch (e) { err = e; }
+    ok(clicks() === 1 && err && env.D.isFatal(err) && /Enable was clicked but/.test(err.message), "(T3 control) the same page without checkOnly: Enable clicked once", `${clicks()} ${err && err.message.slice(0, 60)}`);
+    env.win.close();
+    // (T3) the enabled state: skipped "(check only)" after the usual confirm window.
+    env = setup(STUDIO);
+    const t0 = Date.now();
+    result = await env.A.handleModelPage(ctxFor(env, { checkOnly: true }));
+    const ms = Date.now() - t0;
+    ok(result && result.status === "skipped" && result.message === "skipped: already enabled (check only)" && ms >= env.K.enabledConfirmMs(), `(T3) check only, the enabled state: skipped "(check only)" once it held for ${env.K.enabledConfirmMs()} ms (${ms} ms)`, JSON.stringify(result));
+    env.win.close();
+    // (T4) the "Enable APIs" dialog visible: not-enabled naming the dialog, zero clicks on its buttons and on the model Enable, no close wait.
+    env = setup(ENABLED_BTN.replace("</body>", DIALOG + "</body>"));
+    const pressed = [];
+    env.S.model.enableButton().addEventListener("click", () => pressed.push("model Enable"));
+    for (const b of env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => pressed.push("dialog " + env.D.text(b)));
+    const t1 = Date.now();
+    err = null; result = null;
+    try { result = await env.A.handleModelPage(ctxFor(env, { checkOnly: true })); } catch (e) { err = e; }
+    const ms1 = Date.now() - t1;
+    ok(!err && result && result.status === "not-enabled" && result.message === 'not enabled: the console asks to enable the Agent Platform API first ("Enable APIs" dialog); nothing was clicked (check only)' && pressed.length === 0,
+      "(T4) check only, the \"Enable APIs\" dialog: not-enabled naming the dialog, no button pressed (the dialog's Enable included)", err ? err.message : `${JSON.stringify(result)} pressed=${pressed.join(",")}`);
+    ok(ms1 < 1000 && !!env.S.dialogs.findApiEnableDialog(), `(T4) no clearBlockingDialog wait (${ms1} ms, close budget 5 s); the dialog is still there`, ms1);
+    env.win.close();
+    // (T4 control) the same page without checkOnly: the dialog's Enable is clicked, then the model Enable.
+    env = setup(ENABLED_BTN.replace("</body>", DIALOG + "</body>"));
+    const order = [];
+    env.S.model.enableButton().addEventListener("click", () => order.push("model Enable"));
+    for (const b of env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { order.push("dialog " + env.D.text(b)); env.D.q(".cdk-overlay-container").remove(); });
+    err = null;
+    try { await env.A.handleModelPage(ctxFor(env)); } catch (e) { err = e; }
+    ok(order.join(", ") === "dialog Enable, model Enable", "(T4 control) without checkOnly: the dialog's Enable, then the model Enable", order.join(", "));
     env.win.close();
   }
 

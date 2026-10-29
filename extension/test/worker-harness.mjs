@@ -1095,7 +1095,7 @@ r = await msg(START(["skip-one", "skip-two"], ["claude-haiku-4-5"], false, true)
 const t33 = store.tab_id; const R33 = runId();
 r = await msg({ type: K.MSG.JOB_RESULT, runId: R33, jobIndex: 0, status: "skipped-by-you", message: "skipped by you before Next" }, t33); await settle();
 assert(r.ok === true && store.queue[0].status === "skipped-by-you" && store.current && store.current.jobIndex === 1 && store.running === true && store.stop_requested === false, "33 a skipped-by-you result is accepted, the job carries it, the run advances to job 1 without a stop request: " + JSON.stringify(r));
-assert(K.summaryCountsText(K.runSummary(store.queue).counts) === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 1 · failed 0 · unverified 0 · stopped 0 · pending 1", "33 the summary counts skipped-by-you on its own: " + K.summaryCountsText(K.runSummary(store.queue).counts));
+assert(K.summaryCountsText(K.runSummary(store.queue).counts) === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 1 · not-enabled 0 · failed 0 · unverified 0 · stopped 0 · pending 1", "33 the summary counts skipped-by-you on its own: " + K.summaryCountsText(K.runSummary(store.queue).counts));
 r = await msg({ type: K.MSG.JOB_UPDATE, runId: R33, jobIndex: 1, fields: { agreeClicked: true } }, t33);
 assert(r.ok === true && store.queue[1].agreeClicked === true, "33 fixture: Agree click recorded on job 1");
 r = await msg({ type: K.MSG.JOB_RESULT, runId: R33, jobIndex: 1, status: "skipped-by-you", message: "skipped by you before Agree" }, t33); await settle();
@@ -1119,6 +1119,52 @@ assert(r.ok === true && (q33["old-skip"].status === "pending" || q33["old-skip"]
 assert(q33["old-user"].status === "skipped" && q33["old-user"].leftOut === "skipped", "33 skipped-by-you in an older run, skipped (already enabled) in the newest: left out as skipped: " + JSON.stringify(q33["old-user"]));
 r = await msg({ type: K.MSG.STOP }); await settle();
 assert(store.running === false, "33 fixture: the run was stopped");
+fakeIDB.reset(); store.queue = []; store.run = null;
+
+// 34. Check-only run (docs/scoping/04): START with checkOnly in a dry run stores run.checkOnly (snapshot and record)
+// and says so in the start line; a not-enabled result is accepted and counted; FULL RUN refuses the box and writes
+// nothing; a Start without the field stores false; the cross-run guard leaves out a check-only "skipped" pair and
+// attempts a "not-enabled" pair again (a done pair stays left out).
+const CHECK = (projects, models, live, includeDone) => Object.assign(START(projects, models, live, includeDone), { checkOnly: true });
+r = await msg(CHECK(["chk-one", "chk-two"], ["claude-haiku-4-5"], false, true)); await settle();
+const R34 = runId(); const t34 = store.tab_id;
+assert(r.ok === true && store.run.checkOnly === true && store.run.live === false, "34 (T1) START with checkOnly true in a dry run is accepted and stores run.checkOnly === true: " + JSON.stringify(store.run));
+assert(store.log.some((l) => l.msg.startsWith(`run ${R34} started: `) && /mode DRY RUN, check only/.test(l.msg)), "34 (T1) the run-started line says \"check only\": " + (store.log.find((l) => l.msg.startsWith(`run ${R34} started`)) || {}).msg);
+assert(records().some((x) => x.runId === R34 && x.checkOnly === true), "34 (T1) the run record carries checkOnly true (the Runs page shows \"· check only\")");
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R34, jobIndex: 0, status: "not-enabled", message: "not enabled: the Enable button is offered; nothing was clicked (check only)" }, t34); await settle();
+assert(r.ok === true && store.queue[0].status === "not-enabled" && store.current && store.current.jobIndex === 1 && store.running === true, "34 a not-enabled result is accepted, the job carries it and the run advances: " + JSON.stringify(r));
+assert(K.summaryCountsText(K.runSummary(store.queue).counts) === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 0 · not-enabled 1 · failed 0 · unverified 0 · stopped 0 · pending 1", "34 the summary counts not-enabled on its own: " + K.summaryCountsText(K.runSummary(store.queue).counts));
+r = await msg({ type: K.MSG.JOB_RESULT, runId: R34, jobIndex: 1, status: "skipped", message: "skipped: already enabled (check only)" }, t34); await settle();
+assert(store.running === false && store.run.reason === "all jobs processed" && store.run.checkOnly === true, "34 the check-only run ended after its last job and the snapshot keeps checkOnly: " + JSON.stringify(store.run));
+const before34 = JSON.stringify({ run: store.run, queue: store.queue, running: store.running, current: store.current, tab: store.tab_id });
+const recs34 = records().length; const tabs34 = tabs.size; const logs34 = store.log.length;
+store.settings.live_mode = true;
+r = await msg(CHECK(["chk-three"], ["claude-haiku-4-5"], true, true)); await settle();
+store.settings.live_mode = false;
+assert(r.ok === false && /check only cannot be combined with FULL RUN/.test(r.error), "34 (T2) START with checkOnly true and live true is refused: " + JSON.stringify(r));
+assert(JSON.stringify({ run: store.run, queue: store.queue, running: store.running, current: store.current, tab: store.tab_id }) === before34 && records().length === recs34 && tabs.size === tabs34 && store.log.length === logs34, "34 (T2) the refusal writes nothing: run, queue, records, tabs and log as before");
+r = await msg(START(["chk-four"], ["claude-haiku-4-5"], false, true)); await settle();
+assert(r.ok === true && store.run.checkOnly === false && !/check only/.test((store.log.find((l) => l.msg.startsWith(`run ${runId()} started`)) || {}).msg || "check only"), "34 (T1 control) a Start without the field stores checkOnly === false and its start line does not say check only: " + JSON.stringify(store.run));
+assert(records().some((x) => x.runId === runId() && x.checkOnly === false), "34 (T1 control) its record carries checkOnly false");
+r = await msg({ type: K.MSG.STOP }); await settle();
+fakeIDB.reset(); store.queue = []; store.run = null;
+const S34 = Date.UTC(2026, 9, 8, 16, 0, 0);
+await RL.create({ runId: "g34-check", startedAt: S34, live: false, checkOnly: true }, [], false);
+await RL.update("g34-check", { finishedAt: S34 + 1000, reason: "all jobs processed", results: [
+  { projectId: "chk-skip", modelSlug: "claude-haiku-4-5", status: "skipped", message: "skipped: already enabled (check only)" },
+  { projectId: "chk-not", modelSlug: "claude-haiku-4-5", status: "not-enabled", message: "not enabled: the Enable button is offered; nothing was clicked (check only)" }
+] });
+await RL.create({ runId: "g34-full", startedAt: S34 - 5000, live: true }, [], false);
+await RL.update("g34-full", { finishedAt: S34 - 4000, reason: "all jobs processed", results: [
+  { projectId: "chk-done", modelSlug: "claude-haiku-4-5", status: "done", agreeClicked: true, message: "enabled" }
+] });
+r = await msg(START(["chk-skip", "chk-not", "chk-done"], ["claude-haiku-4-5"], false, false)); await settle();
+const q34 = Object.fromEntries(store.queue.map((j) => [j.projectId, j]));
+assert(r.ok === true && q34["chk-skip"].status === "skipped" && q34["chk-skip"].leftOut === "skipped" && q34["chk-skip"].message === `skipped in run ${RL.stamp(S34)} (already enabled)`, "34 (T8) a pair a check-only run recorded as skipped is left out like any skip: " + q34["chk-skip"].message);
+assert(q34["chk-not"].status === "pending" || q34["chk-not"].status === "running", "34 (T8) a pair whose newest result is not-enabled is attempted again: " + q34["chk-not"].status);
+assert(q34["chk-done"].status === "skipped" && q34["chk-done"].leftOut === "done", "34 (T8 control) a done pair is left out as before: " + q34["chk-done"].message);
+r = await msg({ type: K.MSG.STOP }); await settle();
+assert(store.running === false, "34 fixture: the run was stopped");
 fakeIDB.reset(); store.queue = []; store.run = null;
 finished = true;
 console.log(`ALL WORKER CHECKS PASSED (${n} passed, 0 failed, 0 skipped)`);

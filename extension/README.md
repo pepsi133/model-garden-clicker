@@ -78,6 +78,40 @@ Both buttons write the same settings the options page writes, through the
 same path, and both are refused with a message while a run is active. The
 options page's boxes follow what the popup switched.
 
+### Check only
+
+The popup's **Check only: read whether each model is enabled; click
+nothing** box, under the include-done box, turns one dry run into an
+inventory. It is a per-run choice like the include-done box, not a mode:
+it starts unchecked on every popup open, every Start click spends it, and
+it is never stored as a setting. It travels as `checkOnly` in the Start
+request and sits in the run snapshot (`run.checkOnly`) and the run record.
+
+The worker still opens each model page. The content script runs the usual
+detection (the enabled state must hold for two poll intervals and at least
+500 ms, as in any run) and then ends the job without a click:
+
+| Result | When |
+|---|---|
+| `skipped` | The model is enabled: `skipped: already enabled (check only)`. |
+| `not-enabled` | The Enable button is offered, or the "Enable APIs" dialog shows (the project lacks the Agent Platform API). The message names which. |
+| `failed` | A blocker (a permission error, an extra consent control), a project the console cannot open, or a timeout, as in any run. |
+
+A check-only run never clicks anything: not the model page's Enable, not
+the "Enable APIs" dialog's Enable (the pre-action step that clears that
+dialog is skipped; a project without the API reads `not-enabled` for every
+model), and it never reaches the questionnaire or the Agreements page.
+FULL RUN refuses the box: the popup shows "Check only cannot be combined
+with FULL RUN: switch to DRY RUN or untick the box" and sends nothing, and
+the worker refuses such a Start too. The popup's status line, the
+end-of-run summary and the worker tab's badge read `[DRY RUN · CHECK
+ONLY]`; the Runs page shows `· check only` in the mode cell and the
+downloaded log in its `mode:` line. That download is the inventory.
+
+The cross-run guard treats the results as any other: a `skipped` pair
+(enabled) is left out of later runs, so a later dry or full run does not
+open it again; a `not-enabled` pair is attempted again.
+
 ## The popup and "Open in a tab"
 
 Chrome caps an extension popup at 800 x 600 px and the popup uses all of

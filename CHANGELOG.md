@@ -17,6 +17,19 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - The scoping document `docs/scoping/04-check-only-inventory.md`: a
   check-only run that records which models are enabled. The Skip button is
   its MVP.
+- A "Check only" box in the popup, under the include-done box. It is a
+  per-run choice like include-done: each Start spends it. The worker opens
+  each model page and the extension reads the enabled state, then ends the
+  job without clicking anything: `skipped` (already enabled, "(check
+  only)") or the new status `not-enabled` (the Enable button is offered, or
+  the "Enable APIs" dialog shows). The dialog's Enable is never clicked in
+  such a run. FULL RUN refuses the box, in the popup and in the worker. The
+  popup's status line, the summary and the badge read `[DRY RUN · CHECK
+  ONLY]`; the Runs page and the downloaded log say `check only`. The new
+  status shows in the results table, the counts, the run log and the Runs
+  page. A later run attempts a `not-enabled` pair again; a `skipped` pair
+  stays left out. `docs/scoping/04-check-only-inventory.md` is marked
+  implemented.
 
 ### Changed
 - Deep links accept up to 200 projects (was 23) and 16,384 characters (was

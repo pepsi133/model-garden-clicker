@@ -88,7 +88,8 @@
     const job = `job ${info.jobIndex + 1}/${info.total} · ${info.projectId} · ${info.modelSlug}`;
     const elapsed = info.jobStartedAt ? ` · ${mmss(Date.now() - info.jobStartedAt)}` : "";
     // PAUSED (the popup's Pause): the job in progress finishes, the next waits for Resume.
-    const line1 = `MG Clicker [${info.mode || "?"}]${info.paused ? " PAUSED" : ""} ${job}${elapsed}`;
+    // A check-only run (the run snapshot's checkOnly) names it next to the mode: [DRY RUN · CHECK ONLY].
+    const line1 = `MG Clicker [${info.mode || "?"}${info.checkOnly === true ? " · CHECK ONLY" : ""}]${info.paused ? " PAUSED" : ""} ${job}${elapsed}`;
     const line2 = `step: ${stepLine()}`;
     const next = info.nextJob ? `next job: ${info.nextJob.projectId} · ${info.nextJob.modelSlug}` : "next job: none (last job)";
     const line3 = `then: ${info.plan || "-"} · ${next}`;
@@ -98,7 +99,7 @@
   }
 
   /**
-   * Show the badge for a job. info: { mode ("FULL RUN" | "DRY RUN"), jobIndex,
+   * Show the badge for a job. info: { mode ("FULL RUN" | "DRY RUN"), checkOnly, jobIndex,
    * total, projectId, modelSlug, jobStartedAt, plan (what happens next in
    * this phase), nextJob ({ projectId, modelSlug } | null), note }.
    */

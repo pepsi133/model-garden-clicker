@@ -310,7 +310,7 @@
     if (!pending) return;
     const s = K.runSummary(o[KEYS.QUEUE] || []);
     const add = (cls, textContent) => { const d = document.createElement("div"); d.className = cls; d.textContent = textContent; box.appendChild(d); return d; };
-    add("title", `Run ${run.reason || "finished"}: ${s.total} job(s)`);
+    add("title", `Run ${run.reason || "finished"}: ${s.total} job(s)${run.checkOnly === true ? " [DRY RUN · CHECK ONLY]" : ""}`);
     add("counts", K.summaryCountsText(s.counts));
     for (const l of s.lines) add("line", l.text);
     if (s.more > 0) add("more", `and ${s.more} more`);
@@ -501,6 +501,8 @@
     } else {
       status = "idle";
     }
+    // A check-only run (the run snapshot's checkOnly, a dry run) says so next to its mode.
+    if (running && o[KEYS.RUN] && o[KEYS.RUN].checkOnly === true) status = `[DRY RUN · CHECK ONLY] ${status}`;
     const counts = {};
     for (const j of queue) counts[j.status] = (counts[j.status] || 0) + 1;
     const summary = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(", ");
@@ -550,6 +552,9 @@
     // it, so one tick cannot silently disable the cross-run guard for a
     // later run.
     setIf("include-done", (el) => { el.checked = false; });
+    // The "Check only" box is a per-run choice the same way: unchecked on
+    // every open, spent by every Start click, never stored.
+    setIf("check-only", (el) => { el.checked = false; });
     const models = await loadModels();
     if ($("models")) renderModels(models, freshVersion ? null : (Array.isArray(ps.models) ? ps.models : null));
     // Record the version marker (and the reset selection) so the reset happens
@@ -585,6 +590,9 @@
       // started run): it is never carried into a later Start unnoticed.
       const includeDone = $("include-done") ? $("include-done").checked === true : false;
       setIf("include-done", (el) => { el.checked = false; });
+      // The "Check only" box is read and spent the same way.
+      const checkOnly = $("check-only") ? $("check-only").checked === true : false;
+      setIf("check-only", (el) => { el.checked = false; });
       const projects = projectIds();
       const models = selectedModels();
       // Only the empty lists are refused here, for instant feedback; the
@@ -594,6 +602,8 @@
       if (!models.length) return showError("select at least one model");
       const settings = Object.assign({}, K.DEFAULT_SETTINGS, (await chrome.storage.local.get(KEYS.SETTINGS))[KEYS.SETTINGS] || {});
       const live = settings.live_mode === true;
+      // One meaning per run: check only is a dry run's; the worker refuses the combination too.
+      if (checkOnly && live) return showError("Check only cannot be combined with FULL RUN: switch to DRY RUN or untick the box");
       // Only a full run asks for a confirmation; a dry run starts at once.
       if (live) {
         // The counts of pairs done and skipped in earlier runs come from the
@@ -636,7 +646,7 @@
       setIf("start", (el) => { el.disabled = true; });
       // The mode shown (and, for a full run, confirmed) travels with the
       // request; the worker refuses to start if the setting changed in between.
-      const reply = await send({ type: MSG.START, projects, models, live, includeDone });
+      const reply = await send({ type: MSG.START, projects, models, live, includeDone, checkOnly });
       if (!reply || !reply.ok) { showError((reply && reply.error) || "start failed"); setIf("start", (el) => { el.disabled = false; }); }
       else showLinkBanner(""); // the "Filled from a link" banner ends with the Start it announced
       render();

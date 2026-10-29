@@ -361,7 +361,7 @@ function boot(opts) {
     await until(() => t.summary() !== null, 2000);
     const badge = t.badge() || "";
     ok(t.summary() !== null && t.badgeVisible(), "the summary panel is in the badge after a finished run (no run active)");
-    ok(/^MG Clicker: run all jobs processed · 14 job\(s\)\ndone 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · failed 12 · unverified 0 · stopped 0/.test(badge), "the badge text carries the reason, the job count and the seven counts", badge);
+    ok(/^MG Clicker: run all jobs processed · 14 job\(s\)\ndone 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · not-enabled 0 · failed 12 · unverified 0 · stopped 0/.test(badge), "the badge text carries the reason, the job count and the eight counts", badge);
     const lines = Array.from(t.env.document.querySelectorAll("#mgc-summary .mgc-summary-line")).map((l) => l.textContent);
     ok(lines.length === 12 && t.env.document.querySelector("#mgc-summary .mgc-summary-more").textContent === "and 2 more", "twelve per-job lines, then \"and 2 more\"", `${lines.length}`);
     ok(lines[0] === "proj-1 · claude-haiku-4-5 · dry-run · dry run: stopped on the Agreements page" && lines[1] === "proj-2 · claude-haiku-4-5 · skipped · skipped: already enabled", "each line: project, model, status, message", lines.slice(0, 2).join(" | "));
@@ -754,6 +754,49 @@ function boot(opts) {
     ok(calls === 0 && t.results[0] && t.results[0].status === "unverified" && t.results[0].message === "the console reported a purchase but the tab now shows the model page; no confirmation observed; check manually",
       "(i) purchaseObserved only, then the model page: unverified, worded as an observed purchase (not \"Agree was clicked\")", JSON.stringify(t.results[0]));
     t.stop();
+  }
+
+  console.log("--- (T5) check only: the pre-action step never clears the \"Enable APIs\" dialog; the loop reports not-enabled and clicks nothing");
+  {
+    // run.checkOnly with the dialog on the model page: not-enabled at once, no button pressed, the real model handler never clicks.
+    const t = boot({ html: MODEL_HTML.replace("</body>", API_DIALOG + "</body>"), run: { runId: "r1", live: false, checkOnly: true } });
+    let pressed = 0;
+    for (const b of t.env.D.qa("button")) b.addEventListener("click", () => { pressed += 1; });
+    await until(() => t.results.length > 0, 3000);
+    await sleep(150);
+    const r = t.results[0];
+    ok(r && r.status === "not-enabled" && r.message === 'not enabled: the console asks to enable the Agent Platform API first ("Enable APIs" dialog); nothing was clicked (check only)' && t.results.length === 1 && pressed === 0,
+      "(T5) run.checkOnly and the dialog in the page: not-enabled naming the dialog, no button clicked (the dialog's Enable and the model Enable included)", `${JSON.stringify(t.results)} pressed=${pressed}`);
+    ok(!t.logs.some((m) => /"Enable APIs" dialog: clicked Enable/.test(m)), "(T5) no dialog clearing was logged", t.logs.join(" | "));
+    t.stop();
+  }
+  {
+    // (T5 control) the same page without checkOnly: the dialog's Enable is clicked (the pre-action step clears it) and the handler runs.
+    let calls = 0, enable = 0;
+    const t = boot({ html: MODEL_HTML.replace("</body>", API_DIALOG + "</body>"), handler: async () => { calls += 1; return { status: "dry-run", message: "x" }; } });
+    for (const b of t.env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { if (t.env.D.text(b) === "Enable") { enable += 1; t.env.D.q(".cdk-overlay-container").remove(); } });
+    await until(() => t.results.length > 0, 3000);
+    ok(enable === 1 && calls === 1 && t.results[0].status === "dry-run", "(T5 control) without checkOnly the dialog's Enable is clicked and the handler runs", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+  {
+    // check only, a model page with an offered Enable and no dialog: the real handler reports not-enabled, no click; the badge says CHECK ONLY.
+    const t = boot({ run: { runId: "r1", live: false, checkOnly: true } });
+    let clicks = 0; t.env.S.model.enableButton().addEventListener("click", () => { clicks += 1; });
+    let badgeSeen = "";
+    await until(() => { const b = t.badge() || ""; if (/then: /.test(b)) badgeSeen = badgeSeen || b; return t.results.length > 0; }, 3000);
+    const r = t.results[0];
+    ok(r && r.status === "not-enabled" && r.message === "not enabled: the Enable button is offered; nothing was clicked (check only)" && clicks === 0, "check only, an offered Enable through the loop: not-enabled, Enable never clicked", `${JSON.stringify(r)} clicks=${clicks}`);
+    await until(() => /finished/.test(t.badge() || ""), 1000);
+    ok(/^MG Clicker \[DRY RUN · CHECK ONLY\] job 1\/1/.test(t.badge() || ""), "the badge header reads [DRY RUN · CHECK ONLY]", t.badge());
+    ok(/then: read the enabled state, click nothing \(check only\)/.test(badgeSeen), "the model page's plan reads \"read the enabled state, click nothing (check only)\"", badgeSeen);
+    t.stop();
+    // control: a run without checkOnly reads [DRY RUN] and the usual plan.
+    const c = boot({ handler: async () => { await sleep(100); return { status: "dry-run", message: "x" }; } });
+    let seenC = "";
+    await until(() => { const b = c.badge() || ""; if (/then: /.test(b)) seenC = seenC || b; return c.results.length > 0; }, 3000);
+    ok(/^MG Clicker \[DRY RUN\] job 1\/1/.test(seenC) && /then: click Enable, then the questionnaire/.test(seenC), "control: without checkOnly the badge reads [DRY RUN] and the plan clicks Enable", seenC);
+    c.stop();
   }
 
   console.log("--- (0.8.0) the badge shows PAUSED while the run is paused between jobs");

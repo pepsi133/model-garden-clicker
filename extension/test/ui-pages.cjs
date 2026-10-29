@@ -786,7 +786,7 @@ function setSelect(p, name, value) {
     ok(doc.documentElement.className === "tab", "the summary block test runs in the tab layout (popup.html?tab=1)");
     const box = doc.getElementById("summary");
     ok(box && box.hidden === false && box.closest(".scroll") && box.compareDocumentPosition(doc.getElementById("results")) & 4, "the summary block is visible, at the top of the results region, above the table");
-    ok(/^Run all jobs processed: 14 job\(s\)$/.test(doc.querySelector("#summary .title").textContent) && doc.querySelector("#summary .counts").textContent === "done 0 · dry-run 13 · skipped 0 · skipped-by-you 0 · failed 1 · unverified 0 · stopped 0", "title with the reason and the job count; the seven counts", doc.querySelector("#summary .counts").textContent);
+    ok(/^Run all jobs processed: 14 job\(s\)$/.test(doc.querySelector("#summary .title").textContent) && doc.querySelector("#summary .counts").textContent === "done 0 · dry-run 13 · skipped 0 · skipped-by-you 0 · not-enabled 0 · failed 1 · unverified 0 · stopped 0", "title with the reason and the job count; the eight counts", doc.querySelector("#summary .counts").textContent);
     const lines = Array.from(doc.querySelectorAll("#summary .line")).map((l) => l.textContent);
     ok(lines.length === 12 && doc.querySelector("#summary .more").textContent === "and 2 more", "twelve per-job lines, then \"and 2 more\"", `${lines.length} ${doc.querySelector("#summary .more") && doc.querySelector("#summary .more").textContent}`);
     const cut = lines[0].split(" · ").slice(3).join(" · ");
@@ -1089,8 +1089,8 @@ function setSelect(p, name, value) {
     const a = cells(rows[2]);
     ok(a[0] === `${new Date(RUN_A.startedAt).toLocaleString()}ended ${new Date(RUN_A.finishedAt).toLocaleString()}: all jobs processed`, "started and ended with the reason", a[0]);
     ok(a[1] === "DRY RUN" && cells(rows[1])[1] === "FULL RUN · step-by-step" && rows[1].querySelector("td.mode .live") && !rows[2].querySelector("td.mode .live"), "the mode cell: DRY RUN, or FULL RUN in the warning colour, with the step-by-step mark", cells(rows[1])[1]);
-    ok(a[2] === "2" && a[3] === "done 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 0", "jobs and the seven counts (as the popup's summary counts them)", a[3]);
-    ok(cells(rows[1])[3] === "done 1 · dry-run 0 · skipped 0 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 1" && cells(rows[0])[3] === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 0 · pending 2", "counts of the other runs (a pending count only when some job is pending)", cells(rows[0])[3]);
+    ok(a[2] === "2" && a[3] === "done 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · not-enabled 0 · failed 0 · unverified 0 · stopped 0", "jobs and the eight counts (as the popup's summary counts them)", a[3]);
+    ok(cells(rows[1])[3] === "done 1 · dry-run 0 · skipped 0 · skipped-by-you 0 · not-enabled 0 · failed 0 · unverified 0 · stopped 1" && cells(rows[0])[3] === "done 0 · dry-run 0 · skipped 0 · skipped-by-you 0 · not-enabled 0 · failed 0 · unverified 0 · stopped 0 · pending 2", "counts of the other runs (a pending count only when some job is pending)", cells(rows[0])[3]);
     const recA = await RLNODE.get("run-a");
     const sizeA = RL.sizeOf(recA);
     ok(recA.lineCount === 4 && recA.byteCount > 0 && a[4] === `4 lines · ${RL.sizeText(sizeA)}` && sizeA > 800 && /^\d+(\.\d)? KB$/.test(RL.sizeText(sizeA)), "the log cell: the line count (from the counter) and the size from the counters (schema v2)", `${a[4]} (lineCount ${recA.lineCount}, byteCount ${recA.byteCount}, sizeOf ${sizeA})`);
@@ -1108,7 +1108,7 @@ function setSelect(p, name, value) {
     const expectedA = RLNODE.textOf(recA, await RLNODE.readLines("run-a"));
     ok(blob.type.startsWith("text/plain") && text === expectedA, "the file is text/plain holding MGC_RUNLOG.textOf(record, lines read by the index cursor)", blob.type);
     const lines = text.split("\n");
-    ok(lines[0] === "Model Garden Clicker run log" && lines[1] === "run id:        run-a" && lines[2] === "started:       2026-10-08T10:05:00.000Z" && lines[3] === "ended:         2026-10-08T10:09:30.000Z" && lines[4] === "mode:          DRY RUN" && lines[5] === "step-by-step:  off" && lines[6] === "reason:        all jobs processed" && lines[7] === "jobs:          2 (done 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · failed 0 · unverified 0 · stopped 0)" && lines[8] === "log lines:     4",
+    ok(lines[0] === "Model Garden Clicker run log" && lines[1] === "run id:        run-a" && lines[2] === "started:       2026-10-08T10:05:00.000Z" && lines[3] === "ended:         2026-10-08T10:09:30.000Z" && lines[4] === "mode:          DRY RUN" && lines[5] === "step-by-step:  off" && lines[6] === "reason:        all jobs processed" && lines[7] === "jobs:          2 (done 0 · dry-run 1 · skipped 1 · skipped-by-you 0 · not-enabled 0 · failed 0 · unverified 0 · stopped 0)" && lines[8] === "log lines:     4",
       "the header block: run id, start, end (ISO), mode, step-by-step, reason, jobs with counts, line count", lines.slice(0, 9).join(" | "));
     const tableStart = lines.indexOf("job  project   model             status   started                   ended                     message");
     ok(tableStart === 10 && lines[11] === "1    proj-one  claude-haiku-4-5  dry-run  2026-10-08T10:05:01.000Z  2026-10-08T10:07:00.000Z  dry run: checkbox ticked" && lines[12] === "2    proj-two  claude-haiku-4-5  skipped  2026-10-08T10:07:01.000Z  2026-10-08T10:09:29.000Z  skipped: already enabled", "then the job results as a plain-text table", lines.slice(10, 13).join(" | "));
@@ -1371,6 +1371,84 @@ function setSelect(p, name, value) {
     ok(/invalid project ID: Bad_ID/.test(p.document.getElementById("error").textContent) && box5.checked === false && p.document.getElementById("start").disabled === false, "(P1) a Start refused by the worker (its reply carries the reason) clears the box and re-enables Start", p.document.getElementById("error").textContent);
     p.win.close();
     fakeIDB.reset();
+  }
+
+  console.log("--- (T6/T7) popup: the per-run \"Check only\" box, its refusal with FULL RUN, CHECK ONLY in the status and the summary, not-enabled in the counts");
+  {
+    const slug0 = JSON.parse(fs.readFileSync(path.join(E.EXT, "models.json"), "utf8"))[0].slug;
+    const fill = async (p, projects) => {
+      p.document.getElementById("projects").value = projects;
+      const cb = Array.from(p.document.querySelectorAll("#models input")).find((x) => x.value === slug0);
+      cb.checked = true; cb.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    };
+    // (T6) the box exists next to include-done, unticked by default, with a tooltip.
+    const store = { settings: Object.assign({}, FULL) };
+    let p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    const box = p.document.getElementById("check-only");
+    const label = box && box.closest("label");
+    ok(box && box.type === "checkbox" && box.checked === false && label && /^ Check only: read whether each model is enabled; click nothing$/.test(label.textContent) && /click/i.test(label.title || "") && label.previousElementSibling && label.previousElementSibling.contains(p.document.getElementById("include-done")),
+      "(T6) the \"Check only\" box exists under the include-done box, unticked by default, with its label and a tooltip", label && label.textContent);
+    // (T6) ticked: START carries checkOnly true; the box is spent and never stored.
+    box.checked = true; box.dispatchEvent(new p.win.Event("change", { bubbles: true })); await tick();
+    await fill(p, "proj-c");
+    p.document.getElementById("start").click(); await tick();
+    let starts = (store.__messages || []).filter((m) => m.type === p.K.MSG.START);
+    ok(starts.length === 1 && starts[0].checkOnly === true && starts[0].live === false, "(T6) a ticked box travels as checkOnly true in MSG.START", JSON.stringify(starts));
+    ok(box.checked === false && !("checkOnly" in (store.popup_state || {})), "(T6) the Start click spends the box (unticked after) and nothing is stored in popup_state", JSON.stringify(store.popup_state));
+    // (T6 control) unticked: START does not carry checkOnly true; include-done behaves as before.
+    p.document.getElementById("include-done").checked = true;
+    p.document.getElementById("start").click(); await tick();
+    starts = (store.__messages || []).filter((m) => m.type === p.K.MSG.START);
+    ok(starts.length === 2 && starts[1].checkOnly !== true && starts[1].includeDone === true && p.document.getElementById("include-done").checked === false, "(T6 control) an unticked box sends no checkOnly true; the include-done box still travels and is spent", JSON.stringify(starts[1]));
+    p.win.close();
+    // (T6) FULL RUN plus the box: the error line, no MSG.START, no guard preview, no confirm; the box is spent.
+    const storeF = { settings: Object.assign({}, FULL, { live_mode: true }) };
+    p = await loadPage("popup/popup.html", storeF, POPUP_SCRIPTS);
+    const confirmsF = []; p.win.confirm = (m) => { confirmsF.push(m); return true; };
+    await fill(p, "proj-f");
+    p.document.getElementById("check-only").checked = true;
+    p.document.getElementById("start").click(); await tick();
+    const err = p.document.getElementById("error");
+    ok(err.hidden === false && err.textContent === "Check only cannot be combined with FULL RUN: switch to DRY RUN or untick the box" && !(storeF.__messages || []).some((m) => m.type === p.K.MSG.START || m.type === p.K.MSG.GUARD_PREVIEW) && confirmsF.length === 0 && p.document.getElementById("check-only").checked === false,
+      "(T6) MODE: FULL RUN with the box ticked: the error line, nothing sent (no START, no preview), no confirm, the box spent", `${err.textContent} ${JSON.stringify(storeF.__messages || [])}`);
+    // (T6 control) FULL RUN without the box: the confirm and START as before.
+    p.document.getElementById("start").click(); await tick();
+    ok(confirmsF.length === 1 && (storeF.__messages || []).some((m) => m.type === p.K.MSG.START && m.live === true && m.checkOnly !== true), "(T6 control) FULL RUN without the box: the confirm, then START (no checkOnly)", JSON.stringify(storeF.__messages || []));
+    p.win.close();
+    // (T7) a running check-only run: the status line reads CHECK ONLY next to the mode; a not-enabled row has its class.
+    const running = (checkOnly) => ({
+      settings: Object.assign({}, FULL), running: true, run: { runId: "r", live: false, checkOnly },
+      current: { jobIndex: 1, phase: "model" },
+      queue: [{ projectId: "proj-a", modelSlug: "claude-haiku-4-5", status: "not-enabled", message: "not enabled: the Enable button is offered; nothing was clicked (check only)" },
+        { projectId: "proj-b", modelSlug: "claude-haiku-4-5", status: "running", phase: "model", message: "" }]
+    });
+    p = await loadPage("popup/popup.html", running(true), POPUP_SCRIPTS);
+    const status = p.document.getElementById("status").textContent;
+    ok(/^\[DRY RUN · CHECK ONLY\] running job 2\/2: proj-b \/ claude-haiku-4-5 \[model\]/.test(status) && /not-enabled 1/.test(status), "(T7) the status line of a running check-only run reads [DRY RUN · CHECK ONLY] and counts not-enabled", status);
+    const row = p.document.querySelector("#results tbody tr");
+    ok(row && row.className === "not-enabled" && row.querySelector("td.st").textContent === "not-enabled", "(T7) a not-enabled job's row carries the not-enabled class", row && row.outerHTML.slice(0, 120));
+    p.win.close();
+    p = await loadPage("popup/popup.html", running(false), POPUP_SCRIPTS);
+    ok(!/CHECK ONLY/.test(p.document.getElementById("status").textContent), "(T7 control) a run without checkOnly says nothing of it", p.document.getElementById("status").textContent);
+    p.win.close();
+    const css = fs.readFileSync(path.join(E.EXT, "popup/popup.css"), "utf8");
+    ok(/tr\.not-enabled td\.st\s*\{\s*color:\s*var\(--mgc-info\);\s*\}/.test(css), "(T7) popup.css colours the not-enabled status with --mgc-info");
+    // (T7) the end-of-run summary of a check-only run: CHECK ONLY in its title, not-enabled in the eight counts.
+    const fin = (checkOnly) => ({ settings: Object.assign({}, FULL), running: false, run: { runId: "rs", live: false, checkOnly, finishedAt: 1, reason: "all jobs processed" }, summary_ack: { runId: "rs", tabId: 1, reason: "all jobs processed", ack: false },
+      queue: [{ projectId: "proj-a", modelSlug: "claude-haiku-4-5", status: "not-enabled", message: "x" }, { projectId: "proj-b", modelSlug: "claude-haiku-4-5", status: "skipped", message: "skipped: already enabled (check only)" }] });
+    p = await loadPage("popup/popup.html", fin(true), POPUP_SCRIPTS);
+    ok(p.document.querySelector("#summary .title").textContent === "Run all jobs processed: 2 job(s) [DRY RUN · CHECK ONLY]" && p.document.querySelector("#summary .counts").textContent === "done 0 · dry-run 0 · skipped 1 · skipped-by-you 0 · not-enabled 1 · failed 0 · unverified 0 · stopped 0",
+      "(T7) the summary of a check-only run names CHECK ONLY and counts not-enabled among the eight counts", `${p.document.querySelector("#summary .title").textContent} | ${p.document.querySelector("#summary .counts").textContent}`);
+    p.win.close();
+    p = await loadPage("popup/popup.html", fin(false), POPUP_SCRIPTS);
+    ok(p.document.querySelector("#summary .title").textContent === "Run all jobs processed: 2 job(s)", "(T7 control) the summary of a run without checkOnly has no CHECK ONLY", p.document.querySelector("#summary .title").textContent);
+    p.win.close();
+    // The run log's text header names a check-only run in the mode line (the Runs page shows "· check only").
+    const head = RLNODE.textOf({ runId: "x", startedAt: 0, finishedAt: 1, live: false, checkOnly: true, stepByStep: false, reason: "r", jobs: [], results: [], lineCount: 0 }, []).split("\n");
+    const headC = RLNODE.textOf({ runId: "x", startedAt: 0, finishedAt: 1, live: false, stepByStep: false, reason: "r", jobs: [], results: [], lineCount: 0 }, []).split("\n");
+    ok(head[4] === "mode:          DRY RUN · check only" && headC[4] === "mode:          DRY RUN", "the downloaded log's mode line says \"· check only\" for a check-only run, nothing for another (control)", `${head[4]} | ${headC[4]}`);
+    const runsJs = fs.readFileSync(path.join(E.EXT, "runs/runs.js"), "utf8");
+    ok(/rec\.checkOnly === true\) span\(td, "sbs", " · check only"\)/.test(runsJs), "the Runs page's mode cell adds \"· check only\" for a check-only record");
   }
 
   console.log('--- options page: the Logs section ("Runs to keep", Purge all)');

@@ -55,6 +55,7 @@ The popup lists one row per job. **Open in a tab** shows the same page in a norm
 | `unverified` | Full run: Agree clicked (or the console reported a purchase), no confirmation seen. Check that project by hand. Later runs leave the pair out. |
 | `skipped` | The model was already enabled in that project, or an earlier run recorded the pair as done or skipped. |
 | `skipped-by-you` | Step-by-step: you pressed **Skip** on the panel before Next or Agree. Nothing further was clicked, nothing was purchased, and a later run attempts the pair again. |
+| `not-enabled` | Check only: the model page offers the Enable button, or the "Enable APIs" dialog shows. Nothing was clicked, and a later run attempts the pair again. |
 | `failed` | The reason is in the message: a rejected field, a page that was not the job's, a timeout, a console error dialog. |
 | `stopped` | You pressed Stop, or the extension was reloaded during the run. |
 
@@ -115,6 +116,8 @@ click Agree only when
   step-by-step on: you pressed Continue for this step within 5 minutes
   -> one click per job, never a second one
 ```
+
+**Check only** is a per-run box in the popup, for a dry run only. The extension opens each model page, reads whether the model is enabled and clicks nothing, not even the "Enable APIs" dialog's Enable. Each job ends `skipped` (already enabled), `not-enabled` or `failed`, and the Runs page download is the inventory. FULL RUN refuses the box. A `skipped` pair is still left out of later runs.
 
 **Step-by-step confirmation** works in either mode (see step 3 above). The two settings can be switched in the options page or from the popup's header, never while a run is active.
 

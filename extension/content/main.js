@@ -150,6 +150,8 @@
       jobIndex,
       job,
       settings: st.settings,
+      // The run snapshot's "Check only" box: the model handler reads the enabled state and clicks nothing.
+      checkOnly: !!(st.run && st.run.checkOnly === true),
       log: (msg) => log("info", `job ${jobIndex}: ${msg}`),
       mark: (label) => log("info", `job ${jobIndex}: ${label} at +${Date.now() - t0} ms`),
       step: (text) => { B.step(text); mirrorStep(text); },
@@ -182,10 +184,10 @@
   };
 
   /** What the handler of `page` does next, for the badge's "then:" line. */
-  function planFor(page, live, stepByStep) {
+  function planFor(page, live, stepByStep, checkOnly) {
     const ask = stepByStep ? "wait for your Continue or Skip, " : "";
     switch (page) {
-      case PAGE.MODEL: return "click Enable, then the questionnaire";
+      case PAGE.MODEL: return checkOnly ? "read the enabled state, click nothing (check only)" : "click Enable, then the questionnaire";
       case PAGE.QUESTIONNAIRE: return `fill the form, ${ask}click Next, then the Agreements page`;
       case PAGE.AGREEMENTS: return live ? `tick the terms checkbox, ${ask}click Agree, wait for the success dialog` : `tick the terms checkbox, then ${stepByStep ? "wait for your Next job or Stop" : "stop"} (dry run)`;
       default: return "wait for a known console page";
@@ -196,9 +198,10 @@
     const job = st.queue[jobIndex];
     const nextIndex = st.queue.findIndex((j, i) => i > jobIndex && j.status === STATUS.PENDING);
     const nextJob = nextIndex >= 0 ? { projectId: st.queue[nextIndex].projectId, modelSlug: st.queue[nextIndex].modelSlug } : null;
+    const checkOnly = !!(st.run && st.run.checkOnly === true);
     return {
-      mode, jobIndex, total: st.queue.length, projectId: job.projectId, modelSlug: job.modelSlug,
-      jobStartedAt: job.startedAt || null, plan: planFor(page, mode === "FULL RUN", st.settings.step_by_step === true), nextJob, note,
+      mode, checkOnly, jobIndex, total: st.queue.length, projectId: job.projectId, modelSlug: job.modelSlug,
+      jobStartedAt: job.startedAt || null, plan: planFor(page, mode === "FULL RUN", st.settings.step_by_step === true, checkOnly), nextJob, note,
       paused: st.paused === true
     };
   }
@@ -273,8 +276,20 @@
       return;
     }
 
+    // Check only: the "Enable APIs" dialog is never cleared (its Enable
+    // would enable an API in the project). A visible dialog ends the job
+    // not-enabled, on whatever page; nothing is clicked.
+    if (st.run.checkOnly === true) {
+      const apiDialog = S.dialogs.findApiEnableDialog();
+      if (apiDialog && apiDialog.dialog && D.isVisible(apiDialog.dialog)) {
+        await report(runId, jobIndex, STATUS.NOT_ENABLED, A.CHECK_ONLY_DIALOG_MESSAGE);
+        return;
+      }
+    }
+
     // Pre-action step: a blocking "Enable APIs" modal can sit on any page.
-    try {
+    // A check-only run skips it (above): it never clicks the dialog's Enable.
+    if (st.run.checkOnly !== true) try {
       const dialog = await A.clearBlockingDialog(makeCtx(st, jobIndex));
       if (dialog && typeof dialog === "object") {
         await report(runId, jobIndex, STATUS.FAILED, dialog.message);

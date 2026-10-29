@@ -316,6 +316,9 @@
    */
   const apiDialogSeen = new Set(); // "runId|jobIndex"
 
+  /** A check-only run's result for a visible "Enable APIs" dialog (main.js's pre-action step and the model handler). */
+  A.CHECK_ONLY_DIALOG_MESSAGE = 'not enabled: the console asks to enable the Agent Platform API first ("Enable APIs" dialog); nothing was clicked (check only)';
+
   A.clearBlockingDialog = async function (ctx) {
     const found = S.dialogs.findApiEnableDialog();
     if (!found || !found.dialog || !D.isVisible(found.dialog)) return "none";
@@ -375,6 +378,11 @@
    * Before any of that the URL's model slug must be the job's: a document
    * that is still on another model's page (the finished job's, before the
    * worker's navigation lands) is never judged or clicked for this job.
+   *
+   * Check only (ctx.checkOnly, the run snapshot's box, a dry run): the same
+   * detection, then the job ends without a click: the enabled state is
+   * skipped "(check only)", an offered Enable button or a visible "Enable
+   * APIs" dialog is not-enabled. The dialog is never cleared.
    */
   A.handleModelPage = async function (ctx) {
     const urlSlug = S.urlModelSlug();
@@ -416,6 +424,9 @@
         }
         throw err;
       }
+      if (seen.dialog && ctx.checkOnly === true) {
+        return { status: STATUS.NOT_ENABLED, message: A.CHECK_ONLY_DIALOG_MESSAGE };
+      }
       if (seen.dialog) {
         // The dialog opened while this handler was waiting; clear it here
         // instead of waiting for the next tick's pre-action step.
@@ -428,7 +439,11 @@
     if (!found) throw new Error('"Enable APIs" dialog kept the model page busy');
     if (found.enabled) {
       ctx.mark("model page shows the enabled state");
-      return { status: STATUS.SKIPPED, message: "skipped: already enabled" };
+      return { status: STATUS.SKIPPED, message: ctx.checkOnly === true ? "skipped: already enabled (check only)" : "skipped: already enabled" };
+    }
+    if (ctx.checkOnly === true) {
+      ctx.mark("model page offers the Enable button (check only: not clicked)");
+      return { status: STATUS.NOT_ENABLED, message: "not enabled: the Enable button is offered; nothing was clicked (check only)" };
     }
     await ctx.assertMayAct();
     A.assertNoBlocker();

@@ -1,7 +1,7 @@
 # Scoping 04: a check-only run that records which models are enabled in which projects
 
 Date: 2026-10-29. Repository state: branch `claude/sharp-volta-r0t5ep`, after the Skip button and the 200-project limit.
-Status: scoping. The MVP described in "MVP today" ships with the Skip button of the same change. The check-only box is a proposal.
+Status: implemented (1.0.0), as proposed, with the open questions answered: not-enabled, dialog never cleared, no CSV, per-run box.
 
 ## Summary
 

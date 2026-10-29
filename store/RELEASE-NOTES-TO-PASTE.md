@@ -4,6 +4,50 @@ One block per GitHub release. Copy everything between a version heading and the 
 
 ---
 
+## v1.0.0
+
+The first stable release: every feature of the 0.x line plus the items below; the Agree guard is unchanged since 0.7.0.
+
+### Added
+- A Skip button in the step-by-step panel (Continue / Skip / Stop). Skip
+  ends the job as skipped-by-you without clicking anything and the run
+  moves on; a later run attempts the pair again.
+- A "Check only" box in the popup: a dry run that reads whether each model
+  is enabled and clicks nothing. Results are skipped (already enabled) or
+  the new status not-enabled. FULL RUN refuses the box.
+- An "API enablement" section in the options page: a default policy
+  (enable, ask or never) and per-project overrides for the console's
+  "Enable APIs" dialog. With never the job fails at once and names the
+  API; with ask a panel offers Enable the API / Skip / Stop.
+- Run progress in the popup and the badge: a progress line with a thin bar
+  (`3/12 jobs · 25 % · elapsed 03:12 · ~09:30 left`), refreshed every
+  second, an estimate from the jobs finished so far (`estimating…` at
+  first, `paused` while paused), and the total time in the end-of-run
+  summary.
+- Deep links in the GitLab inventory: `mg_inventory.py` writes
+  `deep-links.md` with one link per pending project and chunked links for
+  all of them.
+- `scripts/models/fetch_models.py --write` generates the candidate
+  `models.json`, and a weekly workflow opens a pull request with it. It
+  never merges and never tags.
+
+### Changed
+- The popup header's mode and step-by-step controls are now two slider
+  switches (DRY RUN / FULL RUN, slow / fast mode) with the same
+  confirmation and lock: switching to FULL RUN still asks first, and both
+  are refused (and dimmed) while a run is active.
+- Deep links accept up to 200 projects (was 23) and 16,384 characters (was
+  4,096). The model cap stays 13.
+- The settings import has a separate 8,192-character cap for the joined
+  project and model lists.
+- `scripts/deep-link/` follows the new limits.
+- The implemented scoping documents were removed; `docs/scoping/README.md`
+  indexes them.
+
+[1.0.0]: https://github.com/pepsi133/model-garden-clicker/releases/tag/v1.0.0
+
+---
+
 ## v0.8.0
 
 ### Added

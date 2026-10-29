@@ -1,14 +1,21 @@
 # Chrome Web Store listing: Model Garden Clicker
 
-**Re-paste needed.** The Description below changed for 0.9.0: step 2 names
-the "latest" link and the deep link (the popup-page link only; with a
-pointer to the README's Deep links section), and the `skipped` wording
-is shorter.
-Paste the new Description into the Store listing tab and save the draft.
-(The 0.8.0 change, the cross-run guard in `skipped`, is in it as well.)
+**Re-paste needed.** The Description below changed for 1.0.0: it is trimmed
+from about 4,400 to 3,897 characters (under the 4,000 limit) with every
+feature kept, and it now names the Skip button on the step-by-step panel
+(Continue, Skip and Stop; Skip ends the job as skipped-by-you), the Check
+only box and the not-enabled status, the API-enablement policy
+(enable, ask or never), the popup's mode switch and the progress line with
+the time left. Step 1 no longer says where the values are kept (the
+"What it stores" paragraph does). The paragraphs that changed are the
+opening, the questionnaire paragraph, steps 1 to 5, DRY RUN, FULL RUN,
+step-by-step, the API-enablement paragraph, What it stores, What it needs,
+Limitations and Open source.
+Paste the new Description into the Store listing tab and save the draft,
+then delete this note (`store/STORE-UPDATE-1.0.0.md` has the full checklist).
 
 Every field of the developer dashboard, ready to paste. Replace `https://github.com/pepsi133/model-garden-clicker`
-with the public GitHub URL before pasting. Package version: 0.9.0
+with the public GitHub URL before pasting. Package version: 1.0.0
 (`extension/manifest.json`).
 
 ## Store listing tab
@@ -21,45 +28,45 @@ with the public GitHub URL before pasting. Package version: 0.9.0
 
     Enables Anthropic Claude models in the Google Cloud Model Garden for many projects. Fills the questionnaire with values saved once.
 
-### Description (plain text, 3,986 characters, under the 4,000 limit)
+### Description (plain text, 3,897 characters, under the 4,000 limit)
 
-    Model Garden Clicker enables Anthropic Claude models in the Google Cloud console Model Garden for many projects, one project and one model at a time, inside your own signed-in browser.
+    Model Garden Clicker enables Anthropic Claude models in the Google Cloud console Model Garden for many projects, one project and model at a time, in your own signed-in browser.
 
-    Enabling a Claude model in a project means filling the model enablement questionnaire (business name, website, contact email, headquarters country, industry, intended users, use cases, Acceptable Use Policy answer) and then accepting the Marketplace agreement. There is no API for this flow, and doing it by hand for every project and every model is slow and error-prone.
+    Enabling a Claude model means filling the enablement questionnaire (business name, website, contact email, headquarters country, industry, intended users, use cases, Acceptable Use Policy answer) and accepting the Marketplace agreement. There is no API for this flow; by hand it is slow.
 
     ONE RUN, STEP BY STEP
 
-    1. Open the options page and type the questionnaire values once. Click Save. They stay in this browser's local extension storage.
-    2. Click the toolbar icon. Paste project IDs, one per line, and tick the models, or click "latest" to tick the newest model of each line. Every project and model pair becomes one job. A deep link fills in the project IDs and models after a confirmation; it never starts a run or changes a setting (https://github.com/pepsi133/model-garden-clicker#deep-links).
-    3. Click Start. One console tab opens and the jobs run in order. A dark badge in the corner of that tab shows the job, the current step with its timeout, and what comes next.
+    1. Open the options page, type the questionnaire values once and click Save.
+    2. Click the toolbar icon. Paste project IDs, one per line, and tick models, or click "latest" for the newest model of each line. Each project and model pair is one job. A deep link fills in project IDs and models after a confirmation; it never starts a run or changes a setting (https://github.com/pepsi133/model-garden-clicker#deep-links).
+    3. Click Start. One console tab opens and the jobs run in order; a dark badge in it shows the job, the current step with its timeout, and what is next. The popup shows progress and the time left.
     4. For each job the extension opens the model page, clicks Enable, fills the questionnaire with your saved values, clicks Next and ticks the terms checkbox on the Agreements page.
-    5. What happens then depends on the mode (below). The popup shows one result per job: dry-run, done, unverified, skipped (already enabled, or done or skipped in an earlier run), skipped-by-you (you pressed Skip on the step-by-step panel), not-enabled (check only: Enable offered, nothing clicked), failed (with the reason) or stopped. The popup's log keeps the last 50 lines; the Runs page keeps every run's full log, in this browser only, and saves it as a text file on request.
+    5. The mode (below) decides what happens next. The popup shows one result per job: dry-run, done, unverified, skipped (already enabled, or done or skipped earlier), skipped-by-you (you pressed Skip), not-enabled (check only: Enable offered, nothing clicked), failed (with the reason) or stopped. The Runs page keeps each run's full log in this browser and saves it as a text file.
 
     MODES
 
-    DRY RUN is the default. The job stops on the Agreements page with the checkbox ticked. Agree is never clicked, so nothing is approved, purchased or enabled. Use it to check that the form is filled the way you want. The popup's Check only box makes a dry run read whether each model is enabled and click nothing.
+    DRY RUN is the default. The job stops on the Agreements page with the checkbox ticked. Agree is never clicked, so nothing is approved, purchased or enabled. The popup's Check only box makes a dry run only read whether each model is enabled.
 
-    FULL RUN is a separate setting: untick the DRY RUN box in the options page (or switch the popup's mode banner) and confirm again when you press Start. The extension then clicks Agree once per job. Agree accepts the publisher's terms and makes a Marketplace purchase that bills the project. Agree is clicked only when the page is the Agreements page of the job's own project, product and exact model version and the terms checkbox is verified ticked. The job is done when the console reports "Successfully purchased".
+    FULL RUN is a separate setting: untick DRY RUN in the options page (or the popup's mode switch) and confirm at Start. The extension then clicks Agree once per job, which accepts the publisher's terms and makes a Marketplace purchase that bills the project. Agree is clicked only on the Agreements page of the job's own project, product and exact model version, with the terms checkbox verified ticked. The job is done on "Successfully purchased".
 
-    Step-by-step confirmation works in either mode. The extension fills each page and waits for you: a panel in the console tab offers Continue and Stop before Next, and before Agree in a full run. In a dry run the panel ends with Next job and Stop. If you click the console's own button instead, the extension notices and continues.
+    Step-by-step confirmation works in either mode. The extension waits: a panel in the console tab offers Continue, Skip and Stop before Next, and before Agree in a full run; Skip ends the job as skipped-by-you with nothing clicked. In a dry run the panel ends with Next job and Stop. Clicking the console's own button instead also works.
 
-    An API-enablement policy in the options page, per project if needed, decides what happens with the console's "Enable APIs" dialog: enable it, ask you on a panel, or never (for projects managed by Terraform: the job fails and names the API).
+    An API-enablement policy in the options page, per project if needed, decides what happens with the console's "Enable APIs" dialog: enable, ask you on a panel, or never (for Terraform-managed projects: the job fails naming the API).
 
     WHAT IT STORES
 
-    Everything the extension stores (questionnaire values, the job queue, results and the log) lives in the local extension storage of this browser only. Nothing is synced to an account and nothing is sent to the developer or to any third party. The questionnaire values are typed into Google's own form on the console page, and nowhere else.
+    Everything the extension stores (questionnaire values, job queue, results, logs) stays in this browser's local extension storage. Nothing is synced or sent to anyone. The questionnaire values go into Google's own form on the console page, and nowhere else.
 
     WHAT IT NEEDS
 
-    A Chrome profile that is signed in to the Google Cloud console with a role that can enable models in the projects you list. The extension asks for access to the console site only (https://console.cloud.google.com). It runs no remote code.
+    A Chrome profile signed in to the Google Cloud console with a role that can enable models in your projects. The extension asks for the console site only (https://console.cloud.google.com). It runs no remote code.
 
     LIMITATIONS
 
-    A model page with extra consent controls is not supported yet; the job fails and names the manual step. The console pages change now and then; a selector that no longer matches makes the job fail cleanly instead of guessing.
+    A model page with extra consent controls is not supported yet; the job fails and names the manual step. When the console pages change, a selector that no longer matches fails the job cleanly instead of guessing.
 
     OPEN SOURCE
 
-    Model Garden Clicker is an independent open-source tool released under the Apache License 2.0. It is not affiliated with, endorsed by or supported by Google or Anthropic. Source code, issues and the privacy policy: https://github.com/pepsi133/model-garden-clicker
+    An independent open-source tool under the Apache License 2.0, not affiliated with, endorsed by or supported by Google or Anthropic. Source code, issues and privacy policy: https://github.com/pepsi133/model-garden-clicker
 
 ### Category
 
@@ -187,6 +194,6 @@ re-review cycle. The recommended answer avoids that with a single tick.
     6. On the Agreements page it ticks the terms checkbox and stops. The Agree button is never clicked in a dry run. The popup's results table marks the job "dry-run". If the model is already enabled in the project the job is marked "skipped" instead.
     7. Click Stop in the popup at any time to end a run. Nothing is purchased, approved or enabled in DRY RUN mode.
 
-    To see the full run (optional, bills your project): open Options, untick DRY RUN, Save; the popup banner turns red and Start asks for a confirmation. In a full run the extension clicks Agree once per job and reports "done" when the console's "Successfully purchased" dialog appears.
+    To see the full run (optional, bills your project): open Options, untick DRY RUN, Save; the mode label and the switch track in the popup header turn red and Start asks for a confirmation. In a full run the extension clicks Agree once per job and reports "done" when the console's "Successfully purchased" dialog appears.
 
     Source code: https://github.com/pepsi133/model-garden-clicker

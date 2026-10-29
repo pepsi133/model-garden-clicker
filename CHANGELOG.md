@@ -6,12 +6,18 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+[Unreleased]: https://github.com/pepsi133/model-garden-clicker/compare/v1.0.0...HEAD
+
+## [1.0.0] - 2026-10-29
+
+The first stable release: every feature of the 0.x line plus the items below; the Agree guard is unchanged since 0.7.0.
+
 ### Added
 - Deep links in the GitLab inventory. `ci/gitlab/poc/mg_inventory.py`
   writes `deep-links.md` next to `projects.txt`: one link per pending
   project with its pending models, then chunked links for all pending
   projects, at most 200 projects and 16,384 characters per link, in the
-  format of `docs/scoping/03-deep-links.md`. The extension id comes from
+  format described in `docs/scoping/README.md`. The extension id comes from
   `--extension-id` or `MGC_EXTENSION_ID` (default: the store id). The
   manual `enable:handoff` job prints the file.
 - A Skip button in the step-by-step panel. The panel before Next and
@@ -21,9 +27,6 @@ and the project uses [Semantic Versioning](https://semver.org/).
   panel keeps Next job / Stop. The new status shows in the results table,
   the counts, the run log and the Runs page. A result with a purchase on
   record that ends skipped-by-you is `unverified`.
-- The scoping document `docs/scoping/04-check-only-inventory.md`: a
-  check-only run that records which models are enabled. The Skip button is
-  its MVP.
 - A "Check only" box in the popup, under the include-done box. It is a
   per-run choice like include-done: each Start spends it. The worker opens
   each model page and the extension reads the enabled state, then ends the
@@ -35,8 +38,7 @@ and the project uses [Semantic Versioning](https://semver.org/).
   ONLY]`; the Runs page and the downloaded log say `check only`. The new
   status shows in the results table, the counts, the run log and the Runs
   page. A later run attempts a `not-enabled` pair again; a `skipped` pair
-  stays left out. `docs/scoping/04-check-only-inventory.md` is marked
-  implemented.
+  stays left out.
 - `scripts/models/fetch_models.py --write PATH` writes the candidate
   `models.json`: the API gives the slugs, `launchStage` and `apiOrder`, the
   hand-set fields of the file win, a new slug takes its date from the
@@ -71,6 +73,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
   is not a valid project ID with one of the three policies, naming the
   line; Export and Import carry both keys. A check-only run still clicks
   nothing.
+- Run progress in the popup and the badge. Under the popup's status line a
+  progress line with a thin bar reads `3/12 jobs · 25 % · elapsed 03:12 ·
+  ~09:30 left`, refreshed every second while a run is active; the badge's
+  first line gains `· 25 % · 03:12 · ~09:30 left`. The estimate is the mean
+  duration of the jobs finished so far times the jobs left; jobs the
+  cross-run guard left out count as finished but not in the mean. It reads
+  `estimating…` until the first job has finished and `paused` while
+  paused. The end-of-run summary, in the popup and the badge, gives the
+  total time (`... 14 job(s) in 12:40`). `MGC.runProgress`,
+  `MGC.formatDuration` and `MGC.progressText` are pure helpers with node
+  checks in `extension/test/progress.cjs`.
 
 ### Changed
 - Deep links accept up to 200 projects (was 23) and 16,384 characters (was
@@ -79,8 +92,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   project and model lists (`MGC.CONFIG_LIST_MAX`). The 2,000-character cap
   stays for every other text.
 - `scripts/deep-link/` follows the new limits.
+- The popup header's mode and step-by-step controls are now two slider
+  switches (DRY RUN / FULL RUN, slow / fast mode) with the same
+  confirmation and lock: switching to FULL RUN still asks first, and both
+  are refused with a message (and dimmed) while a run is active.
+- The implemented scoping documents (01 latest models, 03 deep links, 04
+  check-only run) were removed. `docs/scoping/README.md` indexes them with
+  the git commands to read their last text and keeps the deep-link
+  threat-model summary.
 
-[Unreleased]: https://github.com/pepsi133/model-garden-clicker/compare/v0.9.0...HEAD
+[1.0.0]: https://github.com/pepsi133/model-garden-clicker/releases/tag/v1.0.0
 
 ## [0.9.0] - 2026-10-13
 

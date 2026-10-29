@@ -17,6 +17,31 @@ wait, confirm and retry loop of the original idea (the job waiting for the
 user to enable the API, then reloading and retrying). A failed job that
 names the API, and a re-run of the pair once the API is enabled, cover it.
 
+## Recover from a crashed or discarded worker tab (Chrome's Aw, Snap, error code 5)
+
+Parked by the owner on 2026-10-29, for after 1.0.0.
+
+**Problem.** A renderer crash ("Aw, Snap", error code 5) kills the content
+script in the worker tab, so the badge and any step-by-step panel vanish
+with it. The watchdog then ends the job `failed` once the phase budget is
+spent, and during a step-by-step wait the run simply waits until Stop.
+Chrome's Memory Saver can also discard the background worker tab, with the
+same result.
+
+**Intended behaviour.**
+- Create the worker tab with `autoDiscardable: false`.
+- A one-minute liveness ping (an alarm) from the worker to the tab. Two
+  consecutive misses after the job's first minute mean the page died.
+- With a purchase on record the job ends `unverified`. Otherwise the job
+  restarts once from the model page, and the restart is logged. A second
+  death ends the job `failed` with "the page died twice".
+- The alarm is cleared at the end of the run.
+
+**Open points.**
+- Whether to ping during `awaiting_confirmation` (a user may wait there for
+  a long time, and a dead page would otherwise go unnoticed).
+- The miss threshold: two consecutive misses, or another number.
+
 ## Models with extra consent controls on the model page
 
 Models with extra consent controls on the model page (for example Fable 5.1)

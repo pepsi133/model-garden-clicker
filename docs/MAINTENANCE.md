@@ -205,7 +205,7 @@ button while repairing a selector.
 `A.clickAgreeGuarded = async function` to the closing `  };`) on every run,
 and says whether it matches this baseline:
 
-- guard md5 baseline: `cb9355fd64564c8cca121beccd4d42fc` (0.7.0, unchanged in 0.8.0)
+- guard md5 baseline: `cb9355fd64564c8cca121beccd4d42fc` (0.7.0, unchanged in 0.8.0, unchanged in 0.9.0 and 1.0.0)
 
 To compute it by hand:
 

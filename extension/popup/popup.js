@@ -297,6 +297,49 @@
     el.textContent = text || "";
   }
 
+  /** " in 12:40": a finished run's total time (start to end), or "" when either is not on record. */
+  function totalTimeText(run) {
+    return run && typeof run.startedAt === "number" && typeof run.finishedAt === "number" ? ` in ${K.formatDuration(run.finishedAt - run.startedAt)}` : "";
+  }
+
+  /*
+   * The progress line under the status: a thin bar and "N/T jobs · P % ·
+   * elapsed mm:ss · ~mm:ss left" (MGC.runProgress / progressText). Shown
+   * while a run is active and while a finished run's summary is shown;
+   * hidden otherwise. While a run is active a one-second interval
+   * recomputes this line alone from the last rendered state (render()
+   * itself runs on every storage change); the interval is cleared when the
+   * run ends.
+   */
+  let lastProgress = null; // { o, running, paused } of the last render
+  let progressTimer = null;
+
+  function renderProgress() {
+    const box = $("progress");
+    if (!box || !lastProgress) return;
+    const { o, running, paused } = lastProgress;
+    const run = o[KEYS.RUN];
+    const shown = !!run && (running || K.summaryPending(o[KEYS.SUMMARY_ACK], run));
+    box.hidden = !shown;
+    const fill = box.querySelector(".fill");
+    const text = box.querySelector(".text");
+    if (!shown) {
+      if (fill) fill.style.width = "0%";
+      if (text) text.textContent = "";
+      return;
+    }
+    const p = K.runProgress(o[KEYS.QUEUE] || [], run, Date.now(), paused);
+    if (fill) fill.style.width = `${p.percent}%`;
+    if (text) text.textContent = K.progressText(p);
+  }
+
+  function updateProgress(o, running, paused) {
+    lastProgress = { o, running, paused };
+    renderProgress();
+    if (running && !progressTimer) progressTimer = setInterval(renderProgress, 1000);
+    else if (!running && progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  }
+
   /**
    * The end-of-run summary block above the results: shown while the
    * finished run's summary is unacknowledged (the same record the worker
@@ -313,7 +356,7 @@
     if (!pending) return;
     const s = K.runSummary(o[KEYS.QUEUE] || []);
     const add = (cls, textContent) => { const d = document.createElement("div"); d.className = cls; d.textContent = textContent; box.appendChild(d); return d; };
-    add("title", `Run ${run.reason || "finished"}: ${s.total} job(s)${run.checkOnly === true ? " [DRY RUN · CHECK ONLY]" : ""}`);
+    add("title", `Run ${run.reason || "finished"}: ${s.total} job(s)${totalTimeText(run)}${run.checkOnly === true ? " [DRY RUN · CHECK ONLY]" : ""}`);
     add("counts", K.summaryCountsText(s.counts));
     for (const l of s.lines) add("line", l.text);
     if (s.more > 0) add("more", `and ${s.more} more`);
@@ -515,6 +558,7 @@
     const summary = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(", ");
     setIf("status", (el) => { el.textContent = summary ? `${status} | ${summary}` : status; });
     setIf("step", (el) => { el.hidden = !step; el.textContent = step; });
+    updateProgress(o, running, paused);
     renderSummary(o, running);
 
     const results = $("results");

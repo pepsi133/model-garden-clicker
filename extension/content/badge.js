@@ -11,7 +11,7 @@
  * Three lines, re-rendered every second, and at once when a wait starts or
  * ends, from the last info given to B.update() plus the wait in progress
  * (MGC_DOM.currentWait):
- *   MG Clicker [DRY RUN] job 2/4 · <project> · <model> · 00:37
+ *   MG Clicker [DRY RUN] job 2/4 · <project> · <model> · 00:37 · 25 % · 03:12 · ~09:30 left
  *   step: waiting for Enable button ... · 12 s / 60 s
  *   then: click Enable, then the questionnaire · next job: <project> · <model>
  *
@@ -81,6 +81,21 @@
     return info && info.note ? info.note : "idle";
   }
 
+  /**
+   * " · 25 % · 03:12 · ~09:30 left": the run progress the caller computed
+   * (info.progress, MGC.runProgress at info.progressAt). Only the elapsed
+   * time moves on between two updates; the estimate reads "estimating…"
+   * before any job finished, "paused" while paused, nothing once finished.
+   */
+  function progressPart() {
+    const K = globalThis.MGC;
+    const p = info.progress;
+    if (!p || !K) return "";
+    const moved = p.state !== "finished" && typeof info.progressAt === "number" ? Math.max(0, Date.now() - info.progressAt) : 0;
+    const tail = K.progressEstimateText(p);
+    return ` · ${p.percent} % · ${K.formatDuration(p.elapsedMs + moved)}${tail ? ` · ${tail}` : ""}`;
+  }
+
   function render() {
     if (!info) return;
     const node = ensure();
@@ -89,7 +104,7 @@
     const elapsed = info.jobStartedAt ? ` · ${mmss(Date.now() - info.jobStartedAt)}` : "";
     // PAUSED (the popup's Pause): the job in progress finishes, the next waits for Resume.
     // A check-only run (the run snapshot's checkOnly) names it next to the mode: [DRY RUN · CHECK ONLY].
-    const line1 = `MG Clicker [${info.mode || "?"}${info.checkOnly === true ? " · CHECK ONLY" : ""}]${info.paused ? " PAUSED" : ""} ${job}${elapsed}`;
+    const line1 = `MG Clicker [${info.mode || "?"}${info.checkOnly === true ? " · CHECK ONLY" : ""}]${info.paused ? " PAUSED" : ""} ${job}${elapsed}${progressPart()}`;
     const line2 = `step: ${stepLine()}`;
     const next = info.nextJob ? `next job: ${info.nextJob.projectId} · ${info.nextJob.modelSlug}` : "next job: none (last job)";
     const line3 = `then: ${info.plan || "-"} · ${next}`;
@@ -101,7 +116,9 @@
   /**
    * Show the badge for a job. info: { mode ("FULL RUN" | "DRY RUN"), checkOnly, jobIndex,
    * total, projectId, modelSlug, jobStartedAt, plan (what happens next in
-   * this phase), nextJob ({ projectId, modelSlug } | null), note }.
+   * this phase), nextJob ({ projectId, modelSlug } | null), note, paused,
+   * progress (MGC.runProgress), progressAt (when progress was computed;
+   * null when the run's start is not on record) }.
    */
   B.update = function (next) {
     B.closeSummary(); // a run is in progress: the previous run's summary is gone

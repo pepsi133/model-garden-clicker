@@ -149,6 +149,64 @@
     return parts.join(" · ");
   };
 
+  /**
+   * Run progress for the popup's progress line and the worker tab's badge
+   * (pure): { total, finished, percent, elapsedMs, perJobMs, remainingMs,
+   * state }. finished counts the jobs neither pending nor running; percent
+   * is floored (100 once the run finished); elapsedMs runs from the run's
+   * start to its end, or to `now`. perJobMs is the mean duration of the
+   * finished jobs that were navigated (numeric startedAt < finishedAt, no
+   * leftOut: a job the cross-run guard left out took no time), null when
+   * there is none; remainingMs = perJobMs x the jobs left, a guess, or
+   * null. state: "finished" (run.finishedAt set), "paused", "estimating"
+   * (no estimate yet) or "running".
+   */
+  MGC.runProgress = function (queue, run, now, paused) {
+    const jobs = Array.isArray(queue) ? queue : [];
+    const total = jobs.length;
+    let finished = 0, sum = 0, n = 0;
+    for (const j of jobs) {
+      if (!j || j.status === MGC.STATUS.PENDING || j.status === MGC.STATUS.RUNNING) continue;
+      finished += 1;
+      if (typeof j.startedAt === "number" && typeof j.finishedAt === "number" && j.finishedAt > j.startedAt && j.leftOut == null) {
+        sum += j.finishedAt - j.startedAt;
+        n += 1;
+      }
+    }
+    const done = !!(run && run.finishedAt);
+    const percent = total === 0 ? 0 : (done ? 100 : Math.floor((100 * finished) / total));
+    const elapsedMs = run && typeof run.startedAt === "number" ? Math.max(0, (run.finishedAt || now) - run.startedAt) : 0;
+    const perJobMs = n > 0 ? sum / n : null;
+    const remainingMs = perJobMs === null ? null : Math.round(perJobMs * (total - finished));
+    const state = done ? "finished" : paused === true ? "paused" : remainingMs === null ? "estimating" : "running";
+    return { total, finished, percent, elapsedMs, perJobMs, remainingMs, state };
+  };
+
+  /** "mm:ss" under an hour, "h:mm:ss" from an hour on (floored to seconds; negative or not a number: "00:00"). */
+  MGC.formatDuration = function (ms) {
+    if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return "00:00";
+    const s = Math.floor(ms / 1000);
+    const pad = (x) => String(x).padStart(2, "0");
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+  };
+
+  /** The tail of a progress text: "~09:30 left", "estimating…", "paused", or "" (finished, or nothing left). */
+  MGC.progressEstimateText = function (p) {
+    if (p.state === "finished") return "";
+    if (p.state === "paused") return "paused";
+    if (p.state === "estimating" || p.remainingMs === null) return "estimating…";
+    return p.remainingMs === 0 ? "" : `~${MGC.formatDuration(p.remainingMs)} left`;
+  };
+
+  /** "3/12 jobs · 25 % · elapsed 03:12 · ~09:30 left" (the popup's progress line). */
+  MGC.progressText = function (p) {
+    const parts = [`${p.finished}/${p.total} jobs`, `${p.percent} %`, `elapsed ${MGC.formatDuration(p.elapsedMs)}`];
+    const tail = MGC.progressEstimateText(p);
+    if (tail) parts.push(tail);
+    return parts.join(" · ");
+  };
+
   /* Job fields the content script may set through JOB_UPDATE. `step` is the
    * current step line shown in the popup (mirrors the worker tab's badge);
    * `agreeClickedByUser` records that the user clicked the console's own

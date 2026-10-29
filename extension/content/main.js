@@ -86,7 +86,7 @@
     const s = K.runSummary(st.queue);
     summaryShownFor = runId;
     B.summary({
-      title: `MG Clicker: run ${st.run.reason || "finished"} · ${s.total} job(s)`,
+      title: `MG Clicker: run ${st.run.reason || "finished"} · ${s.total} job(s)${typeof st.run.startedAt === "number" && typeof st.run.finishedAt === "number" ? ` in ${K.formatDuration(st.run.finishedAt - st.run.startedAt)}` : ""}`,
       counts: K.summaryCountsText(s.counts),
       lines: s.lines.map((l) => l.text),
       more: s.more,
@@ -199,10 +199,16 @@
     const nextIndex = st.queue.findIndex((j, i) => i > jobIndex && j.status === STATUS.PENDING);
     const nextJob = nextIndex >= 0 ? { projectId: st.queue[nextIndex].projectId, modelSlug: st.queue[nextIndex].modelSlug } : null;
     const checkOnly = !!(st.run && st.run.checkOnly === true);
+    // Run progress (MGC.runProgress), computed here so the badge only formats
+    // it; progressAt lets the badge's one-second render advance the elapsed
+    // time between two updates.
+    const now = Date.now();
     return {
       mode, checkOnly, jobIndex, total: st.queue.length, projectId: job.projectId, modelSlug: job.modelSlug,
       jobStartedAt: job.startedAt || null, plan: planFor(page, mode === "FULL RUN", st.settings.step_by_step === true, checkOnly), nextJob, note,
-      paused: st.paused === true
+      paused: st.paused === true,
+      progress: K.runProgress(st.queue, st.run, now, st.paused === true),
+      progressAt: st.run && typeof st.run.startedAt === "number" ? now : null
     };
   }
 

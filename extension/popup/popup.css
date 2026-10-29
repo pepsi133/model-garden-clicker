@@ -85,6 +85,12 @@ button.primary { font-size: 15px; padding: 8px 28px; }
 .link-banner { margin: 0 0 6px; padding: 5px 8px; background: var(--mgc-surface); border: 1px solid var(--mgc-accent-dark); border-radius: 4px; font-size: 12px; word-break: break-word; }
 .link-banner button { margin-left: 6px; padding: 2px 8px; font-size: 12px; }
 .status { padding: 4px 8px; background: var(--mgc-neutral); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
+/* The progress line under the status: a thin bar (the fill's width is the
+ * percent) above "N/T jobs · P % · elapsed · ~left". It keeps the UA's
+ * [hidden] { display: none }: no rule here sets display on it. */
+.progress { margin-top: 4px; font-family: var(--mgc-mono); font-size: 12px; color: var(--mgc-muted); }
+.progress .bar { height: 4px; background: var(--mgc-border); border-radius: 2px; overflow: hidden; margin-bottom: 2px; }
+.progress .fill { height: 100%; width: 0; background: var(--mgc-accent); }
 .step { margin-top: 4px; padding: 4px 8px; background: var(--mgc-surface); color: var(--mgc-info); border: 1px solid var(--mgc-border); border-radius: 4px; font-family: var(--mgc-mono); font-size: 12px; }
 .error { margin-top: 6px; padding: 6px 8px; }
 

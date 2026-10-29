@@ -292,10 +292,21 @@ unchanged: the same permissions, no `web_accessible_resources`, no
    least about 600 px wide it stays clear of the console's own Next and
    Agree buttons at the bottom left) shows, updated
    every second: job N of M with the project and
-   model and the job's elapsed time; the current step with its elapsed
+   model and the job's elapsed time, then the run's progress (the
+   percentage of jobs finished, the run's elapsed time and an estimate of
+   the time left, e.g. `· 25 % · 03:12 · ~09:30 left`); the current step
+   with its elapsed
    seconds and timeout (what the extension is waiting for or doing); what
    happens next in this phase and the next job's project and model. The
-   popup mirrors the current step under its status line. Leave that tab
+   popup mirrors the current step under its status line, and shows a
+   progress line under it while a run is active (and while a finished
+   run's summary is shown): a thin bar and `3/12 jobs · 25 % · elapsed
+   03:12 · ~09:30 left`, refreshed every second. The estimate is a guess:
+   the mean duration of the jobs finished so far times the jobs left. Jobs
+   the cross-run guard left out (they take no time) count as finished but
+   are not in the mean; until a navigated job has finished it reads
+   `estimating…`, while paused `paused`, and once the run has finished it
+   is gone. Leave that tab
    alone while a run is active: the extension refuses to act on a page that
    is not the job's project, the model page is checked against the job's
    model slug before anything is decided on it, and a job whose page
@@ -509,7 +520,8 @@ to continue.
 
 When a run ends, for any reason (all jobs processed, Stop, a failure, a
 lost tab), the badge in the worker tab turns into an end-of-run summary:
-the counts (done, dry-run, skipped, failed, unverified, stopped), one line
+a title with the reason, the number of jobs and the run's total time
+(e.g. `MG Clicker: run all jobs processed · 14 job(s) in 12:40`), the counts (done, dry-run, skipped, failed, unverified, stopped), one line
 per job with its project, model, status and a short message (at most
 twelve lines, then "and N more") and an **OK** button. It stays until you
 press OK: the summary is recorded in storage with the run's id, so a

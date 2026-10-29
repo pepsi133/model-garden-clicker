@@ -842,6 +842,36 @@ function boot(opts) {
     t.stop();
   }
 
+  console.log("--- the badge's line 1 carries the run's percent, elapsed time and estimate; the summary title the total time");
+  {
+    const now = Date.now();
+    const J = (projectId, status, startedAt, finishedAt, extra) => Object.assign({ projectId, modelSlug: "claude-haiku-4-5", status, phase: null, startedAt: startedAt || null, finishedAt: finishedAt || null, productId: null, agreeClicked: false }, extra);
+    // Job 1 navigated in 30 s, job 2 left out by the guard (finished, not in the mean), job 3 running, job 4 pending: 2/4, 50 %, ~01:00 left (2 jobs left x 30 s).
+    let t = boot({ handler: async () => null, run: { runId: "r1", live: false, startedAt: now - 192000 }, current: { jobIndex: 2, phase: "navigate" },
+      queue: [J("proj-a", "dry-run", now - 192000, now - 162000), J("proj-b", "skipped", now - 162000, now - 162000, { leftOut: "done" }), J("proj-one", "running", now - 5000), J("proj-d", "pending")] });
+    await until(() => / % · /.test(t.badge() || ""), 2000);
+    let line1 = (t.badge() || "").split("\n")[0];
+    ok(/^MG Clicker \[DRY RUN\] job 3\/4 · proj-one · claude-haiku-4-5 · 00:0\d · 50 % · 03:1\d · ~01:00 left$/.test(line1), "line 1: the job counter, then the percent, the run's elapsed time and ~mm:ss left (the mean of the navigated jobs x the jobs left)", line1);
+    ok(/MG Clicker \[DRY RUN\] job 3\/4 · proj-one · claude-haiku-4-5 · 00:0\d/.test(t.badge() || "") && /step: /.test(t.badge() || "") && /then: click Enable, then the questionnaire · next job: proj-d · claude-haiku-4-5/.test(t.badge() || ""), "control: the existing badge texts (job counter, step line, plan and next job) are unchanged", t.badge());
+    t.state.paused = true;
+    t.fire({ paused: { newValue: true } });
+    await until(() => /· paused$/m.test(t.badge() || ""), 1500);
+    line1 = (t.badge() || "").split("\n")[0];
+    ok(/^MG Clicker \[DRY RUN\] PAUSED job 3\/4 · .* · 50 % · 03:1\d · paused$/.test(line1), "paused: \"paused\" in place of the estimate", line1);
+    t.stop();
+    // Nothing navigated has finished yet: estimating….
+    t = boot({ handler: async () => null, run: { runId: "r1", live: false, startedAt: now - 7000 }, job: { startedAt: now - 7000 }, moreJobs: [J("proj-two", "pending")] });
+    await until(() => / % · /.test(t.badge() || ""), 2000);
+    line1 = (t.badge() || "").split("\n")[0];
+    ok(/^MG Clicker \[DRY RUN\] job 1\/2 · proj-one · claude-haiku-4-5 · 00:0\d · 0 % · 00:0\d · estimating…$/.test(line1), "no navigated job finished yet: \"estimating…\"", line1);
+    t.stop();
+    // The end-of-run summary: the title carries the total time.
+    t = boot({ running: false, current: null, queue: [J("proj-a", "dry-run", now - 760000, now - 400000), J("proj-b", "dry-run", now - 400000, now - 10000)], run: { runId: "r1", live: false, startedAt: now - 770000, finishedAt: now - 10000, reason: "all jobs processed" }, summary: { runId: "r1", tabId: 100, reason: "all jobs processed", ack: false }, handler: async () => null });
+    await until(() => t.summary() !== null, 2000);
+    ok(/^MG Clicker: run all jobs processed · 2 job\(s\) in 12:40\ndone 0 · dry-run 2 · /.test(t.badge() || ""), "the summary title ends with \" in 12:40\" (finishedAt - startedAt), the counts under it", t.badge());
+    t.stop();
+  }
+
   console.log("--- (M6) the console-link deep link (#mgc= on a console page) was dropped in 0.9.0: such a URL sends nothing and is left alone");
   {
     // The same page with and without the old fragment: the messages sent

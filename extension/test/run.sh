@@ -42,7 +42,7 @@ else echo "guard md5 (clickAgreeGuarded): $guardmd5 (DIFFERS from the baseline $
 allow_skip="${MGC_ALLOW_SKIP:-0}"
 out=$(mktemp) || exit 2
 reduced="" # suites that skipped checks (no dumps): named in the summary so a reduced CI run is visible
-for t in models-json.cjs deep-link.cjs worker-harness.mjs content-guard.cjs main-loop.cjs dialog-step.cjs model-step.cjs questionnaire-step.cjs step-by-step.cjs selectors.cjs ui-pages.cjs; do
+for t in models-json.cjs deep-link.cjs progress.cjs worker-harness.mjs content-guard.cjs main-loop.cjs dialog-step.cjs model-step.cjs questionnaire-step.cjs step-by-step.cjs selectors.cjs ui-pages.cjs; do
   echo "=== $t"
   node "$t" > "$out" 2>&1; rc=$?
   cat "$out"
@@ -64,7 +64,7 @@ echo "==="
 if [ -n "$reduced" ]; then
   echo "SUITES REDUCED (no recon dumps; dump-based checks skipped):"
   printf '%s' "$reduced"
-  echo "The dump-independent suites (models-json.cjs, deep-link.cjs, worker-harness.mjs, ui-pages.cjs) are never reduced; they ran in full above."
+  echo "The dump-independent suites (models-json.cjs, deep-link.cjs, progress.cjs, worker-harness.mjs, ui-pages.cjs) are never reduced; they ran in full above."
 else
   echo "no suites reduced: every check ran (recon dumps present)"
 fi

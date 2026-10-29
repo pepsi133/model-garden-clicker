@@ -20,10 +20,10 @@ Click the extension icon. The header shows the mode, **MODE: DRY RUN** by defaul
 
 ![Popup: project IDs, the model checklist, Start, the results table](store/screenshots/01-popup-dry-run.png)
 
-One console tab opens and the jobs run in order, one project and model pair at a time. A dark badge in the bottom-right corner of that tab shows what is going on, updated every second:
+One console tab opens and the jobs run in order, one project and model pair at a time. A dark badge in the bottom-right corner of that tab shows what is going on, updated every second: the job and its elapsed time, then the share of jobs finished, the run's elapsed time and an estimate of the time left (the mean duration of the jobs finished so far times the jobs left, so a guess; `estimating…` until the first job has finished). The popup shows the same progress under its status line, with a thin bar.
 
 ```text
-MG Clicker [DRY RUN] job 2/4 · my-project · claude-haiku-4-5 · 00:37
+MG Clicker [DRY RUN] job 2/4 · my-project · claude-haiku-4-5 · 00:37 · 25 % · 03:47 · ~09:30 left
 step: waiting for Enable button · 12 s / 60 s
 then: click Enable, then the questionnaire · next job: my-project · claude-sonnet-4-6
 ```

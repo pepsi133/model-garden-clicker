@@ -817,6 +817,62 @@ function setSelect(p, name, value) {
     p2.win.close();
   }
 
+  console.log("--- popup: the progress line (bar, N/T jobs, percent, elapsed, estimate) and the summary's total time");
+  {
+    const T0 = 1700000000000;
+    const J = (status, startedAt, finishedAt, extra) => Object.assign({ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status, startedAt: startedAt === undefined ? null : startedAt, finishedAt: finishedAt === undefined ? null : finishedAt }, extra);
+    const store = { settings: Object.assign({}, FULL) };
+    const p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    const doc = p.document;
+    const prog = doc.getElementById("progress");
+    const text = () => doc.querySelector("#progress .text").textContent;
+    const width = () => doc.querySelector("#progress .bar > .fill").style.width;
+    ok(prog && prog.hidden === true && prog.previousElementSibling === doc.getElementById("status") && text() === "", "idle (no run): the #progress line sits right under the status and is hidden", prog && prog.outerHTML);
+    let now = T0 + 45000;
+    p.win.Date.now = () => now;
+    const intervals = [], cleared = [];
+    const realSet = p.win.setInterval.bind(p.win), realClear = p.win.clearInterval.bind(p.win);
+    p.win.setInterval = (fn, ms) => { const id = realSet(fn, ms); intervals.push({ id, ms }); return id; };
+    p.win.clearInterval = (id) => { cleared.push(id); return realClear(id); };
+    // A run: one guard-left-out job (finished, not in the mean) and nothing navigated finished yet: estimating.
+    Object.assign(store, { running: true, run: { runId: "rp", live: false, startedAt: T0, finishedAt: null }, current: { jobIndex: 1, phase: "model" },
+      queue: [J("skipped", T0, T0, { leftOut: "done" }), J("running", T0 + 1000), J("pending"), J("pending")] });
+    p.win.chrome.__fire({ running: { newValue: true } }); await tick();
+    ok(prog.hidden === false && text() === "1/4 jobs · 25 % · elapsed 00:45 · estimating…", "a run, no navigated job finished yet: \"N/T jobs · P %\", elapsed, \"estimating…\" (the guard-left-out job counts as finished)", text());
+    ok(width() === "25%", "the bar's width equals the percent", width());
+    ok(intervals.length === 1 && intervals[0].ms === 1000, "a run is active: one one-second interval refreshes the line", JSON.stringify(intervals));
+    // One navigated job of 30 s finished: two left -> ~01:00 left.
+    store.queue[1] = J("dry-run", T0 + 1000, T0 + 31000); store.queue[2] = J("running", T0 + 31000); store.current = { jobIndex: 2, phase: "model" };
+    p.win.chrome.__fire({ queue: { newValue: store.queue } }); await tick();
+    ok(text() === "2/4 jobs · 50 % · elapsed 00:45 · ~01:00 left" && width() === "50%", "after a navigated job of 30 s: 2/4 jobs · 50 %, elapsed, ~01:00 left (the mean x the jobs left), the bar at 50%", `${text()} ${width()}`);
+    ok(intervals.length === 1, "control: a render while running starts no second interval", JSON.stringify(intervals));
+    // The interval alone moves the elapsed time (no storage change).
+    now = T0 + 75000;
+    await new Promise((r) => setTimeout(r, 1100));
+    ok(text() === "2/4 jobs · 50 % · elapsed 01:15 · ~01:00 left", "one second later the interval recomputed the line from the last state: elapsed 01:15", text());
+    store.paused = true;
+    p.win.chrome.__fire({ paused: { newValue: true } }); await tick();
+    ok(text() === "2/4 jobs · 50 % · elapsed 01:15 · paused", "while KEYS.PAUSED: \"paused\" instead of the estimate", text());
+    store.paused = false;
+    p.win.chrome.__fire({ paused: { newValue: false } }); await tick();
+    ok(/~01:00 left$/.test(text()), "control: resumed, the estimate is back", text());
+    // The run ends: the summary shows the finished run with its total time, the line reads finished (no estimate), the interval is cleared.
+    store.queue[2] = J("dry-run", T0 + 31000, T0 + 61000); store.queue[3] = J("dry-run", T0 + 61000, T0 + 91000);
+    Object.assign(store, { running: false, current: null, run: { runId: "rp", live: false, startedAt: T0, finishedAt: T0 + 760000, reason: "all jobs processed" }, summary_ack: { runId: "rp", tabId: 1, reason: "all jobs processed", ack: false } });
+    p.win.chrome.__fire({ running: { newValue: false } }); await tick();
+    ok(prog.hidden === false && text() === "4/4 jobs · 100 % · elapsed 12:40" && width() === "100%", "finished (summary shown): 4/4 jobs · 100 % · elapsed 12:40, no estimate, the bar full", `${text()} ${width()}`);
+    ok(cleared.includes(intervals[0].id), "the run ended: the interval is cleared", JSON.stringify(cleared));
+    ok(doc.querySelector("#summary .title").textContent === "Run all jobs processed: 4 job(s) in 12:40", "the summary title ends with \" in mm:ss\" (finishedAt - startedAt)", doc.querySelector("#summary .title").textContent);
+    store.summary_ack.ack = true;
+    p.win.chrome.__fire({ summary_ack: { newValue: store.summary_ack } }); await tick();
+    ok(prog.hidden === true && /^idle; last run/.test(doc.getElementById("status").textContent), "control: the summary acknowledged, idle again: the progress line is hidden", doc.getElementById("status").textContent);
+    p.win.close();
+    // An hour-long run spells h:mm:ss in the title; a run without startedAt on record gets no time (the older summary tests cover that spelling).
+    const p2 = await loadPage("popup/popup.html", { settings: Object.assign({}, FULL), running: false, run: { runId: "rh", live: false, startedAt: T0, finishedAt: T0 + 3723000, reason: "stopped by user" }, queue: [J("stopped", T0, T0 + 5000)], summary_ack: { runId: "rh", ack: false } }, POPUP_SCRIPTS);
+    ok(p2.document.querySelector("#summary .title").textContent === "Run stopped by user: 1 job(s) in 1:02:03", "a run of 1 h 2 min 3 s: \" in 1:02:03\"", p2.document.querySelector("#summary .title").textContent);
+    p2.win.close();
+  }
+
   console.log("--- no code focuses a tab or a window, opens the popup, or raises a notification");
   {
     const shipped = ["background/service-worker.js", "popup/popup.js", "options/options.js", "content/main.js", "content/actions.js", "content/badge.js", "content/selectors.js", "content/dom.js", "common/constants.js"].map((f) => fs.readFileSync(path.join(E.EXT, f), "utf8")).join("\n");

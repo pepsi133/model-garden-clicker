@@ -1,0 +1,103 @@
+name: Refresh models.json
+
+# Phase 2 of docs/scoping/01-latest-models.md: once a week, regenerate
+# extension/models.json from the Vertex AI publisher-models API and open or
+# update one pull request from the bot branch models-refresh. The workflow
+# never merges and never tags; a human reviews and merges the pull request.
+#
+# Identity: Workload Identity Federation only. GitHub's OIDC token is
+# exchanged for a short-lived access token of a read-only Google service
+# account; no key and no secret is stored. The owner sets three repository
+# variables (Settings > Secrets and variables > Actions > Variables):
+#   GCP_WIF_PROVIDER   the full provider resource name,
+#                      projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#   GCP_SA_EMAIL       the service account e-mail; the provider's principal
+#                      needs roles/iam.workloadIdentityUser on it, and the
+#                      account needs roles/serviceusage.serviceUsageConsumer
+#                      on the quota project (the listing needs no other role)
+#   GCP_QUOTA_PROJECT  the project sent as X-Goog-User-Project
+# While GCP_WIF_PROVIDER or GCP_SA_EMAIL is empty the job is skipped, so the
+# schedule is harmless before the setup. Opening the pull request also needs
+# "Allow GitHub Actions to create and approve pull requests" in the
+# repository's Actions settings.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Monday 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: models-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: ${{ vars.GCP_WIF_PROVIDER != '' && vars.GCP_SA_EMAIL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to full commit SHAs (supply-chain hardening); the comment names
+      # the release. persist-credentials: false keeps the GITHUB_TOKEN out of
+      # .git/config while the generator runs; the push step passes it itself.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # A short-lived access token only: no credentials file in the workspace.
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+          token_format: access_token
+          create_credentials_file: false
+
+      # Exit 2 (untrusted listing: empty, 401/403, none of the packaged GA
+      # slugs) writes nothing and fails the run. Exit 1 fails the run when a
+      # GA entry has stayed undated for more than 30 days.
+      - name: Regenerate extension/models.json
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GOOGLE_CLOUD_QUOTA_PROJECT: ${{ vars.GCP_QUOTA_PROJECT }}
+        run: |
+          python3 -I scripts/models/fetch_models.py \
+            --allow-undated --max-undated-days 30 \
+            --write extension/models.json --summary-md /tmp/summary.md
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      # The lint needs node only (no jsdom), so no npm ci.
+      - name: Lint models.json
+        run: node extension/test/models-json.cjs
+
+      - name: Commit to models-refresh and open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet extension/models.json; then
+            echo "extension/models.json is unchanged; no pull request."
+            exit 0
+          fi
+          base=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extension/models.json
+          git commit -m "Refresh models.json from the publisher-models API"
+          # The only force push: the bot branch models-refresh, rebuilt every run.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --force origin HEAD:refs/heads/models-refresh
+          title="Refresh models.json from the publisher-models API"
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head models-refresh --base "$base" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file /tmp/summary.md
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --head models-refresh --base "$base" --title "$title" --body-file /tmp/summary.md
+          fi

@@ -37,6 +37,25 @@ and the project uses [Semantic Versioning](https://semver.org/).
   page. A later run attempts a `not-enabled` pair again; a `skipped` pair
   stays left out. `docs/scoping/04-check-only-inventory.md` is marked
   implemented.
+- `scripts/models/fetch_models.py --write PATH` writes the candidate
+  `models.json`: the API gives the slugs, `launchStage` and `apiOrder`, the
+  hand-set fields of the file win, a new slug takes its date from the
+  Google per-model page (else `"dateSource": "undated"` and `firstSeen`),
+  and a slug that left the API stays with `deprecated: true`. It refuses an
+  empty or unauthorised listing (exit 2, nothing written), names undated GA
+  slugs (exit 1 unless `--allow-undated`), and writes a byte-stable
+  canonical file. New flags: `--check`, `--no-scrape`, `--allow-undated`,
+  `--max-undated-days` and `--summary-md`. `models.json` is now in that
+  canonical form (same data), and the lint accepts `dateSource` and
+  `firstSeen`.
+- A weekly workflow, `.github/workflows/models-refresh.yml` (Monday 06:17
+  UTC, and on demand). It authenticates through Workload Identity
+  Federation (repository variables `GCP_WIF_PROVIDER`, `GCP_SA_EMAIL`,
+  `GCP_QUOTA_PROJECT`; no stored key), regenerates `models.json`, runs the
+  lint, and opens or updates one pull request from the branch
+  `models-refresh`. It never merges and never tags. It is skipped until the
+  variables are set, and it fails when a GA entry stays undated for more
+  than 30 days.
 
 ### Changed
 - Deep links accept up to 200 projects (was 23) and 16,384 characters (was

@@ -7,9 +7,12 @@
  * releaseDate that is not a strict YYYY-MM-DD calendar date (an empty
  * string means undated, the shape scripts/models/fetch_models.py writes
  * for an unknown date), a duplicate, non-positive or non-integer apiOrder,
- * requiresManualConsent or deprecated present but not a boolean, and a file
- * not sorted by MGC.compareModelsByRecency (the order the popup shows, so a
- * reviewer reads the file in the same order).
+ * requiresManualConsent or deprecated present but not a boolean, a
+ * dateSource present but not "google-docs", "anthropic" or "undated", a
+ * firstSeen present but not a strict YYYY-MM-DD calendar date (both are
+ * generator notes that fetch_models.py --write adds and the popup ignores),
+ * and a file not sorted by MGC.compareModelsByRecency (the order the popup
+ * shows, so a reviewer reads the file in the same order).
  *
  * Usage: node models-json.cjs [path/to/models.json]   (default: ../models.json)
  */
@@ -59,6 +62,11 @@ if (check(Array.isArray(data), `${path.relative(process.cwd(), file)} is an arra
     const bad = entries.filter((e) => flag in e && typeof e[flag] !== "boolean");
     check(bad.length === 0, `${flag}, when present, is a boolean`, JSON.stringify(bad.map((e) => [e.slug, e[flag]])));
   }
+  const DATE_SOURCES = ["google-docs", "anthropic", "undated"];
+  const badSource = entries.filter((e) => "dateSource" in e && !DATE_SOURCES.includes(e.dateSource));
+  check(badSource.length === 0, `dateSource, when present, is one of ${DATE_SOURCES.join(", ")}`, JSON.stringify(badSource.map((e) => [e.slug, e.dateSource])));
+  const badSeen = entries.filter((e) => "firstSeen" in e && !K.parseReleaseDate(e.firstSeen));
+  check(badSeen.length === 0, "firstSeen, when present, is a strict YYYY-MM-DD calendar date", JSON.stringify(badSeen.map((e) => [e.slug, e.firstSeen])));
   const sorted = K.sortModelsByRecency(entries).map((e) => e.slug);
   check(JSON.stringify(sorted) === JSON.stringify(slugs), "the file is sorted by compareModelsByRecency (newest first)", `file: ${slugs.join(", ")} | sorted: ${sorted.join(", ")}`);
   const dated = entries.filter((e) => K.parseReleaseDate(e.releaseDate)).length;

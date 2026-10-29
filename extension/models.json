@@ -1,15 +1,94 @@
 [
-  {"slug": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "launchStage": "GA", "releaseDate": "2026-10-07", "apiOrder": 13},
-  {"slug": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "launchStage": "GA", "releaseDate": "2026-09-28", "apiOrder": 12},
-  {"slug": "claude-opus-5-5", "name": "Claude Opus 5.5", "launchStage": "GA", "releaseDate": "2026-09-22", "apiOrder": 11},
-  {"slug": "claude-fable-5-1", "name": "Claude Fable 5.1", "launchStage": "GA", "releaseDate": "2026-09-01", "apiOrder": 10, "requiresManualConsent": true},
-  {"slug": "claude-opus-5", "name": "Claude Opus 5", "launchStage": "GA", "releaseDate": "2026-07-24", "apiOrder": 9},
-  {"slug": "claude-sonnet-5", "name": "Claude Sonnet 5", "launchStage": "GA", "releaseDate": "2026-06-30", "apiOrder": 6},
-  {"slug": "claude-fable-5", "name": "Claude Fable 5", "launchStage": "GA", "releaseDate": "2026-06-09", "apiOrder": 8},
-  {"slug": "claude-opus-4-8", "name": "Claude Opus 4.8", "launchStage": "GA", "releaseDate": "2026-05-28", "apiOrder": 7},
-  {"slug": "claude-opus-4-7", "name": "Claude Opus 4.7", "launchStage": "GA", "releaseDate": "2026-04-15", "apiOrder": 5},
-  {"slug": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "launchStage": "GA", "releaseDate": "2026-02-17", "apiOrder": 4},
-  {"slug": "claude-opus-4-6", "name": "Claude Opus 4.6", "launchStage": "GA", "releaseDate": "2026-02-05", "apiOrder": 3},
-  {"slug": "claude-opus-4-5", "name": "Claude Opus 4.5", "launchStage": "GA", "releaseDate": "2025-11-24", "apiOrder": 2},
-  {"slug": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "launchStage": "GA", "releaseDate": "2025-10-15", "apiOrder": 1}
+  {
+    "slug": "claude-haiku-5-5",
+    "name": "Claude Haiku 5.5",
+    "launchStage": "GA",
+    "releaseDate": "2026-10-07",
+    "apiOrder": 13
+  },
+  {
+    "slug": "claude-sonnet-5-5",
+    "name": "Claude Sonnet 5.5",
+    "launchStage": "GA",
+    "releaseDate": "2026-09-28",
+    "apiOrder": 12
+  },
+  {
+    "slug": "claude-opus-5-5",
+    "name": "Claude Opus 5.5",
+    "launchStage": "GA",
+    "releaseDate": "2026-09-22",
+    "apiOrder": 11
+  },
+  {
+    "slug": "claude-fable-5-1",
+    "name": "Claude Fable 5.1",
+    "launchStage": "GA",
+    "releaseDate": "2026-09-01",
+    "apiOrder": 10,
+    "requiresManualConsent": true
+  },
+  {
+    "slug": "claude-opus-5",
+    "name": "Claude Opus 5",
+    "launchStage": "GA",
+    "releaseDate": "2026-07-24",
+    "apiOrder": 9
+  },
+  {
+    "slug": "claude-sonnet-5",
+    "name": "Claude Sonnet 5",
+    "launchStage": "GA",
+    "releaseDate": "2026-06-30",
+    "apiOrder": 6
+  },
+  {
+    "slug": "claude-fable-5",
+    "name": "Claude Fable 5",
+    "launchStage": "GA",
+    "releaseDate": "2026-06-09",
+    "apiOrder": 8
+  },
+  {
+    "slug": "claude-opus-4-8",
+    "name": "Claude Opus 4.8",
+    "launchStage": "GA",
+    "releaseDate": "2026-05-28",
+    "apiOrder": 7
+  },
+  {
+    "slug": "claude-opus-4-7",
+    "name": "Claude Opus 4.7",
+    "launchStage": "GA",
+    "releaseDate": "2026-04-15",
+    "apiOrder": 5
+  },
+  {
+    "slug": "claude-sonnet-4-6",
+    "name": "Claude Sonnet 4.6",
+    "launchStage": "GA",
+    "releaseDate": "2026-02-17",
+    "apiOrder": 4
+  },
+  {
+    "slug": "claude-opus-4-6",
+    "name": "Claude Opus 4.6",
+    "launchStage": "GA",
+    "releaseDate": "2026-02-05",
+    "apiOrder": 3
+  },
+  {
+    "slug": "claude-opus-4-5",
+    "name": "Claude Opus 4.5",
+    "launchStage": "GA",
+    "releaseDate": "2025-11-24",
+    "apiOrder": 2
+  },
+  {
+    "slug": "claude-haiku-4-5",
+    "name": "Claude Haiku 4.5",
+    "launchStage": "GA",
+    "releaseDate": "2025-10-15",
+    "apiOrder": 1
+  }
 ]

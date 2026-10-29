@@ -379,40 +379,62 @@ walks the dashboard tabs.
 
 ## 8. Updating the model list
 
-`extension/models.json` is an array of one entry per line. Each entry has
-`slug`, `name`, `launchStage`, `releaseDate` (`YYYY-MM-DD`), `apiOrder`
-(1-based position in the API default order, oldest = 1) and, when they
-apply, `requiresManualConsent: true` and `deprecated: true`. The popup
-sorts the list by `releaseDate`, newest first, and the `latest` link ticks
-the newest GA, dated, non-deprecated entry of each model line
-(`docs/models.md`, "Ordering").
+`extension/models.json` is written by `scripts/models/fetch_models.py
+--write` in a canonical form: 2-space-indented JSON, a fixed key order and
+the recency order (`scripts/models/README.md`, "The candidate file"). Each
+entry has `slug`, `name`, `launchStage`, `releaseDate` (`YYYY-MM-DD`),
+`apiOrder` (1-based position in the API default order, oldest = 1) and,
+when they apply, `requiresManualConsent: true` and `deprecated: true`. The
+generator adds `dateSource` (`google-docs` or `undated`) and, for an
+undated slug, `firstSeen`. The popup sorts the list by `releaseDate`,
+newest first, and the `latest` link ticks the newest GA, dated,
+non-deprecated entry of each model line (`docs/models.md`, "Ordering").
 
-1. List the API and compare it with the file. The script needs a bearer
-   token and a quota project. `--compare` reports added and removed slugs
-   and keeps the hand-set fields of the current file:
+Every Monday the workflow `.github/workflows/models-refresh.yml` runs the
+generator and, when the file changed, opens or updates one pull request
+from the branch `models-refresh` with a summary of added, vanished and
+undated slugs. Review that pull request with steps 2 to 5 below; the
+workflow never merges and never tags. The workflow fails (and opens no pull
+request) when a GA entry has stayed undated for more than 30 days: fill its
+date by hand. It runs only once the repository variables `GCP_WIF_PROVIDER`
+and `GCP_SA_EMAIL` (and `GCP_QUOTA_PROJECT`) are set; the workflow's header
+comment lists the Workload Identity Federation setup. Locally:
+
+1. Regenerate the file in place. The script needs a bearer token and a
+   quota project. The API gives the slugs, `launchStage` and `apiOrder`;
+   every hand-set field of the current file wins. A new slug takes its date
+   from the Google per-model page when the page has one, else it stays
+   undated and the run names it and exits 1 after writing (`--allow-undated`
+   accepts it). A slug that left the API stays with `deprecated: true`
+   proposed. An empty or unauthorised listing writes nothing and exits 2:
 
    ```sh
    python3 -I scripts/models/fetch_models.py --quota-project <PROJECT_ID> \
-       --compare extension/models.json --latest > /tmp/models-candidate.json
+       --write extension/models.json --summary-md /tmp/models-summary.md --latest
+   git diff extension/models.json
    ```
 
-   Offline, from a saved listing: add `--dry-run --fixture
+   Offline, from a saved listing: add `--fixture
    scripts/models/fixtures/publisher-models-<date>.json`. Save a new listing
    with `--save-raw` when the set changed (`scripts/models/README.md`).
-2. Hand-edit the candidate before it replaces the file. Check `name` (the
-   API has no display name, the script derives it from the slug). Fill
-   `releaseDate` for a new slug from the Google per-model page ("Release
-   date:") and the Anthropic per-model page ("Released:"). Google's date wins
-   when they differ. Set `requiresManualConsent: true` when the model page
-   has an extra consent control (one dry run on that page shows it). Set
-   `deprecated: true` on a slug that left the API instead of removing it.
-   Put the result back in the one-entry-per-line style of the current file
-   and record the dates and sources in `docs/models.md`.
+2. Review the diff and edit the file where needed. Check `name` (the API
+   has no display name, the script derives it from the slug). Check a
+   scraped `releaseDate` against the Anthropic per-model page ("Released:");
+   Google's date wins when they differ. Fill `releaseDate` of an undated
+   slug from the Google per-model page ("Release date:"), set `dateSource`
+   to `google-docs` (or `anthropic`) and remove `firstSeen`. Set
+   `requiresManualConsent: true` when the model page has an extra consent
+   control (one dry run on that page shows it). Confirm or revert a
+   proposed `deprecated: true`; never remove an entry. Re-run the generator
+   with `--write` to restore the canonical form, then with `--check` (exit
+   0 means canonical), and record the dates and sources in
+   `docs/models.md`.
 3. Run the lint on its own, then the whole suite. The lint fails on an
    empty file, a duplicate or invalid slug and a `@` in a slug. It also
    fails on a bad date, a duplicate or non-positive `apiOrder`, a
-   non-boolean flag and a file out of recency order. An empty `releaseDate`
-   means undated and passes:
+   non-boolean flag, a `dateSource` other than `google-docs`, `anthropic`
+   or `undated`, a `firstSeen` that is not a date, and a file out of recency
+   order. An empty `releaseDate` means undated and passes:
 
    ```sh
    node extension/test/models-json.cjs

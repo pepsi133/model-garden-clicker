@@ -1,6 +1,6 @@
 /*
  * MGC.parseDeepLink (common/constants.js), the pure parser behind the deep
- * links of docs/scoping/03-deep-links.md, in node without jsdom. The
+ * links of extension/README.md ("Open the popup from a link"), in node without jsdom. The
  * parser tests P1 to P8 of the feasibility review, each with a control
  * case: the query-string syntax ("&" between pairs; ";" and the old
  * "mgc=v1" fragment spelling are refused), every refusal of decision D2 (missing or wrong version, unknown,

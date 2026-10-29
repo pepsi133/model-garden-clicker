@@ -55,7 +55,8 @@ That union link may list a pair already enabled in some project; the
 extension's model-page check ends it as `skipped`. A link opens the popup in a
 tab, fills the form after a confirmation and never starts a run (root
 [README.md](../../README.md), "Deep links"; the format is the contract in
-[docs/scoping/03-deep-links.md](../../docs/scoping/03-deep-links.md)). A link
+[extension/README.md](../../extension/README.md), "Open the popup from a
+link"). A link
 is never longer than 16,384 characters: a longer chunk is split. An id or slug
 that fails the extension's validation is left out with a warning line in the
 file and on stderr. With no pending project the file still exists and says so.

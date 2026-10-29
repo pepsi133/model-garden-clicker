@@ -376,7 +376,7 @@
   /* ---------------------------------------------------------- deep links */
 
   /*
-   * A deep link (docs/scoping/03-deep-links.md) fills the project IDs and
+   * A deep link (extension/README.md, "Open the popup from a link") fills the project IDs and
    * the models after a confirm. It runs only when the page is a tab:
    * popup.html?tab=1&v=1&projects=p-a,p-b&models=latest, from the address
    * bar or a bookmark; the query string is the link. The path:

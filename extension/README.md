@@ -172,7 +172,7 @@ A deep link opens the popup in a tab with the project IDs entered and the
 models ticked, after a confirmation. It fills the form and nothing else: it
 never starts a run and never changes the DRY RUN mode, step-by-step, the
 "Include pairs already done" box, the questionnaire values or the timing.
-The design and its threat model are in `docs/scoping/03-deep-links.md`.
+The threat model summary is in `docs/scoping/README.md`.
 
 The link is the popup page's own URL, for the address bar and bookmarks
 of a browser with the extension:

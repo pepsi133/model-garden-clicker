@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-fetch_models.py: the models.json generator of docs/scoping/01-latest-models.md
-(phases 1 and 2).
+fetch_models.py: the models.json generator of scoping 01 (phases 1 and 2;
+see docs/scoping/README.md).
 
 It lists the Anthropic publisher models of Vertex AI Model Garden, computes
 the recency ordering of the design and prints a models.json-compatible array
@@ -31,7 +31,7 @@ given, else PATH itself):
               --max-undated-days days ago. --check writes nothing and also
               exits 1 when PATH would change.
 
-Recency fields written per entry (see "Data model" in the scoping document):
+Recency fields written per entry (see docs/scoping/README.md, scoping 01):
   releaseDate  "YYYY-MM-DD" or "" when unknown. The primary key. The API has
                no such field, so the value comes from --compare (an existing
                models.json whose hand-set dates win), else from the table

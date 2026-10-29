@@ -1,7 +1,7 @@
 # scripts/models: the models.json generator
 
 `fetch_models.py` is the generator of phases 1 and 2 of
-[docs/scoping/01-latest-models.md](../../docs/scoping/01-latest-models.md).
+scoping 01, indexed in [docs/scoping/README.md](../../docs/scoping/README.md).
 With `--write extension/models.json` it writes the candidate file that a
 human reviews; the weekly workflow `.github/workflows/models-refresh.yml`
 runs it and opens a pull request (see "The weekly workflow" below). Without
@@ -176,7 +176,7 @@ owner sets the repository variables `GCP_WIF_PROVIDER` and `GCP_SA_EMAIL`
   `deprecated: true`; a human confirms it in the pull request.
 - A `401` from a bad token. Inside the proxy every token is replaced, so
   that path ran only with `curl` outside the script (see the appendix of
-  the scoping document).
+  scoping 01, read with the git command in `docs/scoping/README.md`).
 - Anything about the extension UI, the popup state or the tests.
 - The workflow's identity. It needs the owner's Workload Identity
   Federation setup and has not run yet.

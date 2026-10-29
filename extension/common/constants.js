@@ -719,7 +719,7 @@
   };
 
   /*
-   * Deep links (docs/scoping/03-deep-links.md): a link opens the popup in
+   * Deep links (extension/README.md, "Open the popup from a link"): a link opens the popup in
    * a tab with the project IDs and the models filled in, after a confirm.
    * It never starts a run and never touches a setting. The link is the
    * popup page's own query string:

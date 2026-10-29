@@ -1,6 +1,6 @@
 name: Refresh models.json
 
-# Phase 2 of docs/scoping/01-latest-models.md: once a week, regenerate
+# Phase 2 of scoping 01 (docs/scoping/README.md): once a week, regenerate
 # extension/models.json from the Vertex AI publisher-models API and open or
 # update one pull request from the bot branch models-refresh. The workflow
 # never merges and never tags; a human reviews and merges the pull request.

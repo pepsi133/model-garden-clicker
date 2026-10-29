@@ -1128,7 +1128,7 @@ r = await msg({ type: K.MSG.STOP }); await settle();
 assert(store.running === false, "33 fixture: the run was stopped");
 fakeIDB.reset(); store.queue = []; store.run = null;
 
-// 34. Check-only run (docs/scoping/04): START with checkOnly in a dry run stores run.checkOnly (snapshot and record)
+// 34. Check-only run (extension/README.md, "Check only"): START with checkOnly in a dry run stores run.checkOnly (snapshot and record)
 // and says so in the start line; a not-enabled result is accepted and counted; FULL RUN refuses the box and writes
 // nothing; a Start without the field stores false; the cross-run guard leaves out a check-only "skipped" pair and
 // attempts a "not-enabled" pair again (a done pair stays left out).

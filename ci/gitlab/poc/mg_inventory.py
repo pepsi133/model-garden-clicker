@@ -152,7 +152,7 @@ def service_id_from_uri(uri: str) -> str:
 
 # -------------------------------------------------------------- deep links
 
-# The link format is the contract in docs/scoping/03-deep-links.md;
+# The link format is the contract in extension/README.md, "Open the popup from a link";
 # scripts/deep-link/mgc_link.py builds the same link. This function is
 # self-contained on purpose (no import of that script).
 def build_deep_links(pending: dict, extension_id: str, max_raw: int = DEEP_LINK_MAX_RAW):

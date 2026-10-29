@@ -4,6 +4,11 @@
 
 Model Garden Clicker is a Chrome extension that enables Anthropic Claude models in the Google Cloud console Model Garden for many projects. Enabling a model means filling the enablement questionnaire and accepting the Marketplace agreement, once per project and per model. Google Cloud offers no API for this flow as of October 2026, so the extension drives the console pages in your own signed-in browser: you save the questionnaire values once, paste the project IDs, tick the models and press Start.
 
+## Get the extension
+
+- **Chrome Web Store (one click):** https://chromewebstore.google.com/detail/fmfhgpbcpacoddjpfemghhpinhodcglp. Click **Add to Chrome**. Chrome's own guide: [Install and manage extensions](https://support.google.com/chrome_webstore/answer/2664769). The listing is being published; until the page is live, use the release package below.
+- **Release package (no store):** download `model-garden-clicker-<version>.zip` from the [latest release](https://github.com/pepsi133/model-garden-clicker/releases/latest), unzip it, open `chrome://extensions`, turn on **Developer mode** and click **Load unpacked** on the unzipped folder. Chrome's own guide: [Load an unpacked extension](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked). Details: [Install](#install).
+
 ## See it work
 
 One dry run, from the first click to the results table.
@@ -131,7 +136,7 @@ Every detail of the popup, the options page, the step-by-step panel and the adva
 
 **From a clone.** The same steps, picking the `extension/` folder of the repository. There is no build step. After editing a file, click the reload icon on the extension's card.
 
-**From the Chrome Web Store.** Once the listing is published, the store page installs it with one click; the link will be added here.
+**From the Chrome Web Store.** The store page, https://chromewebstore.google.com/detail/fmfhgpbcpacoddjpfemghhpinhodcglp, installs it with one click once the listing is published.
 
 Sign in to the Google Cloud console in the same Chrome profile with an account that can enable models in the projects you list.
 

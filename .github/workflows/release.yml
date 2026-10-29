@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  # A manual run creates the tag itself (on the commit the run is started
+  # on, with the workflow's own token) and then releases it with the same
+  # checks, suite, zip and GitHub release as a tag push. A tag pushed with
+  # GITHUB_TOKEN starts no second run, so this run does the release.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to release (must equal extension/manifest.json); the tag is v<version>"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -20,20 +30,47 @@ jobs:
         with:
           persist-credentials: false
 
+      # TAG is the pushed tag, or v<version> for a manual run.
+      - name: Name the tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="v${INPUT_VERSION}"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          case "$tag" in v[0-9]*) ;; *) echo "not a release tag: $tag" >&2; exit 1 ;; esac
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
       - name: Check that the tag matches the manifest version
         run: |
           version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' extension/manifest.json | head -1)
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${TAG#v}"
           if [ "$version" != "$tag" ]; then
-            echo "manifest version $version does not match tag $GITHUB_REF_NAME" >&2
+            echo "manifest version $version does not match tag $TAG" >&2
             exit 1
           fi
+
+      # Manual run only: the tag is created on the commit this run checked
+      # out and pushed with the workflow's token; an existing tag fails here.
+      - name: Create the tag (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists on the remote" >&2
+            exit 1
+          fi
+          git tag "$TAG" "$GITHUB_SHA"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$TAG"
 
       # The release body is the tag's section of CHANGELOG.md; a tag without
       # a section fails here, before anything is built.
       - name: Extract the release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           awk -v v="$version" '
             index($0, "## [" v "]") == 1 { found = 1; next }
             found && /^## \[/ { exit }
@@ -93,6 +130,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/model-garden-clicker-*.zip \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "$TAG" dist/model-garden-clicker-*.zip \
+            --title "$TAG" \
             --notes-file release-notes.md

@@ -56,6 +56,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
   `models-refresh`. It never merges and never tags. It is skipped until the
   variables are set, and it fails when a GA entry stays undated for more
   than 30 days.
+- A per-project policy for the console's "Enable APIs" dialog. The options
+  page has a new "API enablement" section above Advanced: a default policy
+  (`enable`, the default and the behaviour so far; `ask`; `never`) and
+  per-project overrides, one `project-id: policy` line each, matched
+  without regard to case. With `ask` a panel in the console tab offers
+  Enable the API / Skip / Stop, whatever the step-by-step setting: Skip
+  ends the job `skipped-by-you` with nothing clicked, the watchdog pauses
+  meanwhile, and the popup's status reads `Enable the API`. With `never`
+  (a project whose APIs Terraform or another tool manages) the job fails
+  at once with `API enablement required outside the extension`, naming the
+  API, and nothing is clicked. Every decision is logged with the project,
+  the policy, its source and the API. Save refuses an overrides line that
+  is not a valid project ID with one of the three policies, naming the
+  line; Export and Import carry both keys. A check-only run still clicks
+  nothing.
 
 ### Changed
 - Deep links accept up to 200 projects (was 23) and 16,384 characters (was

@@ -371,6 +371,13 @@ r = await msg({ type: K.MSG.SET_PHASE, runId: R10, jobIndex: 0, phase: "awaiting
 assert(r.ok === true && store.current.awaiting === "next-job" && alarm === null && store.log.some((l) => /waiting for your confirmation before Next job \(watchdog paused\)/.test(l.msg)), "awaiting_confirmation(next-job), the dry-run end panel, is a known step and pauses the watchdog");
 r = await msg({ type: K.MSG.SET_PHASE, runId: R10, jobIndex: 0, phase: "awaiting_confirmation", awaiting: "agree" }, t10);
 assert(r.ok === true && store.current.awaiting === "agree" && alarm === null, "awaiting_confirmation(agree) pauses the watchdog again");
+// The API-enablement policy "ask": the "Enable APIs" dialog's panel is a known step like the others.
+r = await msg({ type: K.MSG.SET_PHASE, runId: R10, jobIndex: 0, phase: "model" }, t10);
+assert(r.ok === true && alarm !== null, "control: the model phase re-arms the watchdog before the api-enable wait");
+r = await msg({ type: K.MSG.SET_PHASE, runId: R10, jobIndex: 0, phase: "awaiting_confirmation", awaiting: "api-enable" }, t10);
+assert(r.ok === true && store.current.awaiting === "api-enable" && store.queue[0].awaiting === "api-enable" && alarm === null && store.log.some((l) => /waiting for your confirmation before Enable the API \(watchdog paused\)/.test(l.msg)), "awaiting_confirmation(api-enable), the API-enablement panel, is accepted and pauses the watchdog");
+r = await msg({ type: K.MSG.SET_PHASE, runId: R10, jobIndex: 0, phase: "model" }, t10);
+assert(r.ok === true && store.current.awaiting === null && alarm !== null, "the earlier phase after the api-enable wait clears the step and re-arms the watchdog");
 r = await msg({ type: K.MSG.STOP }); await settle();
 assert(store.running === false && store.queue[0].status === "stopped" && store.current === null, "Stop while a job waits for confirmation ends the run with the job stopped");
 store.settings.step_by_step = true;

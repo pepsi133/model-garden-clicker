@@ -58,9 +58,10 @@
   MGC.CONFIRM_STEP = {
     NEXT: "next",                   // the questionnaire's Next button
     AGREE: "agree",                 // the Agreements page's Agree button (full run only)
-    NEXT_JOB: "next-job"            // dry run: the Agreements page is done; "Next job" or "Stop" ends the job
+    NEXT_JOB: "next-job",           // dry run: the Agreements page is done; "Next job" or "Stop" ends the job
+    API_ENABLE: "api-enable"        // API-enablement policy "ask": the "Enable APIs" dialog's Enable (any mode, step-by-step or not)
   };
-  MGC.CONFIRM_STEP_LABEL = { next: "Next", agree: "Agree", "next-job": "Next job" };
+  MGC.CONFIRM_STEP_LABEL = { next: "Next", agree: "Agree", "next-job": "Next job", "api-enable": "Enable the API" };
   /* A trusted Continue older than this no longer satisfies the Agree guard. */
   MGC.CONTINUE_MAX_AGE_MS = 5 * 60 * 1000;
 
@@ -351,7 +352,66 @@
     intended_users: "Intended users",
     use_cases: "Use cases",
     aup_additional_requirements: "Acceptable Use Policy answer",
-    aup_details: "Acceptable Use Policy details"
+    aup_details: "Acceptable Use Policy details",
+    api_enable_policy: "API enablement policy",
+    api_enable_overrides: "Per-project API enablement overrides"
+  };
+
+  /*
+   * API-enablement policy (options page, "API enablement"): what the
+   * extension does with the console's "Enable APIs" dialog. "enable" clicks
+   * its Enable (the behaviour before the policy existed), "ask" shows a
+   * panel in the console tab (Enable the API / Skip / Stop), "never" fails
+   * the job naming the API and clicks nothing (a project whose APIs are
+   * managed by Terraform or another tool). api_enable_policy is the default;
+   * api_enable_overrides holds one line per project, "project-id: policy".
+   * Neither is ever required (missingSettings reads only the questionnaire).
+   */
+  MGC.API_ENABLE_POLICIES = ["enable", "ask", "never"];
+  MGC.API_ENABLE_DEFAULT_POLICY = "enable";
+
+  /**
+   * Parse the overrides text: one line per project, "project-id: enable|ask|never",
+   * spaces around the colon allowed, blank lines ignored. The project ID is
+   * compared case-insensitively: it is lower-cased, must then pass
+   * isValidProjectId, and keys the map; the value is read case-insensitively.
+   * A project listed twice is an error. Returns { ok, errors, map }: one error
+   * per bad line, naming its number and text; map is { lower-cased id: policy }.
+   */
+  MGC.parseApiEnableOverrides = function (text) {
+    const errors = [];
+    const map = {};
+    const lines = String(text === undefined || text === null ? "" : text).split(/\r?\n/);
+    lines.forEach((raw, i) => {
+      const line = raw.trim();
+      if (!line) return;
+      const where = `line ${i + 1} "${line.slice(0, 80)}"`;
+      const m = /^([^:]*?)\s*:\s*(\S*)$/.exec(line);
+      if (!m) { errors.push(`${where}: expected "project-id: enable|ask|never"`); return; }
+      const id = m[1].toLowerCase();
+      const policy = m[2].toLowerCase();
+      if (!MGC.isValidProjectId(id)) { errors.push(`${where}: "${m[1].slice(0, 60)}" is not a valid Cloud project ID`); return; }
+      if (!MGC.API_ENABLE_POLICIES.includes(policy)) { errors.push(`${where}: the policy must be enable, ask or never`); return; }
+      if (Object.prototype.hasOwnProperty.call(map, id)) { errors.push(`${where}: ${id} is listed on an earlier line`); return; }
+      map[id] = policy;
+    });
+    return { ok: errors.length === 0, errors, map };
+  };
+
+  /**
+   * The API-enablement policy for a project: { policy, source } with source
+   * "override" (a line of api_enable_overrides names the project, compared
+   * case-insensitively) or "default" (api_enable_policy, "enable" when it is
+   * missing or unknown). An overrides text that does not parse is ignored
+   * as a whole (the options page refuses to save one).
+   */
+  MGC.apiEnablePolicyFor = function (settings, projectId) {
+    const s = settings || {};
+    const def = MGC.API_ENABLE_POLICIES.includes(s.api_enable_policy) ? s.api_enable_policy : MGC.API_ENABLE_DEFAULT_POLICY;
+    const o = MGC.parseApiEnableOverrides(s.api_enable_overrides);
+    const id = String(projectId === undefined || projectId === null ? "" : projectId).toLowerCase();
+    if (o.ok && id && Object.prototype.hasOwnProperty.call(o.map, id)) return { policy: o.map[id], source: "override" };
+    return { policy: def, source: "default" };
   };
 
   /** True when the Acceptable Use Policy answer is "yes". */
@@ -385,7 +445,9 @@
     aup_details: "",
     live_mode: false,               // false = dry run (the options page shows it as a ticked "DRY RUN" box)
     step_by_step: false,            // true = wait for Continue in the page before Next and before Agree
-    inside_joke: false              // options page "inside joke" box: true shows step-by-step off as "kubardy mode", false as "fast mode" (text only)
+    api_enable_policy: "enable",    // the "Enable APIs" dialog: "enable" | "ask" | "never" (MGC.apiEnablePolicyFor)
+    api_enable_overrides: "",       // one line per project: "project-id: enable|ask|never"
+    inside_joke: false             // options page "inside joke" box: true shows step-by-step off as "kubardy mode", false as "fast mode" (text only)
   };
 
   /** The user-visible name of step-by-step off: "kubardy mode" with the inside joke box ticked, else "fast mode". */
@@ -416,7 +478,8 @@
    * The settings file (options page, Advanced: Export settings / Import
    * settings). One JSON object:
    *   { app, schema, exported, settings: { questionnaire fields,
-   *     step_by_step, inside_joke }, popup: { projects: [ids], models:
+   *     step_by_step, inside_joke, api_enable_policy,
+   *     api_enable_overrides }, popup: { projects: [ids], models:
    *     [ticked slugs], extra: "extra slugs" }, timing: {...}, runs_keep }
    * The DRY RUN / full-run mode (live_mode) is never exported or imported,
    * nor is the per-run "Include pairs already done or skipped" box. A
@@ -427,7 +490,7 @@
   MGC.CONFIG_SCHEMA = 1;
   MGC.CONFIG_TEXT_MAX = 2000;       // the longest text value an import accepts (a longer one is refused, naming the key)
   MGC.CONFIG_LIST_MAX = 8192; // the longest project or model list (the entries joined) an import or a deep link accepts
-  MGC.CONFIG_SETTINGS_KEYS = MGC.SETTINGS_FIELDS.concat(["step_by_step", "inside_joke"]);
+  MGC.CONFIG_SETTINGS_KEYS = MGC.SETTINGS_FIELDS.concat(["step_by_step", "inside_joke", "api_enable_policy", "api_enable_overrides"]);
   const CONFIG_TOP_KEYS = ["app", "schema", "exported", "settings", "popup", "timing", "runs_keep"];
   const NEVER_IMPORTED = ["live_mode", "dry_run", "include_done", "includeDone"];
   const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -515,7 +578,12 @@
         const t = v.trim();
         if (!t) continue; // empty: leaves the current value
         if (k === "aup_additional_requirements" && !/^(yes|no)$/i.test(t)) { errors.push(`${path} must be "yes" or "no"`); continue; }
-        values.settings[k] = k === "aup_additional_requirements" ? t.toLowerCase() : t;
+        if (k === "api_enable_policy" && !MGC.API_ENABLE_POLICIES.includes(t.toLowerCase())) { errors.push(`${path} must be "enable", "ask" or "never"`); continue; }
+        if (k === "api_enable_overrides") {
+          const ov = MGC.parseApiEnableOverrides(t);
+          if (!ov.ok) { errors.push(`${path} holds lines that are not "project-id: enable|ask|never": ${ov.errors.join(", ")}`); continue; }
+        }
+        values.settings[k] = k === "aup_additional_requirements" || k === "api_enable_policy" ? t.toLowerCase() : t;
       }
     }
     if (present(obj, "popup")) {

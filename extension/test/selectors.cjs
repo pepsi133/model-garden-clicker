@@ -51,6 +51,21 @@ const inDialog = (el) => !!(el && el.closest("mat-dialog-container"));
   }
 })();
 
+(function apiDialogTitleText() {
+  console.log("--- findApiEnableDialog returns the dialog's title and text (synthetic markup)");
+  const env = E.makeEnv({ url: "https://console.cloud.google.com/agent-platform/publishers/anthropic/model-garden/claude-haiku-4-5?project=p" });
+  env.document.body.innerHTML = '<div class="cdk-overlay-container"><mat-dialog-container role="dialog"><apis-enabler>' +
+    '<h1 matdialogtitle> Enable APIs </h1><div matdialogcontent> The Agent Platform API must be enabled to use this page. </div>' +
+    '<div matdialogactions><button> Cancel </button><button> Enable </button></div></apis-enabler></mat-dialog-container></div>';
+  const found = env.S.dialogs.findApiEnableDialog();
+  ok(found && found.title === "Enable APIs" && found.text === "The Agent Platform API must be enabled to use this page." && env.D.text(found.enableButton) === "Enable",
+    "findApiEnableDialog: title \"Enable APIs\", text the body sentence (trimmed), enableButton as before", found && JSON.stringify({ title: found.title, text: found.text }));
+  env.document.querySelector("[matdialogcontent]").remove();
+  const bare = env.S.dialogs.findApiEnableDialog();
+  ok(bare && bare.title === "Enable APIs" && bare.text === "", "control: a dialog without a body gives an empty text", bare && JSON.stringify({ title: bare.title, text: bare.text }));
+  env.win.close();
+})();
+
 /* ------------------------------------------------------------ run A */
 
 withSnapshot(RUN_A, "01-model-page", ({ S, D }) => {

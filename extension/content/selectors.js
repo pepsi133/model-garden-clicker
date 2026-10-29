@@ -327,16 +327,19 @@
      * The "Enable APIs" dialog (apis-enabler, h1 "Enable APIs", body "The
      * Agent Platform API must be enabled to use this page.", buttons Send
      * feedback / Cancel / Enable). It can sit on any of the three pages.
-     * Returns { dialog, enableButton } when it is in the DOM, else null.
-     * enableButton is the dialog's own button whose trimmed text is exactly
-     * "Enable"; the caller re-checks that text before clicking.
+     * Returns { dialog, enableButton, title, text } when it is in the DOM,
+     * else null. enableButton is the dialog's own button whose trimmed text
+     * is exactly "Enable"; the caller re-checks that text before clicking.
+     * title and text are the dialog's heading and body (the body names the
+     * API: the API-enablement policy's log and panel quote it).
      */
     findApiEnableDialog: function () {
       for (const dialog of D.qa(DIALOG_SELECTOR)) {
-        const isApi = !!D.q("apis-enabler", dialog) || dialogTitle(dialog) === "Enable APIs";
+        const title = dialogTitle(dialog);
+        const isApi = !!D.q("apis-enabler", dialog) || title === "Enable APIs";
         if (!isApi) continue;
         const enableButton = D.qa("button", dialog).find((b) => D.text(b) === "Enable") || null;
-        return { dialog, enableButton };
+        return { dialog, enableButton, title, text: dialogText(dialog) };
       }
       return null;
     }

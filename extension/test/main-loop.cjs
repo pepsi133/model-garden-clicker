@@ -60,7 +60,7 @@ function boot(opts) {
   if (opts.forms) E.rehydrate(env.document, opts.forms);
   const live = opts.live === true;
   const state = {
-    settings: { business_name: "b", business_website: "https://b.example", contact_email: "a@b.example", headquarters: "x", industry: "x", intended_users: "x", use_cases: "x", aup_additional_requirements: "no", aup_details: "", live_mode: live, step_by_step: opts.stepByStep === true },
+    settings: Object.assign({ business_name: "b", business_website: "https://b.example", contact_email: "a@b.example", headquarters: "x", industry: "x", intended_users: "x", use_cases: "x", aup_additional_requirements: "no", aup_details: "", live_mode: live, step_by_step: opts.stepByStep === true }, opts.settings),
     queue: opts.queue || [Object.assign({ projectId: "proj-one", modelSlug: "claude-haiku-4-5", modelName: "Claude Haiku 4.5", status: "running", phase: "navigate", productId: null, agreeClicked: false }, opts.job)].concat(opts.moreJobs || []),
     current: opts.current === null ? null : (opts.current || { jobIndex: 0, phase: "navigate" }),
     run: opts.run || { runId: "r1", live },
@@ -777,6 +777,34 @@ function boot(opts) {
     for (const b of t.env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { if (t.env.D.text(b) === "Enable") { enable += 1; t.env.D.q(".cdk-overlay-container").remove(); } });
     await until(() => t.results.length > 0, 3000);
     ok(enable === 1 && calls === 1 && t.results[0].status === "dry-run", "(T5 control) without checkOnly the dialog's Enable is clicked and the handler runs", JSON.stringify(t.results[0]));
+    t.stop();
+  }
+
+  console.log("--- (api policy) the pre-action step reports the status the dialog step returns");
+  {
+    // The real dialog step under the policy "ask": Skip on the panel -> the loop reports skipped-by-you, nothing clicked, the handler never runs.
+    let calls = 0, pressed = 0;
+    const t = boot({ html: MODEL_HTML.replace("</body>", API_DIALOG + "</body>"), settings: { api_enable_policy: "ask" }, handler: async () => { calls += 1; return { status: "dry-run", message: "x" }; } });
+    for (const b of t.env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { pressed += 1; });
+    await until(() => !!t.env.document.querySelector('#mgc-panel button[data-action="skip"]'), 3000);
+    const skipBtn = t.env.document.querySelector('#mgc-panel button[data-action="skip"]');
+    if (skipBtn) skipBtn.click();
+    await until(() => t.results.length > 0, 3000);
+    const r = t.results[0];
+    ok(r && r.status === "skipped-by-you" && r.message === 'skipped by you at the "Enable APIs" dialog for proj-one: nothing was clicked' && pressed === 0 && calls === 0,
+      "(api policy) Skip at the ask panel in the pre-action step: the loop reports skipped-by-you (status passthrough), no click, no handler", `${JSON.stringify(r)} pressed=${pressed} calls=${calls}`);
+    ok(t.phases.includes("awaiting_confirmation(api-enable)"), "(api policy) the loop's ask wait set awaiting_confirmation(api-enable)", t.phases.join());
+    t.stop();
+  }
+  {
+    // control: the policy never -> the loop still reports failed with the dialog step's message.
+    let calls = 0, pressed = 0;
+    const t = boot({ html: MODEL_HTML.replace("</body>", API_DIALOG + "</body>"), settings: { api_enable_policy: "never" }, handler: async () => { calls += 1; return { status: "dry-run", message: "x" }; } });
+    for (const b of t.env.D.qa("mat-dialog-container button")) b.addEventListener("click", () => { pressed += 1; });
+    await until(() => t.results.length > 0, 3000);
+    const r = t.results[0];
+    ok(r && r.status === "failed" && /^API enablement required outside the extension: the console asks to enable The Agent Platform API must be enabled to use this page\. in proj-one/.test(r.message) && pressed === 0 && calls === 0,
+      "(api policy) control: a failed object from the dialog step still reports failed with its message, no click", `${JSON.stringify(r)} pressed=${pressed}`);
     t.stop();
   }
   {

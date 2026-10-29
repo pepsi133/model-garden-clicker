@@ -95,7 +95,7 @@
   }
 
   /**
-   * Show the confirmation panel for `step` ("next" | "agree" | "next-job")
+   * Show the confirmation panel for `step` ("next" | "agree" | "next-job" | "api-enable")
    * and wait. Resolves:
    *   "continue"  after a trusted click on the primary button (recorded
    *               first for the guard);
@@ -127,7 +127,10 @@
    * (true adds a Skip button between Continue and Stop; Skip takes any
    * click, like Stop, because it clicks nothing and can only end the job;
    * userActed() is still checked first, so the user's own console click in
-   * the same poll wins over a Skip). The caller
+   * the same poll wins over a Skip), apiDialogIsTheStep (true when the
+   * "Enable APIs" dialog is the step being asked, step "api-enable": that
+   * dialog is neither cleared nor disables the primary button; any other
+   * dialog still disables it). The caller
    * sets the awaiting_confirmation phase around this call (that pauses the
    * worker's watchdog) and the page's phase again after it.
    */
@@ -137,12 +140,21 @@
     const continueLabel = o.continueLabel || "Continue";
     const continueAction = o.continueAction || "continue";
     const userActed = () => typeof o.userActed === "function" && !!o.userActed();
+    // The console dialogs that disable the primary button: every visible
+    // one, except the "Enable APIs" dialog when it is the step being asked
+    // (apiDialogIsTheStep).
+    const blockingDialogs = () => {
+      const open = S.dialogs.visible();
+      if (o.apiDialogIsTheStep !== true || !open.length) return open;
+      const api = S.dialogs.findApiEnableDialog();
+      return api && api.dialog ? open.filter((d) => d.dialog !== api.dialog) : open;
+    };
     let decision = null;
     const buttons = [{
       label: continueLabel, action: continueAction, primary: true,
       onClick: (ev) => {
         if (userActed()) { ctx.log(`ignored ${continueLabel}: you already activated the console's ${label} yourself`); return; }
-        const open = S.dialogs.visible();
+        const open = blockingDialogs();
         if (open.length) { ctx.log(`ignored ${continueLabel} while a console dialog is open: ${dialogNamed(open[0])}`); return; }
         if (!A.recordContinue(ctx.runId, ctx.jobIndex, step, ev)) { ctx.log(`ignored an untrusted ${continueLabel} click before ${label}`); return; }
         decision = "continue";
@@ -182,9 +194,9 @@
           ctx.log(`${blocked.message}; the job ends here`);
           return blocked;
         }
-        const open = S.dialogs.visible();
+        const open = blockingDialogs();
         if (open.length) {
-          const api = S.dialogs.findApiEnableDialog();
+          const api = o.apiDialogIsTheStep === true ? null : S.dialogs.findApiEnableDialog();
           if (api && api.dialog && D.isVisible(api.dialog)) {
             ctx.log('"Enable APIs" dialog opened while waiting for your confirmation; clearing it');
             const r = await A.clearBlockingDialog(ctx);
@@ -309,6 +321,18 @@
    * enabling the API did not take. The "seen" memory lives in the content
    * script (a reload would lose it, but nothing here reloads).
    *
+   * Before any click the project's API-enablement policy decides
+   * (MGC.apiEnablePolicyFor with ctx.settings and the job's project, logged
+   * with its source and the API the dialog names): "enable" clicks as
+   * described here; "never" ends the job failed, naming the API, with no
+   * click; "ask" shows a panel (Enable the API / Skip / Stop, step
+   * api-enable, whatever the step-by-step setting) and clicks only after a
+   * trusted click on Enable the API; Skip ends the job skipped-by-you with
+   * no click; the dialog closing by itself (your own Enable or Cancel in
+   * the console) returns "cleared". Every caller (the page loop's
+   * pre-action step, the model handler, the confirmation wait) goes through
+   * here, so each honours the policy. A check-only run never calls it.
+   *
    * Returns "none" (no dialog), "cleared", or a { status, message } result
    * that ends the job. The Enable click goes through D.click(), which
    * refuses anything containing "agree", and the button text is matched
@@ -319,13 +343,88 @@
   /** A check-only run's result for a visible "Enable APIs" dialog (main.js's pre-action step and the model handler). */
   A.CHECK_ONLY_DIALOG_MESSAGE = 'not enabled: the console asks to enable the Agent Platform API first ("Enable APIs" dialog); nothing was clicked (check only)';
 
+  /** What the dialog asks to enable: its body text (160 characters at most), else its title, else the Agent Platform API. */
+  function apiNameOf(found) {
+    const text = String((found && found.text) || "").trim();
+    if (text) return text.slice(0, 160);
+    const title = String((found && found.title) || "").trim();
+    return title ? title.slice(0, 160) : "the Agent Platform API";
+  }
+
+  /**
+   * The "ask" policy: the panel (step api-enable) over the visible dialog.
+   * Returns "continue" (a trusted click on Enable the API), "cleared" (the
+   * dialog closed by itself or by your own Enable or Cancel in the
+   * console), or a { status, message } result that ends the job (Skip, or
+   * a blocker seen during the wait). Stop rejects with StoppedError. The
+   * phase is awaiting_confirmation(api-enable) during the wait (the
+   * watchdog pauses) and the earlier one after it.
+   */
+  async function askApiEnable(ctx, project, api) {
+    const before = typeof ctx.refresh === "function" ? await ctx.refresh() : null;
+    const cur = before && before.current ? before.current : null;
+    const prevPhase = cur ? cur.phase : null;
+    const prevAwaiting = cur ? cur.awaiting : null;
+    if (typeof ctx.setPhase === "function") await ctx.setPhase(PHASE.AWAITING_CONFIRMATION, K.CONFIRM_STEP.API_ENABLE);
+    const dialogGone = () => {
+      const d = S.dialogs.findApiEnableDialog();
+      return !d || !d.dialog || !D.isVisible(d.dialog);
+    };
+    const how = await A.awaitConfirmation(ctx, K.CONFIRM_STEP.API_ENABLE, {
+      title: "The console asks to enable an API",
+      summary: `The console asks to enable ${api} in ${project}. Enable the API clicks the dialog's Enable button, which changes the project's service configuration. Skip ends this job without clicking and the run moves on. Stop ends the run.`,
+      continueLabel: "Enable the API",
+      continueAction: "api-enable",
+      proceedText: `clicking Enable in the "Enable APIs" dialog for ${project}`,
+      userActed: dialogGone,
+      skipEndsJob: true,
+      apiDialogIsTheStep: true
+    });
+    if (typeof ctx.setPhase === "function") {
+      // Back to the earlier phase: inside another wait that is the same
+      // awaiting step again (its watchdog stays paused); before any page
+      // phase was set (none or navigate) the model page's.
+      if (prevPhase === PHASE.AWAITING_CONFIRMATION) await ctx.setPhase(PHASE.AWAITING_CONFIRMATION, prevAwaiting);
+      else if (!prevPhase || prevPhase === PHASE.NAVIGATE) await ctx.setPhase(PHASE.MODEL);
+      else await ctx.setPhase(prevPhase);
+    }
+    return how;
+  }
+
   A.clearBlockingDialog = async function (ctx) {
-    const found = S.dialogs.findApiEnableDialog();
+    let found = S.dialogs.findApiEnableDialog();
     if (!found || !found.dialog || !D.isVisible(found.dialog)) return "none";
 
     const key = `${ctx.runId}|${ctx.jobIndex}`;
     if (apiDialogSeen.has(key)) {
       return { status: STATUS.FAILED, message: '"Enable APIs" dialog reappeared after its Enable was clicked; giving up on this job' };
+    }
+    // The project's API-enablement policy (options page): enable, ask or never.
+    const project = (ctx.job && ctx.job.projectId) || "(unknown project)";
+    const { policy, source } = K.apiEnablePolicyFor(ctx.settings, ctx.job && ctx.job.projectId);
+    const api = apiNameOf(found);
+    ctx.log(`API policy for ${project}: ${policy} (${source}); the console asks to enable ${api}`);
+    if (policy === "never") {
+      return { status: STATUS.FAILED, message: `API enablement required outside the extension: the console asks to enable ${api} in ${project} and this project's policy is never, so the dialog's Enable was not clicked; enable the API with your own tooling, then run the pair again` };
+    }
+    if (policy === "ask") {
+      const how = await askApiEnable(ctx, project, api);
+      if (how && typeof how === "object") return how; // a blocker ended the wait
+      if (how === "skip") {
+        return { status: STATUS.SKIPPED_BY_USER, message: `skipped by you at the "Enable APIs" dialog for ${project}: nothing was clicked` };
+      }
+      if (how === "user") {
+        ctx.log('the "Enable APIs" dialog is no longer visible (you clicked Enable or Cancel in the console yourself); nothing was clicked; checking the page again');
+        return "cleared";
+      }
+      // "continue": the dialog may have re-rendered during the wait.
+      found = S.dialogs.findApiEnableDialog();
+      if (!found || !found.dialog || !D.isVisible(found.dialog)) {
+        A.clearContinue(ctx.runId, ctx.jobIndex, K.CONFIRM_STEP.API_ENABLE);
+        ctx.log('the "Enable APIs" dialog closed as you confirmed; nothing was clicked; checking the page again');
+        return "cleared";
+      }
+      ctx.log(`you confirmed the API enablement: clicking Enable in the "Enable APIs" dialog for ${project}`);
     }
     const btn = found.enableButton;
     if (!btn || D.text(btn) !== "Enable") {
@@ -337,6 +436,7 @@
     // model handler and the step-by-step panel's wait).
     A.assertNoBlocker();
     apiDialogSeen.add(key);
+    if (policy === "ask") A.clearContinue(ctx.runId, ctx.jobIndex, K.CONFIRM_STEP.API_ENABLE); // the confirmation is used by this click
     D.click(btn);
     ctx.log('"Enable APIs" dialog: clicked Enable, waiting for it to close');
     // The close wait can last api_dialog_close_ms (120 s by default); a Stop

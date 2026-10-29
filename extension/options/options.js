@@ -17,6 +17,7 @@
   const { KEYS } = K;
   const form = document.getElementById("form");
   const CHOICE_FIELDS = ["headquarters", "industry", "intended_users"];
+  const API_ENABLE_FIELDS = ["api_enable_policy", "api_enable_overrides"];
 
   /* ---------------------------------------------------------- choice fields */
 
@@ -304,6 +305,11 @@
       n += 1;
     }
     syncAup();
+    for (const key of API_ENABLE_FIELDS) {
+      if (!(key in s)) continue;
+      form.elements[key].value = s[key];
+      n += 1;
+    }
     if ("step_by_step" in s) { form.elements.step_by_step.checked = s.step_by_step === true; n += 1; }
     if ("inside_joke" in s) { form.elements.inside_joke.checked = s.inside_joke === true; syncStepOffNames(); n += 1; }
     const timing = values.timing || {};
@@ -349,6 +355,8 @@
     }
     for (const field of CHOICE_FIELDS) syncFromValue(field, s[field]);
     syncAup();
+    form.elements.api_enable_policy.value = K.API_ENABLE_POLICIES.includes(s.api_enable_policy) ? s.api_enable_policy : K.API_ENABLE_DEFAULT_POLICY;
+    form.elements.api_enable_overrides.value = typeof s.api_enable_overrides === "string" ? s.api_enable_overrides : "";
     // The box reads "DRY RUN" and is stored inverted: live_mode = !dry_run.
     syncModeBoxes(s);
     syncInsideJoke(s);
@@ -390,9 +398,17 @@
     }
   }
 
+  /** The error line under the API enablement overrides (cleared with ""). */
+  function apiEnableError(text) {
+    const el = document.getElementById("api-enable-error");
+    el.textContent = text;
+    el.hidden = !text;
+  }
+
   async function saveChecked() {
     timingError("");
     runsKeepError("");
+    apiEnableError("");
     const liveWanted = form.elements.dry_run.checked !== true;
     const stepWanted = form.elements.step_by_step.checked === true;
     const s = {};
@@ -408,6 +424,22 @@
       note(`Not saved. Fill in: ${missing.map((k) => K.SETTINGS_LABELS[k] || k).join(", ")}.`, true);
       return;
     }
+    // API enablement: the select's value, and the overrides text exactly as typed once every line parses.
+    const policy = String(form.elements.api_enable_policy.value || "");
+    if (!K.API_ENABLE_POLICIES.includes(policy)) {
+      apiEnableError(`Not saved: the ${K.SETTINGS_LABELS.api_enable_policy} must be enable, ask or never.`);
+      note("Not saved. See the API enablement section.", true);
+      return;
+    }
+    const overridesText = String(form.elements.api_enable_overrides.value || "");
+    const overrides = K.parseApiEnableOverrides(overridesText);
+    if (!overrides.ok) {
+      apiEnableError(`Not saved: ${overrides.errors.join("; ")}.`);
+      note("Not saved. See the API enablement section.", true);
+      return;
+    }
+    s.api_enable_policy = policy;
+    s.api_enable_overrides = overridesText;
     const timing = parseTiming();
     if (!timing.ok) {
       timingError(`Not saved: ${timing.errors.join("; ")}.`);

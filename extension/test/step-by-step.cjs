@@ -225,6 +225,44 @@ const contOf = (env) => env.document.querySelector('#mgc-panel button[data-actio
     env.win.close();
   }
 
+  console.log("--- (api-enable) apiDialogIsTheStep: the Enable APIs dialog neither disables the primary button nor is cleared; an error dialog still disables it");
+  {
+    const env = E.makeEnv({ url: AGREEMENTS_URL });
+    env.K.URL_POLL_MS = 20;
+    const state = stateFor();
+    const ctx = ctxFor(env, state);
+    env.document.body.insertAdjacentHTML("beforeend", API_DIALOG);
+    let enableClicks = 0;
+    for (const b of env.D.qa("#api button")) b.addEventListener("click", () => { enableClicks += 1; });
+    const prim = () => env.document.querySelector('#mgc-panel button[data-action="api-enable"]');
+    let settled = null;
+    const p = env.A.awaitConfirmation(ctx, "api-enable", {
+      summary: "s", continueLabel: "Enable the API", continueAction: "api-enable",
+      userActed: () => !env.document.getElementById("api"), skipEndsJob: true, apiDialogIsTheStep: true
+    }).then((v) => { settled = v; }, (e) => { settled = e; });
+    await sleep(120);
+    ok(prim() && prim().disabled === false && noteOf(env) === "" && enableClicks === 0 && !!env.document.getElementById("api"), "the Enable APIs dialog under apiDialogIsTheStep: Enable the API enabled, no note, the dialog not cleared (zero clicks)", `${prim() && prim().disabled} note="${noteOf(env)}" clicks=${enableClicks}`);
+    env.document.body.insertAdjacentHTML("beforeend", ERROR_DIALOG);
+    await sleep(80);
+    ok(prim().disabled === true && /A console dialog is open: Something went wrong/.test(noteOf(env)), "an error dialog next to it still disables Enable the API and is named", noteOf(env));
+    env.document.getElementById("err").remove();
+    await sleep(80);
+    ok(prim().disabled === false && settled === null, "the error dialog closes: Enable the API enabled again, the wait goes on");
+    trustedClick(prim());
+    await sleep(80);
+    ok(settled === "continue" && enableClicks === 0, "a trusted Enable the API resolves continue; the wait itself clicked nothing in the dialog", `${settled} clicks=${enableClicks}`);
+    await p;
+    // control: the same dialog without apiDialogIsTheStep is cleared by the wait (its Enable clicked once)
+    for (const b of env.D.qa("#api button")) b.addEventListener("click", () => { if (env.D.text(b) === "Enable") env.document.getElementById("api").remove(); });
+    let settled2 = null;
+    const p2 = env.A.awaitConfirmation(ctx, "agree", { summary: "s", userActed: () => false }).then((v) => { settled2 = v; }, (e) => { settled2 = e; });
+    await sleep(150);
+    ok(enableClicks === 1 && !env.document.getElementById("api") && settled2 === null, "control: without apiDialogIsTheStep the wait clears the dialog (Enable clicked once)", `clicks=${enableClicks}`);
+    trustedClick(contOf(env));
+    await p2;
+    env.win.close();
+  }
+
   console.log("--- handleQuestionnaire with step-by-step on the real filled form (run A, 03-form-filled)");
   const run = E.findRun("A");
   const snap = run && E.readSnapshot(run, "03-form-filled");

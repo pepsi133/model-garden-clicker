@@ -292,7 +292,9 @@
     if (st.run.checkOnly !== true) try {
       const dialog = await A.clearBlockingDialog(makeCtx(st, jobIndex));
       if (dialog && typeof dialog === "object") {
-        await report(runId, jobIndex, STATUS.FAILED, dialog.message);
+        // failed (a reappeared dialog, the policy "never", a blocker) or
+        // skipped-by-you (Skip on the policy "ask" panel).
+        await report(runId, jobIndex, dialog.status || STATUS.FAILED, dialog.message);
         return;
       }
       if (dialog === "cleared") {

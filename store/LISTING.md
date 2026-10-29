@@ -43,6 +43,8 @@ with the public GitHub URL before pasting. Package version: 0.9.0
 
     Step-by-step confirmation works in either mode. The extension fills each page and waits for you: a panel in the console tab offers Continue and Stop before Next, and before Agree in a full run. In a dry run the panel ends with Next job and Stop. If you click the console's own button instead, the extension notices and continues.
 
+    An API-enablement policy in the options page, per project if needed, decides what happens with the console's "Enable APIs" dialog: enable it, ask you on a panel, or never (for projects managed by Terraform: the job fails and names the API).
+
     WHAT IT STORES
 
     Everything the extension stores (questionnaire values, the job queue, results and the log) lives in the local extension storage of this browser only. Nothing is synced to an account and nothing is sent to the developer or to any third party. The questionnaire values are typed into Google's own form on the console page, and nowhere else.

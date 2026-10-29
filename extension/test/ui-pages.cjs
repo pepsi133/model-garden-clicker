@@ -1016,6 +1016,17 @@ function setSelect(p, name, value) {
     p.win.close();
   }
   {
+    // The API-enablement panel (policy "ask"): the step reads "Enable the API".
+    const store = {
+      settings: Object.assign({}, FULL, { api_enable_policy: "ask" }), running: true, run: { runId: "r", live: false },
+      current: { jobIndex: 0, phase: "awaiting_confirmation", awaiting: "api-enable" },
+      queue: [{ projectId: "proj-one", modelSlug: "claude-haiku-4-5", status: "running", phase: "awaiting_confirmation", awaiting: "api-enable", step: "waiting for your confirmation before Enable the API", message: "" }]
+    };
+    const p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
+    ok(/^waiting for your confirmation on proj-one\/claude-haiku-4-5: Enable the API \(job 1\/1\)/.test(p.document.getElementById("status").textContent), "(api policy) awaiting_confirmation(api-enable): the popup status reads Enable the API", p.document.getElementById("status").textContent);
+    p.win.close();
+  }
+  {
     const store = { settings: Object.assign({}, FULL), running: false, run: { runId: "r", live: false, finishedAt: 1, reason: "all jobs processed" }, queue: [] };
     const p = await loadPage("popup/popup.html", store, POPUP_SCRIPTS);
     ok(p.document.getElementById("log-details").open === false, "with no run active the log starts folded");
@@ -1675,6 +1686,76 @@ function setSelect(p, name, value) {
     // A list that empties to nothing leaves the current value, with a notice.
     r = await choose(p, JSON.stringify({ schema: 1, popup: { projects: [null, "  "], models: [null] } }));
     ok(!r.error && /popup\.projects holds no project ID, so the current ones are kept/.test(r.text) && /popup\.models holds no model slug, so the current selection is kept/.test(r.text), "a project or model list that empties to nothing keeps the current value and says so", r.text);
+    p.win.close();
+  }
+
+  console.log("--- (api policy) constants.js: parseApiEnableOverrides and apiEnablePolicyFor");
+  {
+    const K = globalThis.MGC;
+    let o = K.parseApiEnableOverrides("my-proj-1: never\n\n   \nOther-Proj : ask\r\nthird-proj:enable\n");
+    ok(o.ok && o.errors.length === 0 && JSON.stringify(o.map) === '{"my-proj-1":"never","other-proj":"ask","third-proj":"enable"}', "parseApiEnableOverrides: three lines, blank lines ignored, spaces around the colon allowed, the map keyed by the lower-cased ID", JSON.stringify(o));
+    o = K.parseApiEnableOverrides("good-proj: never\nnot a project: never\n1proj: never\nmy-proj-1: maybe\nno colon here");
+    ok(!o.ok && o.errors.length === 4 && /^line 2 "not a project: never"/.test(o.errors[0]) && /^line 3 "1proj: never"/.test(o.errors[1]) && /^line 4 "my-proj-1: maybe": the policy must be enable, ask or never/.test(o.errors[2]) && /^line 5 "no colon here"/.test(o.errors[3]), "parseApiEnableOverrides: one error per bad line naming its number and text", JSON.stringify(o.errors));
+    ok(K.parseApiEnableOverrides("").ok && K.parseApiEnableOverrides(undefined).ok, "control: an empty or missing text parses to no overrides");
+    const s = { api_enable_policy: "ask", api_enable_overrides: "My-Proj-1: never" };
+    ok(JSON.stringify(K.apiEnablePolicyFor(s, "my-proj-1")) === '{"policy":"never","source":"override"}' && JSON.stringify(K.apiEnablePolicyFor(s, "MY-PROJ-1")) === '{"policy":"never","source":"override"}', "apiEnablePolicyFor: the override beats the default, matched case-insensitively", JSON.stringify(K.apiEnablePolicyFor(s, "my-proj-1")));
+    ok(JSON.stringify(K.apiEnablePolicyFor(s, "other-proj")) === '{"policy":"ask","source":"default"}', "control: a project without a line gets the default with source default");
+    ok(JSON.stringify(K.apiEnablePolicyFor({ api_enable_policy: "never", api_enable_overrides: "my-proj-1: enable\nbad line" }, "my-proj-1")) === '{"policy":"never","source":"default"}', "an unparsable overrides text falls back to the default policy as a whole");
+    ok(JSON.stringify(K.apiEnablePolicyFor({}, "my-proj-1")) === '{"policy":"enable","source":"default"}' && JSON.stringify(K.apiEnablePolicyFor({ api_enable_policy: "sometimes" }, "my-proj-1")) === '{"policy":"enable","source":"default"}', "no setting, or an unknown one: enable (today's behaviour)");
+    ok(K.missingSettings(Object.assign({}, FULL, { api_enable_policy: "", api_enable_overrides: "" })).length === 0 && !K.REQUIRED_SETTINGS.includes("api_enable_policy"), "the two keys are never required");
+    ok(K.SETTINGS_LABELS.api_enable_policy && K.SETTINGS_LABELS.api_enable_overrides && K.CONFIRM_STEP.API_ENABLE === "api-enable" && K.CONFIRM_STEP_LABEL["api-enable"] === "Enable the API", "labels for both keys; the step api-enable is labelled Enable the API");
+  }
+
+  console.log("--- (api policy) options page: the API enablement section, Save validation, export and import");
+  {
+    let store = { settings: Object.assign({}, FULL) };
+    let p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    let doc = p.document;
+    const form = doc.getElementById("form");
+    const sec = doc.querySelector("fieldset.api-enable");
+    const fieldsets = Array.from(doc.querySelectorAll("fieldset"));
+    ok(sec && sec.querySelector("legend").textContent === "API enablement" && fieldsets.indexOf(sec) === fieldsets.indexOf(doc.querySelector("fieldset.advanced")) - 1, "the API enablement section sits right above Advanced");
+    const sel = form.elements.api_enable_policy;
+    ok(sel && sel.tagName === "SELECT" && Array.from(sel.options).map((x) => x.value).join() === "enable,ask,never" && sel.value === "enable", "the policy select offers enable, ask, never and shows enable by default", sel && sel.value);
+    const ta = form.elements.api_enable_overrides;
+    ok(ta && ta.tagName === "TEXTAREA" && ta.placeholder === "my-terraform-project: never" && /Terraform/.test(sec.textContent) && /Enable APIs/.test(sec.textContent), "the overrides textarea with its placeholder; the paragraph names the dialog and Terraform");
+    const errLine = () => { const e = doc.getElementById("api-enable-error"); return e.hidden ? "" : e.textContent; };
+    ta.value = "not a project: never\n1proj: never\nmy-proj-1: maybe";
+    let sv = await submit(p);
+    ok(sv.error && /API enablement/.test(sv.text) && /line 1 "not a project: never"/.test(errLine()) && /line 2 "1proj: never"/.test(errLine()) && /line 3 "my-proj-1: maybe"/.test(errLine()) && store.settings.api_enable_overrides === undefined, "Save refuses bad lines, naming each line; nothing stored", errLine());
+    ta.value = "My-Proj-1: never\n";
+    setSelect(p, "api_enable_policy", "ask");
+    sv = await submit(p);
+    ok(!sv.error && store.settings.api_enable_overrides === "My-Proj-1: never\n" && store.settings.api_enable_policy === "ask" && errLine() === "", "Save accepts My-Proj-1: never and stores the text as typed with the policy", JSON.stringify(store.settings));
+    p.win.close();
+    // Reload: both fields show what is stored; export carries both keys.
+    p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    doc = p.document;
+    ok(doc.getElementById("form").elements.api_enable_policy.value === "ask" && doc.getElementById("form").elements.api_enable_overrides.value === "My-Proj-1: never\n", "a reload shows the stored policy and overrides");
+    doc.getElementById("config-export").click(); await tick(); await tick();
+    const exported = JSON.parse(await store.__blobs[store.__blobs.length - 1].text());
+    ok(exported.settings.api_enable_policy === "ask" && exported.settings.api_enable_overrides === "My-Proj-1: never\n", "Export carries api_enable_policy and api_enable_overrides", JSON.stringify(exported.settings));
+    p.win.close();
+    // Import: an unknown policy is refused naming the key; never is accepted and saved; the overrides round-trip.
+    store = { settings: Object.assign({}, FULL) };
+    p = await loadPage("options/options.html", store, OPTIONS_SCRIPTS);
+    doc = p.document;
+    const choose = async (pg, text) => {
+      const input = pg.document.getElementById("config-import");
+      Object.defineProperty(input, "files", { configurable: true, value: [new pg.win.File([text], "settings.json", { type: "application/json" })] });
+      input.dispatchEvent(new pg.win.Event("change", { bubbles: true }));
+      await tick(); await tick();
+      const n = pg.document.getElementById("config-note");
+      return { text: n.hidden ? "" : n.textContent, error: n.className === "error" };
+    };
+    let r = await choose(p, JSON.stringify({ schema: 1, settings: { api_enable_policy: "sometimes" } }));
+    ok(r.error && /settings\.api_enable_policy must be "enable", "ask" or "never"/.test(r.text) && doc.getElementById("form").elements.api_enable_policy.value === "enable", "import of api_enable_policy \"sometimes\" is refused naming the key; nothing filled", r.text);
+    r = await choose(p, JSON.stringify({ schema: 1, settings: { api_enable_overrides: "my-proj-1: maybe" } }));
+    ok(r.error && /settings\.api_enable_overrides/.test(r.text) && /line 1 "my-proj-1: maybe"/.test(r.text), "import of an overrides text with a bad line is refused naming the key and the line", r.text);
+    r = await choose(p, JSON.stringify(exported).replace('"api_enable_policy":"ask"', '"api_enable_policy":"never"'));
+    ok(!r.error && doc.getElementById("form").elements.api_enable_policy.value === "never" && doc.getElementById("form").elements.api_enable_overrides.value === "My-Proj-1: never", "import of \"never\" and the exported overrides is accepted and fills both fields", r.text);
+    sv = await submit(p);
+    ok(!sv.error && store.settings.api_enable_policy === "never" && store.settings.api_enable_overrides === "My-Proj-1: never", "Save keeps the imported policy and overrides", JSON.stringify(store.settings));
     p.win.close();
   }
 

@@ -41,12 +41,42 @@ extension's card in `chrome://extensions`.
    ..." field. For **No** it is hidden and ignored.
 4. Leave the **DRY RUN** box ticked (see "Modes" below). Tick
    **Step-by-step confirmation** if you want to approve every Next and
-   Agree yourself. Leave **Advanced** alone unless a timeout needs changing
+   Agree yourself. Set **API enablement** for projects whose APIs you
+   manage elsewhere (see "API enablement" below). Leave **Advanced** alone unless a timeout needs changing
    (see "Advanced timing settings" below). **Export settings** and
    **Import settings** there save and load every setting as one JSON file
    (see "Export and import" below).
 5. Click **Save**. Save refuses with the reason when a required field or the
-   AUP details are missing or the advanced JSON is invalid.
+   AUP details are missing, a line of the API enablement overrides does not
+   follow the format, or the advanced JSON is invalid.
+
+### API enablement
+
+When a project lacks the Agent Platform API the console opens an "Enable
+APIs" dialog. The **API enablement** section (above **Advanced**) sets what
+the extension does with that dialog's Enable button. Neither field is
+required.
+
+- **Default policy**: `enable` (the default, the behaviour before this
+  setting existed) clicks the dialog's Enable; `ask` shows a panel in the
+  console tab each time (**Enable the API** / **Skip** / **Stop**, see
+  below); `never` clicks nothing and the job fails with a message that
+  names the API.
+- **Per-project overrides**: one line per project, `project-id: enable`,
+  `ask` or `never` (spaces around the colon allowed, blank lines ignored).
+  The project ID is matched without regard to case; a line here wins over
+  the default policy. Save refuses a line that is not a valid project ID
+  followed by one of the three policies, naming the line.
+- A project whose APIs are managed by Terraform or another tool gets a
+  `never` line (for example `my-terraform-project: never`): the extension
+  never changes its service configuration, so the next `terraform plan`
+  shows no drift. Its job fails with `API enablement required outside the
+  extension: the console asks to enable <API> in <project> ...`; enable the
+  API with your own tooling, then run the pair again.
+
+Every decision is logged as `API policy for <project>: <policy> (override
+or default); the console asks to enable <API>`. A check-only run never
+clicks the dialog, whatever the policy.
 
 ## Modes
 
@@ -425,8 +455,19 @@ the console, then start the job again.
 
 If the console shows its "Enable APIs" dialog (the Agent Platform API must
 be enabled in the project), the extension clicks that dialog's Enable button,
-waits for it to close and continues. If the dialog comes back for the same
-job, the job is marked `failed`.
+waits for it to close and continues, as long as the project's API-enablement
+policy (options page, "API enablement") is `enable`, the default. If the
+dialog comes back for the same job, the job is marked `failed`.
+
+With the policy `ask` a panel in the console tab names the project and the
+API and offers **Enable the API** / **Skip** / **Stop**, whatever the
+step-by-step setting: a trusted click on **Enable the API** clicks the
+dialog's Enable (then as above); **Skip** ends the job `skipped-by-you`
+with nothing clicked and the run moves on; **Stop** ends the run. If you
+click the dialog's own Enable or Cancel in the console instead, the
+extension sees the dialog close and checks the page again. The watchdog is
+paused while the panel waits. With the policy `never` nothing is clicked
+and the job fails at once, naming the API.
 
 If a questionnaire field is rejected by the console (for example a website
 without `https://`), the job is marked `failed` with the field's name and
@@ -548,8 +589,10 @@ judged on your click, not reported `failed`.
 While a console dialog is open (an error, or the "Enable APIs" dialog) the
 panel's Continue is disabled and the dialog's title is shown in the panel;
 close it in the console and Continue is enabled again. The "Enable APIs"
-dialog is cleared by the extension itself (its Enable is clicked, as on any
-page) and the panel is shown again; a Stop during that dialog's close wait
+dialog is handled by the extension itself under the project's API-enablement
+policy (with `enable` its Enable is clicked, as on any page; with `ask` the
+**Enable the API** panel asks first; with `never` the job fails) and the
+panel is shown again; a Stop during that dialog's close wait
 is honoured at the next poll, not after the dialog's full timeout. A
 Continue never reaches the Agree guard while a dialog is open; if a dialog
 opens in the instant between your Continue and the click, in either of the
@@ -563,7 +606,8 @@ that check. The spent Continue is forgotten and the next one must be a
 fresh click. The extension asks again at most five times for one job.
 
 While a job waits, the popup's status reads `waiting for your confirmation
-on <project>/<model>: Next` (or `Agree`, or `Next job`), the job's phase is
+on <project>/<model>: Next` (or `Agree`, or `Next job`, or `Enable the API`
+for the API-enablement panel of the `ask` policy), the job's phase is
 `awaiting_confirmation`, and the watchdog is paused (it is re-armed when you
 continue), so taking your time never fails the job. If the extension is
 disabled and re-enabled while a job waits, the panel is gone but the run
@@ -621,8 +665,8 @@ finished.
 
 The **Advanced** section of the options page has **Export settings** and
 **Import settings**. Export saves one JSON file with what is stored: the
-questionnaire, step-by-step, the timing, runs to keep, the inside joke box,
-and the popup's project IDs, ticked models and extra slugs. The DRY RUN
+questionnaire, step-by-step, the API enablement policy and overrides, the
+timing, runs to keep, the inside joke box, and the popup's project IDs, ticked models and extra slugs. The DRY RUN
 mode and the per-run include box are never in it. Import fills the options
 page from such a file, or from a timing-only JSON like the Advanced field
 takes. Empty, null or missing values leave the current ones. Unknown keys

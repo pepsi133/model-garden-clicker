@@ -75,13 +75,27 @@ then: click Enable, then the questionnaire · next job: my-project · claude-son
       <p class="explain">The extension fills each page and then waits for you: a panel in the page offers Continue, Skip and Stop before Next and before Agree (Skip ends the job without clicking and the run moves on) (in a dry run, Next job and Stop once the checkbox is ticked). If you click the console's own button yourself, the extension notices and continues. The popup's header shows this as "slow mode" (on) or "<span class="step-off-name">fast mode</span>" (off) and can toggle it too.</p>
     </fieldset>
 
+    <fieldset class="api-enable">
+      <legend>API enablement</legend>
+      <p class="explain">When a project lacks the Agent Platform API the console opens an "Enable APIs" dialog. The policy says what the extension does with that dialog's Enable button: <strong>enable</strong> clicks it (the behaviour so far); <strong>ask</strong> asks you each time on a panel in the console tab (Enable the API, Skip or Stop); <strong>never</strong> clicks nothing: the job fails and names the API. Use never for projects whose APIs are managed by Terraform or another tool.</p>
+      <label>Default policy
+        <select name="api_enable_policy">
+          <option value="enable">enable: click the dialog's Enable</option>
+          <option value="ask">ask: a panel asks you each time</option>
+          <option value="never">never: the job fails and names the API</option>
+        </select></label>
+      <label>Per-project overrides <textarea name="api_enable_overrides" rows="3" spellcheck="false" placeholder="my-terraform-project: never"></textarea>
+        <small>One project per line: <code>project-id: enable</code>, <code>ask</code> or <code>never</code>. The project ID is matched without regard to case; a line here wins over the default policy. Blank lines are ignored; Save refuses any other line that does not follow this format.</small></label>
+      <p id="api-enable-error" class="error" hidden></p>
+    </fieldset>
+
     <fieldset class="advanced">
       <legend>Advanced</legend>
       <p class="note">Timeouts and poll intervals as JSON. Milliseconds unless the key ends in <code>_min</code>. Keys: <code id="timing-keys"></code>. The values are checked on Save; a missing key keeps its default. See extension/README.md for what each one bounds.</p>
       <label>Timing <textarea name="timing_json" rows="8" spellcheck="false"></textarea></label>
       <p id="timing-error" class="error" hidden></p>
       <button type="button" id="timing-reset">Reset to defaults</button>
-      <p class="note">Export settings saves everything stored on this page and in the popup as one JSON file: the questionnaire, step-by-step, the timing, runs to keep, the inside joke box, the project IDs, the ticked models and the extra slugs. The DRY RUN mode is never in it. Import settings fills this page from such a file, or from a timing-only JSON like the field above; empty or missing values leave the current ones. Click Save to keep what was imported.</p>
+      <p class="note">Export settings saves everything stored on this page and in the popup as one JSON file: the questionnaire, step-by-step, the API enablement policy and overrides, the timing, runs to keep, the inside joke box, the project IDs, the ticked models and the extra slugs. The DRY RUN mode is never in it. Import settings fills this page from such a file, or from a timing-only JSON like the field above; empty or missing values leave the current ones. Click Save to keep what was imported.</p>
       <div class="config-row">
         <button type="button" id="config-export">Export settings</button>
         <label class="file">Import settings <input type="file" id="config-import" accept=".json,application/json"></label>

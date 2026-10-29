@@ -40,9 +40,30 @@ file exits 2; a missing `services-<project>.json` marks that project's rows
 | `mg-inventory.json` | Full report: inventory, per-pair verdicts, pending list. |
 | `projects.txt` | Pending project ids, one per line, the format the popup textarea takes (`extension/popup/popup.js` `projectIds()`). |
 | `model-garden-clicker-settings.json` | Import file for the options page (Advanced, Import settings), with `popup.projects` and `popup.models`. |
+| `deep-links.md` | Deep links for the extension, see "Deep links" below. |
 
 Verdicts: `enabled` (service ENABLED), `not-enabled` (service DISABLED),
 `no-permission` (HTTP 403), `unknown` (anything else).
+
+### Deep links
+
+`deep-links.md` has one link per pending project
+(`- <project-id>: chrome-extension://<id>/popup/popup.html?tab=1&v=1&projects=<project-id>&models=<its pending slugs, sorted>`)
+and an "All pending projects" section with one link per chunk of at most 200
+pending projects, whose `models=` is the union of the chunk's pending slugs.
+That union link may list a pair already enabled in some project; the
+extension's model-page check ends it as `skipped`. A link opens the popup in a
+tab, fills the form after a confirmation and never starts a run (root
+[README.md](../../README.md), "Deep links"; the format is the contract in
+[docs/scoping/03-deep-links.md](../../docs/scoping/03-deep-links.md)). A link
+is never longer than 16,384 characters: a longer chunk is split. An id or slug
+that fails the extension's validation is left out with a warning line in the
+file and on stderr. With no pending project the file still exists and says so.
+
+The extension id is `--extension-id ID`, else the env var `MGC_EXTENSION_ID`,
+else the Chrome Web Store id `fmfhgpbcpacoddjpfemghhpinhodcglp`; an unpacked
+copy has another id (shown on `chrome://extensions`). `scripts/deep-link/mgc_link.py`
+builds the same link for a list you type.
 
 Console probe (needs the `playwright` package and a full Chromium build):
 

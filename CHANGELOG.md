@@ -7,6 +7,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Deep links in the GitLab inventory. `ci/gitlab/poc/mg_inventory.py`
+  writes `deep-links.md` next to `projects.txt`: one link per pending
+  project with its pending models, then chunked links for all pending
+  projects, at most 200 projects and 16,384 characters per link, in the
+  format of `docs/scoping/03-deep-links.md`. The extension id comes from
+  `--extension-id` or `MGC_EXTENSION_ID` (default: the store id). The
+  manual `enable:handoff` job prints the file.
 - A Skip button in the step-by-step panel. The panel before Next and
   before Agree now offers Continue / Skip / Stop. Skip ends the job as
   `skipped-by-you` without clicking anything, and the run moves to the next

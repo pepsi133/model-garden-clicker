@@ -123,7 +123,7 @@ Workload Identity Federation (WIF) lets a GitLab job exchange its ID token for a
 | Path | Content |
 |---|---|
 | `ci/gitlab/.gitlab-ci.yml` | Sample pipeline with the four stages above and the `.gcp-wif` template. PyYAML parses it. A structural check found every `needs` and `stage` reference valid. |
-| `ci/gitlab/poc/mg_inventory.py` | Standard-library Python 3 audit, `python3 -I` safe. GET requests only. |
+| `ci/gitlab/poc/mg_inventory.py` | Standard-library Python 3 audit, `python3 -I` safe. GET requests only. Writes `projects.txt`, the settings file and `deep-links.md`. |
 | `ci/gitlab/poc/console_probe.mjs` | Playwright probe with its result in the header comment. |
 | `ci/gitlab/README.md` | How to run both scripts locally and in GitLab. |
 

@@ -19,7 +19,9 @@ What it does, with a service-account token and read-only calls only:
      extension/popup/popup.js projectIds() splits on newlines and trims) and
      <out>/model-garden-clicker-settings.json (the options page import format,
      extension/common/constants.js MGC.parseConfig: app, schema, popup.projects,
-     popup.models).
+     popup.models). Also writes <out>/deep-links.md: one extension deep link per
+  pending project and chunked links for all pending projects (at most 200
+  projects and 16,384 characters per link; see build_deep_links).
 
 Why Service Usage and not an inference call: in the probe session (2026-10-12)
 a minimal rawPredict with max_tokens 1 answered HTTP 429 "Quota exceeded ...
@@ -45,7 +47,7 @@ Usage:
   python3 -I ci/gitlab/poc/mg_inventory.py \
       --projects my-project --quota-project my-project \
       [--token TOKEN] [--models claude-opus-4-6,claude-haiku-4-5] \
-      [--out DIR] [--save-fixture DIR] [--fixture DIR]
+      [--out DIR] [--save-fixture DIR] [--fixture DIR] [--extension-id ID]
   --projects takes a comma list, or a path to a file with one id per line.
   --fixture DIR reads publisher-models.json and services-<project>.json from
   DIR instead of the network (offline run; --save-fixture writes that shape).
@@ -70,6 +72,11 @@ SERVICEUSAGE = "https://serviceusage.googleapis.com/v1"
 AIPLATFORM_SERVICE = "aiplatform.googleapis.com"
 BATCH_MAX = 20  # services:batchGet takes at most 20 names per call
 PROJECT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")  # MGC.isValidProjectId
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$", re.IGNORECASE)  # MGC.isValidModelSlug
+STORE_EXTENSION_ID = "fmfhgpbcpacoddjpfemghhpinhodcglp"  # Chrome Web Store id, as in scripts/deep-link/mgc_link.py
+DEEP_LINK_MAX_PROJECTS = 200  # MGC.DEEP_LINK.MAX_PROJECTS
+DEEP_LINK_MAX_MODELS = 13     # MGC.DEEP_LINK.MAX_MODELS
+DEEP_LINK_MAX_RAW = 16384     # MGC.DEEP_LINK.MAX_RAW
 
 
 # ----------------------------------------------------------------- helpers
@@ -141,6 +148,101 @@ def service_id_from_uri(uri: str) -> str:
         return ""
     vals = q.get("service") or []
     return vals[0] if vals else ""
+
+
+# -------------------------------------------------------------- deep links
+
+# The link format is the contract in docs/scoping/03-deep-links.md;
+# scripts/deep-link/mgc_link.py builds the same link. This function is
+# self-contained on purpose (no import of that script).
+def build_deep_links(pending: dict, extension_id: str, max_raw: int = DEEP_LINK_MAX_RAW):
+    """pending: {project id: [pending slugs]} in report order.
+    Returns (per_project, chunks, warnings): per_project is [(project, link)],
+    chunks is [(project ids, link)], warnings is a list of strings.
+    Ids and slugs that fail the extension's validation are left out with a warning;
+    a link is never longer than max_raw characters (a chunk that would be is split)."""
+    prefix = f"chrome-extension://{extension_id}/popup/popup.html?tab=1&v=1&projects="
+
+    def link(ids, slugs):
+        return prefix + ",".join(ids) + "&models=" + ",".join(slugs)
+
+    warnings, valid = [], {}
+    for project, slugs in pending.items():
+        if not PROJECT_ID_RE.match(project):
+            warnings.append(f"project id left out of the links, invalid: {project!r}")
+            continue
+        good = sorted({s for s in slugs if SLUG_RE.match(s)})
+        for s in sorted({s for s in slugs if not SLUG_RE.match(s)}):
+            warnings.append(f"slug left out of the links ({project}), invalid: {s!r}")
+        if not good:
+            warnings.append(f"project left out of the links, no valid pending slug: {project}")
+            continue
+        if len(good) > DEEP_LINK_MAX_MODELS:
+            warnings.append(f"project left out of the links, {len(good)} pending models (the extension takes {DEEP_LINK_MAX_MODELS}): {project}")
+            continue
+        valid[project] = good
+
+    per_project = []
+    for project, slugs in valid.items():
+        text = link([project], slugs)
+        if len(text) > max_raw:
+            warnings.append(f"project left out of the links, link longer than {max_raw} characters: {project}")
+            continue
+        per_project.append((project, text))
+    ids_ok = [p for p, _ in per_project]
+
+    chunks = []
+
+    def add_chunk(ids):
+        slugs = sorted({s for p in ids for s in valid[p]})
+        if len(slugs) > DEEP_LINK_MAX_MODELS:
+            warnings.append(f"chunk of {len(ids)} project(s) left out, {len(slugs)} models in the union (the extension takes {DEEP_LINK_MAX_MODELS}): {','.join(ids)}")
+            return
+        text = link(ids, slugs)
+        if len(text) > max_raw and len(ids) > 1:
+            half = len(ids) // 2
+            add_chunk(ids[:half])
+            add_chunk(ids[half:])
+            return
+        chunks.append((ids, text))
+
+    for i in range(0, len(ids_ok), DEEP_LINK_MAX_PROJECTS):
+        add_chunk(ids_ok[i:i + DEEP_LINK_MAX_PROJECTS])
+    return per_project, chunks, warnings
+
+
+def deep_links_markdown(per_project: list, chunks: list, warnings: list, extension_id: str) -> str:
+    lines = [
+        "# Deep links for the pending projects",
+        "",
+        "A deep link is the extension popup's own URL with the project ids and the models in its query string. "
+        "Open it in a Chrome that has the extension: the popup opens in a tab and asks for a confirmation before it "
+        "fills the form, and a link never starts a run (you still press Start). The format and the limits are in "
+        "the \"Deep links\" section of the repository README.md and in ci/gitlab/README.md. The extension id in these "
+        f"links is `{extension_id}`; it defaults to the Chrome Web Store id `{STORE_EXTENSION_ID}`, and an unpacked "
+        "copy has another id (set it with `--extension-id` or the env var `MGC_EXTENSION_ID`).",
+        "",
+        "## Pending projects",
+        "",
+    ]
+    if not per_project:
+        lines += ["No project is pending: no deep link.", ""]
+    else:
+        lines += [f"- {p}: {text}" for p, text in per_project] + [""]
+    lines += ["## All pending projects", ""]
+    if not chunks:
+        lines += ["No project is pending: no deep link.", ""]
+    else:
+        lines += ["Each link below holds at most 200 projects and at most 16,384 characters. The models of a link are the "
+                  "union of the pending slugs of its projects, so a link may list a pair that is already enabled in some "
+                  "project; the extension's model-page check ends that pair as `skipped`.", ""]
+        n = len(chunks)
+        for i, (ids, text) in enumerate(chunks, start=1):
+            lines.append(f"- link {i} of {n} ({len(ids)} project{'s' if len(ids) != 1 else ''}): {text}")
+        lines.append("")
+    if warnings:
+        lines += ["## Warnings", ""] + [f"warning: {w}" for w in warnings] + [""]
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------- inventory
@@ -283,6 +385,8 @@ def main() -> int:
     ap.add_argument("--out", default="mg-inventory-out", help="output directory")
     ap.add_argument("--save-fixture", default="", help="write the raw API answers to DIR for an offline run")
     ap.add_argument("--fixture", default="", help="read the raw API answers from DIR instead of the network")
+    ap.add_argument("--extension-id", default=os.environ.get("MGC_EXTENSION_ID") or STORE_EXTENSION_ID,
+                    help=f"extension id in deep-links.md (default: MGC_EXTENSION_ID, else the store id {STORE_EXTENSION_ID}); an unpacked copy has another")
     args = ap.parse_args()
 
     projects = read_projects(args.projects)
@@ -362,7 +466,15 @@ def main() -> int:
     settings = {"app": "model-garden-clicker", "schema": 1, "exported": now,
                 "popup": {"projects": pending_projects, "models": pending_models, "extra": ""}}
     (out / "model-garden-clicker-settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
-    print(f"wrote {out / 'mg-inventory.json'}, {out / 'projects.txt'}, {out / 'model-garden-clicker-settings.json'}")
+    # deep-links.md: one link per pending project, then chunked links for all of them.
+    pending_by_project = {}
+    for r in pending_rows:
+        pending_by_project.setdefault(r["project"], []).append(r["model"])
+    per_project, chunks, link_warnings = build_deep_links(pending_by_project, args.extension_id)
+    for w in link_warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    (out / "deep-links.md").write_text(deep_links_markdown(per_project, chunks, link_warnings, args.extension_id), encoding="utf-8")
+    print(f"wrote {out / 'mg-inventory.json'}, {out / 'projects.txt'}, {out / 'model-garden-clicker-settings.json'}, {out / 'deep-links.md'}")
     return 0
 
 

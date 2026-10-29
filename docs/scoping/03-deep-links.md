@@ -47,7 +47,7 @@ Four more facts from the code bound the build:
 | 5. `chrome.action.openPopup()` first | No. A tab, always (fact 1 above). |
 | 6. Banner until Start or until the first edit | Until Clear, Start or the page closes. The banner says where the values came from. It does not claim they are unchanged. |
 | 7. A `note` key | No (D2). |
-| 8. Links in the GitLab inventory artifact | Not in this build. Scoping 02 can emit form A links later (form B was dropped). The format here is the contract. |
+| 8. Links in the GitLab inventory artifact | Not in this build. Scoping 02 can emit form A links later (form B was dropped). The format here is the contract. Implemented 2026-10-29: `mg_inventory.py` writes `deep-links.md` (one link per pending project and chunked links for all pending projects, at most 200 per link). |
 
 ### Decisions D1 to D6
 

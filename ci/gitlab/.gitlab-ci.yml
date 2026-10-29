@@ -226,6 +226,9 @@ enable:handoff:
       echo "=== Pending project ids (popup textarea format)"
       cat mg-inventory-out/projects.txt
       echo
+      echo "=== Deep links (open in Chrome with the extension; each fills the popup after a confirmation)"
+      cat mg-inventory-out/deep-links.md
+      echo
       echo "=== Human run (outside GitLab)"
       echo "1. Download mg-inventory-out/model-garden-clicker-settings.json from this job."
       echo "2. In Chrome, signed in to the Cloud console with your own account, open the"
